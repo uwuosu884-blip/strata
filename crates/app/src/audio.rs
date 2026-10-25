@@ -78,7 +78,8 @@ pub struct AudioHealth {
 }
 
 enum Backend {
-    Device(#[allow(dead_code)] cpal::Stream, #[allow(dead_code)] Option<cpal::Stream>),
+    // Boxed: cpal::Stream is ~270 bytes on Windows (clippy::large_enum_variant).
+    Device(#[allow(dead_code)] Box<(cpal::Stream, Option<cpal::Stream>)>),
     Null(#[allow(dead_code)] NullOutput),
 }
 
@@ -187,7 +188,7 @@ fn start_device(opts: &AudioOptions, health: &Arc<AudioHealth>) -> Result<(Backe
         input,
         input_buffer_frames,
     };
-    Ok((Backend::Device(stream, input_stream), info, handle))
+    Ok((Backend::Device(Box::new((stream, input_stream))), info, handle))
 }
 
 /// Open the default input device at the output's sample rate and stream it

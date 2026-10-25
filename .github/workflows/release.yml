@@ -34,7 +34,7 @@ jobs:
           - { name: macos-arm64,    os: macos-latest,   target: aarch64-apple-darwin,     exe: "",     archive: tar.gz }
           - { name: macos-x86_64,   os: macos-latest,   target: x86_64-apple-darwin,      exe: "",     archive: tar.gz }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
@@ -88,7 +88,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
