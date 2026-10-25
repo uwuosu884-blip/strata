@@ -66,9 +66,9 @@ fn clip(c: &p::Clip, cache: &mut SampleCache) -> e::Clip {
 fn instrument(def: &p::InstrumentDef, cache: &mut SampleCache) -> e::Instrument {
     match def {
         p::InstrumentDef::None => e::Instrument::None,
-        p::InstrumentDef::Synth(s) => e::Instrument::Synth(s.clone()),
+        p::InstrumentDef::Synth(s) => e::Instrument::Synth(*s),
         p::InstrumentDef::Sampler { sample, params } => {
-            e::Instrument::Sampler { sample: sample.as_deref().and_then(|k| cache.get(k)), params: params.clone() }
+            e::Instrument::Sampler { sample: sample.as_deref().and_then(|k| cache.get(k)), params: *params }
         }
         p::InstrumentDef::Drums { pads } => e::Instrument::Drums(
             pads.iter()

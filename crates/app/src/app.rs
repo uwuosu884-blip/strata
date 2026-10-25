@@ -247,8 +247,8 @@ impl DawApp {
         }
         self.track_meters.resize(self.project.tracks.len(), [0.0; 2]);
         for (m, s) in self.track_meters.iter_mut().zip(&self.track_status) {
-            for ch in 0..2 {
-                m[ch] = s.peak[ch].max(m[ch] * fall);
+            for (d, &p) in m.iter_mut().zip(&s.peak) {
+                *d = p.max(*d * fall);
             }
         }
         self.cpu_display += (self.status.cpu_load - self.cpu_display) * (dt * 4.0).min(1.0);
@@ -596,7 +596,7 @@ impl DawApp {
     fn store_recording(&mut self, take: &Take) -> String {
         self.rec_counter += 1;
         let key = format!("{RECORDING_PREFIX}take-{}-{}", std::process::id(), self.rec_counter);
-        let (l, r): (Vec<f32>, Vec<f32>) = take.audio.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+        let (l, r): (Vec<f32>, Vec<f32>) = take.audio.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
         self.cache.insert(&key, SampleBuffer::new(format!("Take {}", self.rec_counter), self.audio.info.sample_rate, l, r));
         key
     }

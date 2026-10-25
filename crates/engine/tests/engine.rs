@@ -168,7 +168,7 @@ fn mono_and_surround_layouts() {
         e.process(&mut out, channels);
         assert!(out.iter().any(|&s| s != 0.0));
         if channels == 6 {
-            for frame in out.chunks_exact(6) {
+            for frame in out.as_chunks::<6>().0 {
                 assert!(frame[2..].iter().all(|&s| s == 0.0));
             }
         }

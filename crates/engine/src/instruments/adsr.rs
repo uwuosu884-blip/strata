@@ -77,7 +77,7 @@ impl Adsr {
     }
 
     #[inline]
-    pub fn next(&mut self) -> f32 {
+    pub fn tick(&mut self) -> f32 {
         match self.stage {
             Stage::Idle => return 0.0,
             Stage::Attack => {
@@ -117,19 +117,19 @@ mod tests {
         let p = AdsrParams { attack: 0.01, decay: 0.1, sustain: 0.5, release: 0.1 };
         let mut e = Adsr::default();
         e.trigger(&p, sr);
-        let attack: Vec<f32> = (0..10).map(|_| e.next()).collect();
+        let attack: Vec<f32> = (0..10).map(|_| e.tick()).collect();
         assert!((attack[9] - 1.0).abs() < 1e-5, "{attack:?}");
         for _ in 0..500 {
-            e.next();
+            e.tick();
         }
-        assert_eq!(e.next(), 0.5);
+        assert_eq!(e.tick(), 0.5);
         e.release();
         for _ in 0..100 {
-            e.next();
+            e.tick();
         }
-        assert!(e.next() < 0.01);
+        assert!(e.tick() < 0.01);
         for _ in 0..200 {
-            e.next();
+            e.tick();
         }
         assert!(e.is_idle());
     }

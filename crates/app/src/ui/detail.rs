@@ -156,7 +156,7 @@ fn clip_props(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     if let ClipContent::Midi { .. } = clip.content {
         ui.horizontal_wrapped(|ui| {
             let grid = app.grid;
-            let mut op: Option<Box<dyn Fn(&mut Vec<Note>, &mut f64)>> = None;
+            let mut op: Option<NoteOp> = None;
             if ui.button("Quantize").on_hover_text("Snap note starts to the grid").clicked() {
                 op = Some(Box::new(move |n: &mut Vec<Note>, _| n.iter_mut().for_each(|x| x.start = (x.start / grid).round() * grid)));
             }
@@ -582,7 +582,7 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
             // Sample onto a sampler: keep its params.
             DragItem::Sample { key, .. } if matches!(inst, InstrumentDef::Sampler { .. }) => {
                 if let InstrumentDef::Sampler { params, .. } = &inst {
-                    Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: params.clone() })
+                    Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: *params })
                 } else {
                     None
                 }
@@ -686,8 +686,11 @@ fn adsr_ui(ui: &mut egui::Ui, label: &str, a: &mut daw_engine::AdsrParams, ed: &
     ed.slider(ui, "R s", &mut a.release, 0.001..=8.0, true);
 }
 
+/// A whole-clip MIDI edit: (notes, clip length).
+type NoteOp = Box<dyn Fn(&mut Vec<Note>, &mut f64)>;
+
 /// 4×4 pad grid (bottom-left = C1 like hardware). Returns a pad to audition.
-fn drums_ui(ui: &mut egui::Ui, pads: &mut Vec<PadDef>, ed: &mut Edit) -> Option<u8> {
+fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8> {
     let sel_id = ui.scope_id().with("pad_sel");
     let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
     let mut audition = None;

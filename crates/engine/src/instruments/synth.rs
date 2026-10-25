@@ -257,7 +257,7 @@ impl Synth {
                         v.remaining -= 1;
                     }
                 }
-                let fe = v.fenv.next();
+                let fe = v.fenv.tick();
                 if v.ctl == 0 {
                     let fc = (p.cutoff_hz * (p.filter_env_octaves * fe).exp2()).clamp(20.0, nyq);
                     let g = (PI * fc / sr).tan();
@@ -283,7 +283,7 @@ impl Synth {
                 let v2 = v.ic2 + v.a2 * v.ic1 + v.a3 * v3;
                 v.ic1 = 2.0 * v1 - v.ic1;
                 v.ic2 = 2.0 * v2 - v.ic2;
-                let out = v2 * v.amp.next() * v.vel * gain;
+                let out = v2 * v.amp.tick() * v.vel * gain;
                 *lo += out;
                 *ro += out;
                 if v.amp.is_idle() {

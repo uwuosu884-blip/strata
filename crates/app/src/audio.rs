@@ -258,7 +258,7 @@ where
         }
     };
     device
-        .build_input_stream::<T, _, _>(config.clone(), data_callback, error_callback, None)
+        .build_input_stream::<T, _, _>(*config, data_callback, error_callback, None)
         .map_err(|e| format!("could not open input stream: {e}"))
 }
 
@@ -321,7 +321,7 @@ where
     };
 
     device
-        .build_output_stream::<T, _, _>(config.clone(), data_callback, error_callback, None)
+        .build_output_stream::<T, _, _>(*config, data_callback, error_callback, None)
         .map_err(|e| format!("could not open output stream: {e}"))
 }
 

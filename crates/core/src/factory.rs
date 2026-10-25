@@ -9,7 +9,7 @@ pub const NAMES: [&str; 10] = ["Kick", "Snare", "Clap", "Closed Hat", "Open Hat"
 /// Synthesise a factory sound. `None` for unknown names.
 pub fn generate(name: &str, sr: u32) -> Option<SampleBuffer> {
     let s = sr as f32;
-    let mut rng = Rng(0x9E37_79B9 ^ name.len() as u32 * 7919);
+    let mut rng = Rng(0x9E37_79B9 ^ (name.len() as u32 * 7919));
     let secs = |t: f32| (t * s) as usize;
     let data: Vec<f32> = match name {
         "Kick" => {

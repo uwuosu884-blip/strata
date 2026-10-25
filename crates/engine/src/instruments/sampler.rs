@@ -167,7 +167,7 @@ impl<const N: usize> SampleVoices<N> {
                     }
                 }
                 let (a, b) = s.read(v.pos);
-                let g = v.env.next() * v.gain;
+                let g = v.env.tick() * v.gain;
                 *lo += a * g;
                 *ro += b * g;
                 v.pos += v.rate;

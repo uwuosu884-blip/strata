@@ -1,10 +1,12 @@
 name: CI
 
 # Builds and tests on Linux, Windows and macOS for every push / pull request.
-# Release binaries are uploaded as workflow artifacts (Actions tab → run → Artifacts).
+# Binaries are uploaded as workflow artifacts (Actions tab → run → Artifacts).
+# Tagged releases are published by release.yml.
 
 on:
   push:
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -41,7 +43,9 @@ jobs:
 
       - name: Linux system libraries
         if: runner.os == 'Linux'
-        run: sudo bash scripts/linux-deps.sh
+        # --all: JACK/PipeWire dev files for the optional-backend check below
+        # (sudo drops the CI variable, so the script can't detect CI itself).
+        run: sudo bash scripts/linux-deps.sh --all
 
       - name: Format check
         run: cargo fmt --all --check

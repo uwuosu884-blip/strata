@@ -15,6 +15,9 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 use widgets::*;
 
+/// Deferred work from a dialog button (runs after the dialog closes).
+type DialogAction = Box<dyn FnOnce(&mut DawApp)>;
+
 impl eframe::App for DawApp {
     /// Take plain (unmodified) key presses before egui sees them, unless a text
     /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
@@ -441,7 +444,7 @@ impl DawApp {
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.clone() else { return };
         let mut close = false;
-        let mut action: Option<Box<dyn FnOnce(&mut DawApp)>> = None;
+        let mut action: Option<DialogAction> = None;
         let title = match &dialog {
             Dialog::Open(_) => "Open Project",
             Dialog::SaveAs(_) => "Save Project As",

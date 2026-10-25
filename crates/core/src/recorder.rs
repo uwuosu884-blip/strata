@@ -80,11 +80,11 @@ impl State {
                 self.recording = false;
             }
             RecordEvent::NoteOn { track, pitch, velocity, beat, clip_pos } => {
-                if self.current.is_some() {
-                    if let Some((v, s, p)) = self.open.insert((track, pitch), (velocity, beat, clip_pos)) {
-                        // Retrigger without note-off: close the previous one.
-                        self.notes.push(RecordedNote { track, pitch, velocity: v, start_beat: s, end_beat: beat, clip_pos: p });
-                    }
+                if self.current.is_some()
+                    && let Some((v, s, p)) = self.open.insert((track, pitch), (velocity, beat, clip_pos))
+                {
+                    // Retrigger without note-off: close the previous one.
+                    self.notes.push(RecordedNote { track, pitch, velocity: v, start_beat: s, end_beat: beat, clip_pos: p });
                 }
             }
             RecordEvent::NoteOff { track, pitch, beat, .. } => {
@@ -259,7 +259,7 @@ mod tests {
         assert!((t.end_beat - 150.0 * 512.0 / 24_000.0).abs() < 1e-9);
         // Continuous ramp: no dropped or duplicated frames.
         let first = t.audio[0];
-        assert!(t.audio.chunks_exact(2).enumerate().all(|(i, f)| f[0] == first + i as f32 && f[1] == -f[0]));
+        assert!(t.audio.as_chunks::<2>().0.iter().enumerate().all(|(i, f)| f[0] == first + i as f32 && f[1] == -f[0]));
         assert_eq!(t.notes.len(), 2);
         assert_eq!((t.notes[0].pitch, t.notes[0].velocity), (60, 90));
         assert!((t.notes[0].start_beat - 10.0 * 512.0 / 24_000.0).abs() < 1e-9);

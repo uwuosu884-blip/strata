@@ -85,7 +85,7 @@ pub fn resample(buf: SampleBuffer, target: u32) -> Result<SampleBuffer, String> 
     let input = InterleavedSlice::new(&data, 2, frames).map_err(|e| format!("resampler input: {e}"))?;
     let out = rs.process_all(&input, frames, None).map_err(|e| format!("resample: {e}"))?.take_data();
     let (mut l, mut r) = (Vec::with_capacity(out.len() / 2), Vec::with_capacity(out.len() / 2));
-    for f in out.chunks_exact(2) {
+    for f in out.as_chunks::<2>().0 {
         l.push(f[0]);
         r.push(f[1]);
     }

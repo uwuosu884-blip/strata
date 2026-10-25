@@ -1,0 +1,139 @@
+name: Release
+
+# Pushing a tag like `v0.1.0` builds shipping binaries for every platform and
+# publishes a GitHub Release whose notes are that version's CHANGELOG section.
+# Uses the workflow's own GITHUB_TOKEN, so no secrets are needed.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 → glibc 2.35: the binary also runs on older distros.
+          - { name: linux-x86_64,   os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu, exe: "",     archive: tar.gz }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc,   exe: ".exe", archive: zip }
+          - { name: macos-arm64,    os: macos-latest,   target: aarch64-apple-darwin,     exe: "",     archive: tar.gz }
+          - { name: macos-x86_64,   os: macos-latest,   target: x86_64-apple-darwin,      exe: "",     archive: tar.gz }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo bash scripts/linux-deps.sh
+
+      - name: Tag must match the crate version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$v" = "$TAG" ] || { echo "::error::tag $TAG != Cargo.toml version $v"; exit 1; }
+
+      - name: Build (fat LTO)
+        run: cargo build --profile dist --target ${{ matrix.target }} -p daw-app -p daw-render
+
+      - name: Package
+        shell: bash
+        run: |
+          name="daw-${TAG#v}-${{ matrix.name }}"
+          bin="target/${{ matrix.target }}/dist"
+          mkdir -p "pkg/$name/examples"
+          cp "$bin/daw${{ matrix.exe }}" "$bin/daw-render${{ matrix.exe }}" "pkg/$name/"
+          cp README.md CHANGELOG.md "pkg/$name/"
+          cp examples/*.dawproj "pkg/$name/examples/"
+          cd pkg
+          if [ "${{ matrix.archive }}" = zip ]; then
+            7z a -tzip -mx=9 "$name.zip" "$name" > /dev/null
+          else
+            # Strip symbols on Unix (smaller download; panics still show messages).
+            strip "$name/daw" "$name/daw-render" || true
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: pkg/*.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * | tee SHA256SUMS.txt
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          ver="${TAG#v}"
+          # Everything between "## [ver]" and the next "## [" heading.
+          awk -v v="$ver" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::no CHANGELOG section for $ver"; exit 1; }
+          cat >> notes.md <<'EOF'
+
+          ---
+          ### Downloads
+          | Platform | File |
+          |---|---|
+          | Linux x86_64 (glibc 2.35+) | `daw-*-linux-x86_64.tar.gz` |
+          | Windows 10/11 x86_64 | `daw-*-windows-x86_64.zip` |
+          | macOS Apple Silicon | `daw-*-macos-arm64.tar.gz` |
+          | macOS Intel | `daw-*-macos-x86_64.tar.gz` |
+
+          - **Linux:** `sudo apt install libasound2 libxkbcommon-x11-0 libgl1`, then `./daw`.
+          - **macOS:** the binaries are not signed yet; run `xattr -dr com.apple.quarantine daw-*` once.
+          - **Windows:** SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.
+          - Verify downloads with `SHA256SUMS.txt`.
+          EOF
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "daw $TAG" --notes-file notes.md
+          fi

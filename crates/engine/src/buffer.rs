@@ -46,7 +46,7 @@ impl StereoBuffer {
                 }
             }
             2 => {
-                for (frame, (a, b)) in out.chunks_exact_mut(2).zip(l.iter().zip(r)) {
+                for (frame, (a, b)) in out.as_chunks_mut::<2>().0.iter_mut().zip(l.iter().zip(r)) {
                     frame[0] = *a;
                     frame[1] = *b;
                 }

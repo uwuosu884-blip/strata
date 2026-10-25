@@ -57,7 +57,9 @@ fn parse_args() -> Result<Args, String> {
             "--demo" => demo = true,
             "--write-demo" => {
                 let path = PathBuf::from(value(&flag)?);
-                demo_project().save(&path).map_err(|e| e.to_string())?;
+                let mut p = demo_project();
+                p.normalize(); // give every track/clip a unique id in the saved file
+                p.save(&path).map_err(|e| e.to_string())?;
                 println!("Wrote {}", path.display());
                 return Err(String::new() + "\u{0}");
             }
@@ -84,6 +86,7 @@ fn parse_args() -> Result<Args, String> {
 fn demo_project() -> Project {
     use daw_project::{ArrangementClip, Clip, ClipContent, Note};
     let mut p = Project::new_default();
+    p.name = "Demo".into();
     let n = |start: f64, length: f64, pitch: u8, velocity: u8| Note { start, length, pitch, velocity };
     let mut drums = Vec::new();
     for bar in 0..2 {
