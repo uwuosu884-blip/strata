@@ -1,152 +1,133 @@
-//! `daw-render` — render a project to a WAV file without a sound card.
-//!
-//! Uses exactly the same `Engine::process` as the live app, so what you hear
-//! in a render is what the app plays.
+//! `daw-render`: render a project (arrangement or one scene) to WAV without
+//! a sound card. Same engine code path as the live app.
 
-use assert_no_alloc::assert_no_alloc;
-use daw_engine::{Command, EngineConfig, create};
+use daw_core::{ExportOptions, load_project, render_project, write_wav};
 use daw_project::Project;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-#[cfg(debug_assertions)]
-#[global_allocator]
-static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
-
 const USAGE: &str = "\
 Render a project to WAV, faster than real time.
 
 USAGE:
-    daw-render [OPTIONS] --out <FILE.wav>
+    daw-render [OPTIONS] --out <FILE.wav> [PROJECT.dawproj]
 
 OPTIONS:
     -o, --out <FILE>        Output WAV file (required)
-    -p, --project <FILE>    Project file to render (default: a new project)
-    -b, --bars <N>          Number of bars to render [default: 4]
-    -t, --tempo <BPM>       Override the project tempo
+    -s, --scene <N>         Render session scene N (1-based) instead of the arrangement
+    -b, --bars <N>          Length in bars (default: arrangement end / longest clip in scene)
+        --tail <SECONDS>    Release tail after the end [default: 2]
+        --metronome         Include the metronome click
+        --demo              Render a built-in demo beat (no project needed)
         --sample-rate <HZ>  [default: 48000]
-        --bits <16|32>      16-bit integer or 32-bit float [default: 32]
+        --bits <16|32>      16-bit PCM (dithered) or 32-bit float [default: 32]
     -h, --help              Show this help";
 
 struct Args {
     out: PathBuf,
     project: Option<PathBuf>,
-    bars: u32,
-    tempo: Option<f64>,
-    sample_rate: u32,
+    demo: bool,
     bits: u16,
+    opts: ExportOptions,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = std::env::args().skip(1);
-    let (mut out, mut project, mut tempo) = (None, None, None);
-    let (mut bars, mut sample_rate, mut bits) = (4u32, 48_000u32, 32u16);
-
-    while let Some(flag) = args.next() {
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+    let mut it = std::env::args().skip(1);
+    let (mut out, mut project, mut demo, mut bits) = (None, None, false, 32u16);
+    let mut opts = ExportOptions::default();
+    while let Some(flag) = it.next() {
+        let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match flag.as_str() {
             "-o" | "--out" => out = Some(PathBuf::from(value(&flag)?)),
-            "-p" | "--project" => project = Some(PathBuf::from(value(&flag)?)),
-            "-b" | "--bars" => bars = value(&flag)?.parse().map_err(|_| "invalid --bars")?,
-            "-t" | "--tempo" => tempo = Some(value(&flag)?.parse().map_err(|_| "invalid --tempo")?),
-            "--sample-rate" => sample_rate = value(&flag)?.parse().map_err(|_| "invalid --sample-rate")?,
+            "-s" | "--scene" => {
+                let n: usize = value(&flag)?.parse().map_err(|_| "invalid --scene")?;
+                opts.scene = Some(n.checked_sub(1).ok_or("--scene is 1-based")?);
+            }
+            "-b" | "--bars" => {
+                let b: f64 = value(&flag)?.parse().map_err(|_| "invalid --bars")?;
+                if !(b > 0.0 && b <= 10_000.0) {
+                    return Err("--bars must be between 0 and 10000".into());
+                }
+                opts.bars = Some(b);
+            }
+            "--tail" => opts.tail_seconds = value(&flag)?.parse().map_err(|_| "invalid --tail")?,
+            "--metronome" => opts.metronome = true,
+            "--demo" => demo = true,
+            "--sample-rate" => opts.sample_rate = value(&flag)?.parse().map_err(|_| "invalid --sample-rate")?,
             "--bits" => bits = value(&flag)?.parse().map_err(|_| "invalid --bits")?,
             "-h" | "--help" => return Err(String::new()),
+            other if !other.starts_with('-') && project.is_none() => project = Some(PathBuf::from(other)),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    if !(8_000..=384_000).contains(&sample_rate) {
+    if !(8_000..=384_000).contains(&opts.sample_rate) {
         return Err("--sample-rate must be between 8000 and 384000".into());
     }
     if bits != 16 && bits != 32 {
         return Err("--bits must be 16 or 32".into());
     }
-    if bars == 0 || bars > 10_000 {
-        return Err("--bars must be between 1 and 10000".into());
+    if project.is_none() && !demo {
+        return Err("give a PROJECT file or --demo".into());
     }
-    let out = out.ok_or("--out is required")?;
-    Ok(Args { out, project, bars, tempo, sample_rate, bits })
+    Ok(Args { out: out.ok_or("--out is required")?, project, demo, bits, opts })
+}
+
+/// A short drum + bass + chords pattern on scene 1 (used by --demo and tests).
+fn demo_project() -> Project {
+    use daw_project::{ArrangementClip, Clip, ClipContent, Note};
+    let mut p = Project::new_default();
+    let n = |start: f64, length: f64, pitch: u8, velocity: u8| Note { start, length, pitch, velocity };
+    let mut drums = Vec::new();
+    for bar in 0..2 {
+        let o = bar as f64 * 4.0;
+        drums.extend([n(o, 0.25, 36, 120), n(o + 1.5, 0.25, 36, 100), n(o + 2.5, 0.25, 36, 110)]);
+        drums.extend([n(o + 1.0, 0.25, 37, 110), n(o + 3.0, 0.25, 37, 115)]);
+        drums.extend((0..8).map(|i| n(o + i as f64 * 0.5, 0.1, 39, if i % 2 == 0 { 90 } else { 60 })));
+    }
+    let bass: Vec<Note> = [36u8, 36, 39, 41, 36, 36, 43, 41].iter().enumerate().map(|(i, &p)| n(i as f64, 0.45, p, 105)).collect();
+    let chords: Vec<Note> = [(0.0, [60u8, 63, 67]), (4.0, [58, 62, 65])].iter().flat_map(|(s, ch)| ch.iter().map(move |&p| n(*s, 3.5, p, 80))).collect();
+    let clip = |len: f64, notes: Vec<Note>| Clip { length: len, content: ClipContent::Midi { notes }, ..Default::default() };
+    for (t, db) in [(0, -5.0), (1, -6.0), (2, -10.0)] {
+        p.tracks[t].gain_db = db;
+    }
+    p.tracks[0].slots[0] = Some(clip(8.0, drums.clone()));
+    p.tracks[1].slots[0] = Some(clip(8.0, bass.clone()));
+    p.tracks[2].slots[0] = Some(clip(8.0, chords.clone()));
+    for (t, notes) in [(0, drums), (1, bass), (2, chords)] {
+        for k in 0..2 {
+            p.tracks[t].arrangement.push(ArrangementClip { start: k as f64 * 8.0, clip: Clip { looping: false, ..clip(8.0, notes.clone()) } });
+        }
+    }
+    p
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let project = match &args.project {
-        Some(path) => Project::load(path)?,
-        None => Project::default(),
+    let project = match (&args.project, args.demo) {
+        (Some(path), _) => load_project(path)?,
+        (None, _) => demo_project(),
     };
-    let tempo = args.tempo.unwrap_or(project.tempo_bpm);
-
-    let block = 512;
-    let (mut engine, mut handle) =
-        create(EngineConfig { sample_rate: args.sample_rate as f64, max_block_frames: block });
-    for cmd in [
-        Command::SetTempo(tempo),
-        Command::SetBeatsPerBar(project.beats_per_bar),
-        Command::SetMetronome(project.metronome),
-        Command::SetMasterGain(project.master_gain_linear()),
-        Command::Play,
-    ] {
-        handle.send(cmd).map_err(|c| format!("command queue full ({c:?})"))?;
+    let t = Instant::now();
+    let r = render_project(&project, &args.opts)?;
+    let elapsed = t.elapsed().as_secs_f64();
+    for w in &r.warnings {
+        eprintln!("warning: {w} (rendered silent)");
     }
-    let tempo = apply_commands_and_read_tempo(&mut engine, tempo);
-
-    let seconds = args.bars as f64 * project.beats_per_bar as f64 * 60.0 / tempo;
-    let total_frames = (seconds * args.sample_rate as f64).round() as usize;
-
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: args.sample_rate,
-        bits_per_sample: args.bits,
-        sample_format: if args.bits == 32 { hound::SampleFormat::Float } else { hound::SampleFormat::Int },
-    };
-    if let Some(dir) = args.out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut writer = hound::WavWriter::create(&args.out, spec)?;
-
-    let started = Instant::now();
-    let mut buffer = vec![0.0f32; block * 2];
-    let mut written = 0;
-    while written < total_frames {
-        let frames = block.min(total_frames - written);
-        let buf = &mut buffer[..frames * 2];
-        assert_no_alloc(|| engine.process(buf, 2));
-        for &s in buf.iter() {
-            if args.bits == 32 {
-                writer.write_sample(s)?;
-            } else {
-                writer.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16)?;
-            }
-        }
-        written += frames;
-    }
-    writer.finalize()?;
-
-    let elapsed = started.elapsed().as_secs_f64();
+    write_wav(&args.out, &r.data, r.sample_rate, args.bits)?;
+    let secs = r.data.len() as f64 / 2.0 / r.sample_rate as f64;
+    let peak = r.peak();
     println!(
-        "Rendered {} bars at {:.1} BPM → {} ({:.2} s audio, {}-bit, {} Hz) in {:.3} s ({:.0}× real time)",
-        args.bars,
-        tempo,
+        "Rendered {:.2} s ({} beats @ {} BPM) to {} in {:.3} s ({:.0}x real time), peak {:.1} dBFS{}",
+        secs,
+        r.beats,
+        project.tempo_bpm,
         args.out.display(),
-        seconds,
-        args.bits,
-        args.sample_rate,
         elapsed,
-        seconds / elapsed.max(1e-9)
+        secs / elapsed.max(1e-9),
+        20.0 * peak.max(1e-9).log10(),
+        if peak > 1.0 { " (CLIPPING)" } else { "" }
     );
     Ok(())
-}
-
-/// Process zero frames so queued commands are applied, then read back the
-/// tempo the engine actually uses (it clamps out-of-range values).
-fn apply_commands_and_read_tempo(engine: &mut daw_engine::Engine, requested: f64) -> f64 {
-    let mut empty: [f32; 0] = [];
-    engine.process(&mut empty, 2);
-    let actual = engine.transport().tempo();
-    if (actual - requested).abs() > f64::EPSILON {
-        eprintln!("note: tempo {requested} clamped to {actual}");
-    }
-    actual
 }
 
 fn main() -> ExitCode {

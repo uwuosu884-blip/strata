@@ -42,7 +42,7 @@ fn audio_recording_starts_and_stops_on_bar_boundaries() {
     assert_eq!(h.snapshot().record_state, RecordState::Idle);
 
     let events: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
-    assert_eq!(events, vec![RecordEvent::Started { beat: 4.0 }, RecordEvent::Stopped { beat: 8.0 }]);
+    assert_eq!(events, vec![RecordEvent::Started { beat: 4.0, frame: 0 }, RecordEvent::Stopped { beat: 8.0, frame: 4 * SPB as u64 }]);
     // Exactly 4 beats of stereo audio, starting with the input frame at beat 4.
     assert_eq!(got_audio.len(), 4 * SPB * 2);
     assert_eq!(got_audio[0], (3 * SPB) as f32, "first recorded frame = input at beat 4");
@@ -60,8 +60,8 @@ fn record_while_stopped_starts_immediately_and_transport_stop_ends_it() {
     apply(&mut e);
     let events: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0], RecordEvent::Started { beat: 0.0 });
-    assert!(matches!(events[1], RecordEvent::Stopped { beat } if (beat - 1000.0 / SPB as f64).abs() < 1e-9));
+    assert_eq!(events[0], RecordEvent::Started { beat: 0.0, frame: 0 });
+    assert!(matches!(events[1], RecordEvent::Stopped { beat, frame: 1000 } if (beat - 1000.0 / SPB as f64).abs() < 1e-9));
     assert_eq!(std::iter::from_fn(|| rec.audio.pop().ok()).count(), 2000);
 }
 
@@ -77,7 +77,7 @@ fn live_notes_are_recorded_with_clip_position() {
     h.send(Command::NoteOff { track: 0, pitch: 64 }).unwrap();
     apply(&mut e);
     let ev: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
-    assert!(matches!(ev[0], RecordEvent::Started { beat } if beat == 0.0));
+    assert!(matches!(ev[0], RecordEvent::Started { beat, .. } if beat == 0.0));
     match ev[1] {
         RecordEvent::NoteOn { track: 0, pitch: 64, velocity: 90, beat, clip_pos: Some(pos) } => {
             assert!((beat - 3.0).abs() < 1e-9 && (pos - 1.0).abs() < 1e-9, "{beat} {pos}");

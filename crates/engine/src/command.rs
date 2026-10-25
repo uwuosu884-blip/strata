@@ -72,10 +72,11 @@ impl MidiEvent {
 /// Recorded audio frames travel separately (interleaved stereo f32 ring).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RecordEvent {
-    /// Recording began at this song position; audio frames follow.
-    Started { beat: f64 },
-    /// Recording ended at this song position.
-    Stopped { beat: f64 },
+    /// Recording began at this song position. `frame` = index (in the
+    /// recorded-audio stream) of the take's first frame.
+    Started { beat: f64, frame: u64 },
+    /// Recording ended. `frame` = index one past the take's last frame.
+    Stopped { beat: f64, frame: u64 },
     /// A live note played into `track` while recording. `clip_pos` is the
     /// position inside the session clip playing on that track (for overdub).
     NoteOn { track: u16, pitch: u8, velocity: u8, beat: f64, clip_pos: Option<f64> },

@@ -907,6 +907,7 @@ dependencies = [
 name = "daw-project"
 version = "0.1.0"
 dependencies = [
+ "daw-engine",
  "ron",
  "serde",
 ]
@@ -915,10 +916,9 @@ dependencies = [
 name = "daw-render"
 version = "0.1.0"
 dependencies = [
- "assert_no_alloc",
+ "daw-core",
  "daw-engine",
  "daw-project",
- "hound",
 ]
 
 [[package]]

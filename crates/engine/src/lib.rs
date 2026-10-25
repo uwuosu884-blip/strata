@@ -107,6 +107,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         midi_target: None,
         rec: Recorder { state: RecordState::Idle, beat: 0.0 },
         dropped_record_samples: 0,
+        rec_frames: 0,
     };
     let handle = EngineHandle {
         commands: cmd_tx,
@@ -146,6 +147,8 @@ pub struct Engine {
     midi_target: Option<u16>,
     rec: Recorder,
     dropped_record_samples: u64,
+    /// Frames pushed to the recorded-audio ring so far.
+    rec_frames: u64,
 }
 
 impl Engine {
@@ -418,7 +421,7 @@ impl Engine {
     fn stop(&mut self) {
         self.transport.playing = false;
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
-            let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position });
+            let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position, frame: self.rec_frames });
         }
         self.rec.state = RecordState::Idle;
         for t in &mut self.tracks {
@@ -494,11 +497,11 @@ impl Engine {
         match self.rec.state {
             RecordState::StartPending if self.rec.beat <= limit => {
                 self.rec.state = RecordState::Recording;
-                let _ = self.rec_events.push(RecordEvent::Started { beat: self.rec.beat });
+                let _ = self.rec_events.push(RecordEvent::Started { beat: self.rec.beat, frame: self.rec_frames });
             }
             RecordState::StopPending if self.rec.beat <= limit => {
                 self.rec.state = RecordState::Idle;
-                let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.rec.beat });
+                let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.rec.beat, frame: self.rec_frames });
             }
             _ => {}
         }
@@ -611,6 +614,7 @@ impl Engine {
                 Ok(chunk) => {
                     let (il, ir) = input;
                     chunk.fill_from_iter(il.iter().zip(ir).flat_map(|(a, b)| [*a, *b]));
+                    self.rec_frames += n as u64;
                 }
                 Err(_) => self.dropped_record_samples += samples as u64,
             }

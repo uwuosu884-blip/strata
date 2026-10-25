@@ -6,5 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+daw-engine.workspace = true
 serde.workspace = true
 ron.workspace = true

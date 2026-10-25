@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 pub const MAX_TRACKS: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Start in beats from clip start.
     pub start: f64,

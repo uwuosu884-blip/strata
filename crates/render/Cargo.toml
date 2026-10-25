@@ -12,5 +12,4 @@ path = "src/main.rs"
 [dependencies]
 daw-engine.workspace = true
 daw-project.workspace = true
-hound.workspace = true
-assert_no_alloc.workspace = true
+daw-core.workspace = true
