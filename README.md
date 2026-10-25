@@ -10,7 +10,8 @@ macOS**.
 > [CHANGELOG.md](CHANGELOG.md).
 
 **Download:** [Releases](https://github.com/uwuosu884-blip/strata/releases)
-has builds for Linux, Windows and macOS (Intel and Apple Silicon).
+has builds for Linux and macOS. Windows builds are coming; for now, build
+from source (see below).
 
 ## Features
 

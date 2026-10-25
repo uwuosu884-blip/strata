@@ -30,7 +30,8 @@ jobs:
         include:
           # 22.04 → glibc 2.35: the binary also runs on older distros.
           - { name: linux-x86_64,   os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu, exe: "",     archive: tar.gz }
-          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc,   exe: ".exe", archive: zip }
+          # Windows releases paused for now (CI still builds/tests it):
+          # - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc,   exe: ".exe", archive: zip }
           - { name: macos-arm64,    os: macos-latest,   target: aarch64-apple-darwin,     exe: "",     archive: tar.gz }
           - { name: macos-x86_64,   os: macos-latest,   target: x86_64-apple-darwin,      exe: "",     archive: tar.gz }
     steps:
@@ -86,6 +87,8 @@ jobs:
 
   release:
     needs: build
+    # Publish even if an optional (macOS) build failed; Linux is required below.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -96,6 +99,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Linux build is required
+        run: ls dist/*linux-x86_64* > /dev/null || { echo "::error::Linux build missing"; exit 1; }
 
       - name: Checksums
         run: cd dist && sha256sum * | tee SHA256SUMS.txt
@@ -110,22 +116,31 @@ jobs:
             on {print}
           ' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "::error::no CHANGELOG section for $ver"; exit 1; }
-          cat >> notes.md <<'EOF'
-
-          ---
-          ### Downloads
-          | Platform | File |
-          |---|---|
-          | Linux x86_64 (glibc 2.35+) | `daw-*-linux-x86_64.tar.gz` |
-          | Windows 10/11 x86_64 | `daw-*-windows-x86_64.zip` |
-          | macOS Apple Silicon | `daw-*-macos-arm64.tar.gz` |
-          | macOS Intel | `daw-*-macos-x86_64.tar.gz` |
-
-          - **Linux:** `sudo apt install libasound2 libxkbcommon-x11-0 libgl1`, then `./daw`.
-          - **macOS:** the binaries are not signed yet; run `xattr -dr com.apple.quarantine daw-*` once.
-          - **Windows:** SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.
-          - Verify downloads with `SHA256SUMS.txt`.
-          EOF
+          {
+            echo
+            echo '---'
+            echo '### Downloads'
+            echo '| Platform | File |'
+            echo '|---|---|'
+            for f in dist/*.tar.gz dist/*.zip; do
+              [ -e "$f" ] || continue
+              f=${f#dist/}
+              case "$f" in
+                *linux-x86_64*)   p='Linux x86_64 (glibc 2.35+)' ;;
+                *windows-x86_64*) p='Windows 10/11 x86_64' ;;
+                *macos-arm64*)    p='macOS Apple Silicon' ;;
+                *macos-x86_64*)   p='macOS Intel' ;;
+                *) p='' ;;
+              esac
+              echo "| $p | \`$f\` |"
+            done
+            echo
+            echo '- **Linux:** `sudo apt install libasound2 libxkbcommon-x11-0 libgl1`, then `./daw`.'
+            ls dist | grep -q macos && echo '- **macOS:** the binaries are not signed yet; run `xattr -dr com.apple.quarantine daw-*` once.'
+            ls dist | grep -q windows && echo '- **Windows:** SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.'
+            echo '- Verify downloads with `SHA256SUMS.txt`.'
+          } >> notes.md
+          cat notes.md
 
       - name: Publish
         env:

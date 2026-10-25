@@ -91,6 +91,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
 ### Known limitations
 - No effects or automation yet (phase 6).
 - No plugin hosting (CLAP/VST3) or time-stretching yet.
+- No Windows download yet. Windows builds and passes the tests in CI, so
+  build it from source for now.
 - The macOS build is only tested in CI.
 
 [Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...HEAD
