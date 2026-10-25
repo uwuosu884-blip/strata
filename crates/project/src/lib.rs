@@ -3,6 +3,7 @@
 //! The document the user edits and saves (RON). Pure data + editing helpers
 //! + undo history. Knows nothing about audio threads.
 
+mod arrange;
 mod history;
 pub use history::History;
 
@@ -82,6 +83,8 @@ pub enum TrackKind {
     Audio,
     #[default]
     Midi,
+    /// Audio group bus: children (tracks whose `group` is this id) are summed into it.
+    Group,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +104,10 @@ pub struct Track {
     /// Session slots; always `scenes.len()` long (see [`Project::normalize`]).
     pub slots: Vec<Option<Clip>>,
     pub arrangement: Vec<ArrangementClip>,
+    /// Id of the parent group track (children always follow their group contiguously).
+    pub group: Option<u64>,
+    /// Group tracks only: children hidden in the UI.
+    pub folded: bool,
 }
 
 impl Default for Track {
@@ -119,6 +126,8 @@ impl Default for Track {
             instrument: InstrumentDef::None,
             slots: Vec::new(),
             arrangement: Vec::new(),
+            group: None,
+            folded: false,
         }
     }
 }
@@ -302,9 +311,10 @@ impl Project {
         let name = match kind {
             TrackKind::Audio => format!("{} Audio", n + 1),
             TrackKind::Midi => format!("{} MIDI", n + 1),
+            TrackKind::Group => format!("{} Group", n + 1),
         };
         let instrument = match kind {
-            TrackKind::Audio => InstrumentDef::None,
+            TrackKind::Audio | TrackKind::Group => InstrumentDef::None,
             TrackKind::Midi => InstrumentDef::Synth(SynthParams::default()),
         };
         self.tracks.push(Track { id, name, kind, color: PALETTE[n % PALETTE.len()], instrument, ..Default::default() });
@@ -312,20 +322,163 @@ impl Project {
         n
     }
 
+    /// Duplicate a track (groups are duplicated with all their children).
     pub fn duplicate_track(&mut self, idx: usize) -> Option<usize> {
-        let mut t = self.tracks.get(idx)?.clone();
-        t.id = self.alloc_id();
-        t.name = format!("{} copy", t.name);
-        t.solo = false;
-        t.arm = false;
-        for c in t.slots.iter_mut().flatten() {
-            c.id = self.alloc_id();
+        self.tracks.get(idx)?;
+        let end = self.subtree_end(idx);
+        let mut copy: Vec<Track> = self.tracks[idx..end].to_vec();
+        let mut remap = std::collections::HashMap::new();
+        for t in &mut copy {
+            let id = self.alloc_id();
+            remap.insert(t.id, id);
+            t.id = id;
+            t.solo = false;
+            t.arm = false;
+            for c in t.slots.iter_mut().flatten() {
+                c.id = self.alloc_id();
+            }
+            for a in &mut t.arrangement {
+                a.clip.id = self.alloc_id();
+            }
         }
-        for a in &mut t.arrangement {
-            a.clip.id = self.alloc_id();
+        for t in copy.iter_mut().skip(1) {
+            t.group = t.group.map(|g| remap.get(&g).copied().unwrap_or(g));
         }
-        self.tracks.insert(idx + 1, t);
-        Some(idx + 1)
+        copy[0].name = format!("{} copy", copy[0].name);
+        self.tracks.splice(end..end, copy);
+        Some(end)
+    }
+
+    /// Index of a track's parent group.
+    pub fn parent_index(&self, i: usize) -> Option<usize> {
+        self.tracks.get(i)?.group.and_then(|g| self.track_index(g))
+    }
+
+    /// Nesting depth (0 = top level).
+    pub fn depth(&self, i: usize) -> usize {
+        let mut d = 0;
+        let mut cur = i;
+        while let Some(p) = self.parent_index(cur) {
+            d += 1;
+            cur = p;
+            if d > self.tracks.len() {
+                break; // corrupt (cycle); normalize() prevents this
+            }
+        }
+        d
+    }
+
+    /// True if track `i` is (transitively) inside the group at index `anc`.
+    pub fn is_descendant(&self, i: usize, anc: usize) -> bool {
+        let mut cur = i;
+        for _ in 0..self.tracks.len() {
+            match self.parent_index(cur) {
+                Some(p) if p == anc => return true,
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// One past the last descendant of `i` (children are contiguous after their group).
+    pub fn subtree_end(&self, i: usize) -> usize {
+        let mut j = i + 1;
+        while j < self.tracks.len() && self.is_descendant(j, i) {
+            j += 1;
+        }
+        j
+    }
+
+    /// Hidden by a folded ancestor group?
+    pub fn is_visible(&self, i: usize) -> bool {
+        let mut cur = i;
+        for _ in 0..self.tracks.len() {
+            match self.parent_index(cur) {
+                Some(p) if self.tracks[p].folded => return false,
+                Some(p) => cur = p,
+                None => return true,
+            }
+        }
+        true
+    }
+
+    /// Indices of tracks shown in the UI (respecting folded groups).
+    pub fn visible_tracks(&self) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.tracks.len());
+        let mut i = 0;
+        while i < self.tracks.len() {
+            out.push(i);
+            i = if self.tracks[i].folded && self.tracks[i].kind == TrackKind::Group { self.subtree_end(i) } else { i + 1 };
+        }
+        out
+    }
+
+    /// Wrap the given tracks (with their children) in a new group.
+    /// The group is inserted at the first selected track and nested in their
+    /// common parent if they share one. Returns the group's index.
+    pub fn group_tracks(&mut self, sel: &[usize]) -> Option<usize> {
+        let mut roots: Vec<usize> = sel.iter().copied().filter(|&i| i < self.tracks.len()).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        // Drop items already covered by a selected ancestor.
+        let all = roots.clone();
+        roots.retain(|&i| !all.iter().any(|&a| a != i && self.is_descendant(i, a)));
+        let first = *roots.first()?;
+        let parent = self.tracks[first].group;
+        let parent = if roots.iter().all(|&i| self.tracks[i].group == parent) { parent } else { None };
+        let ranges: Vec<(usize, usize)> = roots.iter().map(|&i| (i, self.subtree_end(i))).collect();
+        let mut moved: Vec<Vec<Track>> = Vec::with_capacity(ranges.len());
+        for &(a, b) in ranges.iter().rev() {
+            moved.push(self.tracks.drain(a..b).collect());
+        }
+        moved.reverse();
+        let gid = self.alloc_id();
+        let color = moved[0][0].color;
+        let n_groups = self.tracks.iter().filter(|t| t.kind == TrackKind::Group).count();
+        let mut block = vec![Track {
+            id: gid,
+            name: format!("Group {}", n_groups + 1),
+            kind: TrackKind::Group,
+            color,
+            group: parent,
+            ..Default::default()
+        }];
+        for mut m in moved {
+            m[0].group = Some(gid);
+            block.extend(m);
+        }
+        let at = first.min(self.tracks.len());
+        self.tracks.splice(at..at, block);
+        self.normalize();
+        self.track_index(gid)
+    }
+
+    /// Dissolve a group: its children move up one level.
+    pub fn ungroup(&mut self, g: usize) -> bool {
+        let Some(t) = self.tracks.get(g) else { return false };
+        if t.kind != TrackKind::Group {
+            return false;
+        }
+        let (gid, parent) = (t.id, t.group);
+        for t in &mut self.tracks {
+            if t.group == Some(gid) {
+                t.group = parent;
+            }
+        }
+        self.tracks.remove(g);
+        self.normalize();
+        true
+    }
+
+    /// Remove a track together with its children (if a group). Returns how many were removed.
+    pub fn remove_track(&mut self, i: usize) -> usize {
+        if i >= self.tracks.len() {
+            return 0;
+        }
+        let end = self.subtree_end(i);
+        self.tracks.drain(i..end);
+        end - i
     }
 
     /// Make every track's slot list match the scene count, fix ids.
@@ -364,6 +517,65 @@ impl Project {
             }
         }
         self.next_id = next;
+        self.normalize_groups();
+    }
+
+    /// Groups carry no clips/instrument; parents must be existing groups without
+    /// cycles; children are reordered to directly follow their group (pre-order).
+    fn normalize_groups(&mut self) {
+        let groups: std::collections::HashMap<u64, Option<u64>> =
+            self.tracks.iter().filter(|t| t.kind == TrackKind::Group).map(|t| (t.id, t.group)).collect();
+        for t in &mut self.tracks {
+            if t.kind == TrackKind::Group {
+                t.instrument = InstrumentDef::None;
+                t.arrangement.clear();
+                t.slots.iter_mut().for_each(|s| *s = None);
+                t.arm = false;
+                t.monitor = false;
+            } else {
+                t.folded = false;
+            }
+            // Valid parent: an existing group, and following the chain never returns to us.
+            if let Some(g) = t.group {
+                let mut ok = groups.contains_key(&g) && g != t.id;
+                let mut cur = g;
+                for _ in 0..groups.len() {
+                    match groups.get(&cur).copied().flatten() {
+                        Some(n) if n == t.id => {
+                            ok = false;
+                            break;
+                        }
+                        Some(n) => cur = n,
+                        None => break,
+                    }
+                }
+                if !ok {
+                    t.group = None;
+                }
+            }
+        }
+        // Pre-order: roots in original order, each followed by its children (original order).
+        let n = self.tracks.len();
+        let ids: Vec<u64> = self.tracks.iter().map(|t| t.id).collect();
+        let parent: Vec<Option<usize>> = self.tracks.iter().map(|t| t.group.and_then(|g| ids.iter().position(|&i| i == g))).collect();
+        let mut order = Vec::with_capacity(n);
+        fn visit(i: usize, parent: &[Option<usize>], order: &mut Vec<usize>) {
+            order.push(i);
+            for (c, p) in parent.iter().enumerate() {
+                if *p == Some(i) {
+                    visit(c, parent, order);
+                }
+            }
+        }
+        for i in 0..n {
+            if parent[i].is_none() {
+                visit(i, &parent, &mut order);
+            }
+        }
+        if order.len() == n && order.iter().enumerate().any(|(a, &b)| a != b) {
+            let mut old: Vec<Option<Track>> = self.tracks.drain(..).map(Some).collect();
+            self.tracks = order.into_iter().map(|i| old[i].take().expect("permutation")).collect();
+        }
     }
 
     pub fn track_index(&self, id: u64) -> Option<usize> {
@@ -432,6 +644,44 @@ impl Project {
         out.sort_by(|a, b| a.start.total_cmp(&b.start));
         t.arrangement = out;
         self.next_id = next_id;
+    }
+
+    /// Split the arrangement clip with id `clip_id` at absolute beat `at`.
+    /// Returns the id of the new right-hand clip.
+    pub fn split_arrangement_clip(&mut self, track: usize, clip_id: u64, at: f64, frames_per_beat: impl Fn(&Clip) -> f64) -> Option<u64> {
+        const MIN: f64 = 1e-6;
+        let new_id = self.next_id;
+        let t = self.tracks.get_mut(track)?;
+        let i = t.arrangement.iter().position(|a| a.clip.id == clip_id)?;
+        let a = &mut t.arrangement[i];
+        let cut = at - a.start;
+        if cut <= MIN || cut >= a.clip.length - MIN {
+            return None;
+        }
+        let mut tail = a.clone();
+        a.clip.length = cut;
+        if let ClipContent::Midi { notes } = &mut a.clip.content {
+            notes.retain(|n| n.start < cut);
+        }
+        tail.start = at;
+        tail.clip.length -= cut;
+        tail.clip.id = new_id;
+        let fpb = frames_per_beat(&tail.clip);
+        match &mut tail.clip.content {
+            ClipContent::Midi { notes } => {
+                notes.retain(|n| n.start >= cut);
+                notes.iter_mut().for_each(|n| n.start -= cut);
+            }
+            ClipContent::Audio { offset_frames, .. } => *offset_frames += cut * fpb,
+        }
+        t.arrangement.insert(i + 1, tail);
+        self.next_id += 1;
+        Some(new_id)
+    }
+
+    /// Locate an arrangement clip by id: (track index, clip index).
+    pub fn find_arrangement_clip(&self, clip_id: u64) -> Option<(usize, usize)> {
+        self.tracks.iter().enumerate().find_map(|(ti, t)| t.arrangement.iter().position(|a| a.clip.id == clip_id).map(|ci| (ti, ci)))
     }
 
     /// End of the arrangement (beats).
@@ -625,5 +875,80 @@ mod tests {
         assert!((db_to_gain(-6.0) - 0.501).abs() < 1e-3);
         assert_eq!(db_to_gain(-60.0), 0.0);
         assert!((gain_to_db(0.5) + 6.02).abs() < 0.01);
+    }
+
+    fn blank(n: usize) -> Project {
+        let mut p = Project::new_default();
+        p.tracks.clear();
+        for _ in 0..n {
+            p.add_track(TrackKind::Midi);
+        }
+        p
+    }
+
+    #[test]
+    fn group_and_ungroup_keep_preorder() {
+        let mut p = blank(4); // 0 1 2 3
+        let ids: Vec<u64> = p.tracks.iter().map(|t| t.id).collect();
+        let g = p.group_tracks(&[1, 3]).unwrap();
+        assert_eq!(g, 1);
+        assert_eq!(p.tracks[1].kind, TrackKind::Group);
+        let order: Vec<u64> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, vec![ids[0], p.tracks[1].id, ids[1], ids[3], ids[2]]);
+        assert_eq!(p.subtree_end(1), 4);
+        assert_eq!(p.depth(3), 1);
+        // Nested group inside the first one.
+        let g2 = p.group_tracks(&[2, 3]).unwrap();
+        assert_eq!(p.tracks[g2].group, Some(p.tracks[1].id));
+        assert_eq!(p.depth(g2 + 1), 2);
+        p.tracks[1].folded = true;
+        assert_eq!(p.visible_tracks(), vec![0, 1, p.tracks.len() - 1]);
+        // Ungroup outer: inner group moves to top level.
+        assert!(p.ungroup(1));
+        assert_eq!(p.tracks[1].kind, TrackKind::Group);
+        assert_eq!(p.tracks[1].group, None);
+        assert_eq!(p.remove_track(1), 3);
+        assert_eq!(p.tracks.len(), 2);
+    }
+
+    #[test]
+    fn normalize_fixes_bad_parents_and_order() {
+        let mut p = blank(3);
+        let g = p.add_track(TrackKind::Group);
+        let gid = p.tracks[g].id;
+        p.tracks[0].group = Some(gid); // child before its group -> reordered
+        p.tracks[1].group = Some(p.tracks[2].id); // parent is not a group -> cleared
+        p.tracks[g].group = Some(gid); // self parent -> cleared
+        p.normalize();
+        let gi = p.track_index(gid).unwrap();
+        assert_eq!(p.tracks[gi].group, None);
+        assert_eq!(p.tracks[gi + 1].group, Some(gid));
+        assert!(p.tracks.iter().filter(|t| t.id != p.tracks[gi + 1].id).all(|t| t.group.is_none()));
+        // Duplicate a group duplicates its child.
+        let d = p.duplicate_track(gi).unwrap();
+        assert_eq!(p.tracks[d].kind, TrackKind::Group);
+        assert_eq!(p.tracks[d + 1].group, Some(p.tracks[d].id));
+    }
+
+    #[test]
+    fn split_clip_shifts_content() {
+        let mut p = blank(1);
+        let id = p.alloc_id();
+        let notes =
+            vec![Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100 }, Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100 }];
+        p.tracks[0].arrangement.push(ArrangementClip {
+            start: 4.0,
+            clip: Clip { id, length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },
+        });
+        assert!(p.split_arrangement_clip(0, id, 4.0, |_| 1.0).is_none());
+        let r = p.split_arrangement_clip(0, id, 6.0, |_| 1.0).unwrap();
+        let arr = &p.tracks[0].arrangement;
+        assert_eq!(arr.len(), 2);
+        assert_eq!((arr[0].start, arr[0].clip.length), (4.0, 2.0));
+        assert_eq!((arr[1].start, arr[1].clip.length, arr[1].clip.id), (6.0, 2.0, r));
+        let ClipContent::Midi { notes } = &arr[1].clip.content else { panic!() };
+        assert_eq!(notes.len(), 1);
+        assert!((notes[0].start - 0.5).abs() < 1e-9);
+        assert_eq!(p.find_arrangement_clip(r), Some((0, 1)));
     }
 }

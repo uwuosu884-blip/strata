@@ -106,6 +106,11 @@ pub struct DawApp {
 
     pub view: View,
     pub selected_track: usize,
+    /// Multi-selection of tracks (Shift+click headers); empty = just `selected_track`.
+    pub track_sel: Vec<usize>,
+    /// Selected arrangement clips (ids are stable across sorting).
+    pub arr_sel: Vec<u64>,
+    pub time_sel: Option<crate::arr_ops::TimeSel>,
     pub selected_clip: Option<ClipRef>,
     /// Selected note indices in the selected MIDI clip (piano roll).
     pub note_sel: Vec<usize>,
@@ -128,6 +133,9 @@ pub struct DawApp {
     // View state
     pub arr_zoom: f32,
     pub arr_scroll: f32,
+    /// Arrangement track height (Alt+wheel) and vertical scroll.
+    pub arr_row_h: f32,
+    pub arr_vscroll: f32,
     pub pr_low_note: i32,
     pub grid: f64,
     pub browser_dir: PathBuf,
@@ -165,6 +173,9 @@ impl DawApp {
             cpu_display: 0.0,
             view: View::Session,
             selected_track: 0,
+            track_sel: Vec::new(),
+            arr_sel: Vec::new(),
+            time_sel: None,
             selected_clip: None,
             note_sel: Vec::new(),
             audition: Vec::new(),
@@ -181,6 +192,8 @@ impl DawApp {
             allow_close: false,
             arr_zoom: 28.0,
             arr_scroll: 0.0,
+            arr_row_h: 58.0,
+            arr_vscroll: 0.0,
             pr_low_note: 48,
             grid: 0.25,
             browser_dir,
@@ -270,6 +283,7 @@ impl DawApp {
         {
             self.selected_clip = None;
         }
+        self.sanitize_selection();
         // Release auditioned notes.
         let now = Instant::now();
         let due: Vec<(u16, u8)> = self.audition.iter().filter(|a| now >= a.2).map(|a| (a.0, a.1)).collect();
@@ -393,15 +407,15 @@ impl DawApp {
 
     pub fn add_track(&mut self, kind: TrackKind) {
         let at = self.edit(|p| p.add_track(kind));
+        self.clear_structure_selection();
         self.selected_track = at;
     }
 
     pub fn delete_track(&mut self, idx: usize) {
         if idx < self.project.tracks.len() {
-            self.edit(|p| {
-                p.tracks.remove(idx);
-            });
+            self.edit(|p| p.remove_track(idx)); // a group takes its children with it
             self.selected_clip = None;
+            self.clear_structure_selection();
         }
     }
 
@@ -691,6 +705,7 @@ impl DawApp {
                         Some(k) => ClipContent::Audio { sample: k.clone(), offset_frames: 0.0, warp_bpm: Some(tempo), gain_db: 0.0 },
                         None => continue,
                     },
+                    TrackKind::Group => continue,
                 };
                 created += 1;
                 let id = p.next_id;
@@ -869,6 +884,9 @@ impl DawApp {
     }
 
     pub fn set_instrument(&mut self, track: usize, def: InstrumentDef) {
+        if self.project.tracks.get(track).is_none_or(|t| t.kind == TrackKind::Group) {
+            return; // group buses have no instrument
+        }
         self.edit(|p| {
             if let Some(t) = p.tracks.get_mut(track) {
                 t.instrument = def;

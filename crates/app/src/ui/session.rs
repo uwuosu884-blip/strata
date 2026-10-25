@@ -17,7 +17,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     egui::ScrollArea::both().id_salt("session").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
         ui.horizontal_top(|ui| {
-            for t in 0..app.project.tracks.len() {
+            for t in app.project.visible_tracks() {
                 ui.vertical(|ui| {
                     ui.set_width(COL_W);
                     track_header(app, ui, t);
@@ -87,20 +87,39 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
 fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let track = &app.project.tracks[t];
     let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, HEADER_H), Sense::click());
-    let selected = app.selected_track == t;
+    let selected = app.is_track_selected(t);
     let color = rgb(track.color);
-    ui.painter().rect_filled(rect, CornerRadius::same(2), if selected { color } else { shade(color, 0.55) });
-    let label = track.name.clone();
-    ui.painter().with_clip_rect(rect.shrink(2.0)).text(
-        rect.left_center() + vec2(5.0, 0.0),
+    let is_group = track.kind == TrackKind::Group;
+    let folded = track.folded;
+    let parent_color = app.project.parent_index(t).map(|p| rgb(app.project.tracks[p].color));
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(2), if selected { color } else { shade(color, 0.55) });
+    let mut x = rect.min.x + 5.0;
+    if let Some(pc) = parent_color {
+        // Child of a group: group colour strip on the left.
+        p.rect_filled(Rect::from_min_size(rect.min, vec2(4.0, rect.height())), CornerRadius::ZERO, pc);
+        x += 3.0;
+    }
+    let fold_zone = Rect::from_min_size(pos2(x - 2.0, rect.min.y), vec2(16.0, rect.height()));
+    if is_group {
+        draw_fold_arrow(p, fold_zone.center(), folded, Color32::BLACK);
+        x += 14.0;
+    }
+    p.with_clip_rect(rect.shrink(2.0)).text(
+        pos2(x, rect.center().y),
         Align2::LEFT_CENTER,
-        label,
+        track.name.clone(),
         FontId::proportional(12.0),
         Color32::BLACK,
     );
     if resp.clicked() {
-        app.selected_track = t;
-        app.selected_clip = None;
+        if is_group && resp.interact_pointer_pos().is_some_and(|p| fold_zone.contains(p)) {
+            app.toggle_fold(t);
+        } else {
+            let toggle = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+            app.click_track(t, toggle);
+            app.selected_clip = None;
+        }
     }
     if let Some(item) = resp.dnd_release_payload::<DragItem>()
         && let Some(def) = super::instrument_for(&item)
@@ -108,6 +127,16 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         app.set_instrument(t, def);
     }
     resp.context_menu(|ui| track_menu(app, ui, t));
+}
+
+/// ▶ (folded) / ▼ (open) triangle for group headers.
+pub fn draw_fold_arrow(p: &egui::Painter, c: egui::Pos2, folded: bool, col: Color32) {
+    let pts = if folded {
+        vec![c + vec2(-3.0, -4.5), c + vec2(4.0, 0.0), c + vec2(-3.0, 4.5)]
+    } else {
+        vec![c + vec2(-4.5, -3.0), c + vec2(4.5, -3.0), c + vec2(0.0, 4.0)]
+    };
+    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
 }
 
 pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
@@ -128,17 +157,72 @@ pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
             }
         }
     });
-    if ui.button("Duplicate Track").clicked() {
-        app.edit(|p| p.duplicate_track(t));
+    let is_group = app.project.tracks[t].kind == TrackKind::Group;
+    if ui.button("Group Tracks       Ctrl+G").clicked() {
+        if !app.is_track_selected(t) {
+            app.click_track(t, false);
+        }
+        app.group_selected_tracks();
         ui.close();
     }
-    if ui.button("Delete Track").clicked() {
+    if is_group && ui.button("Ungroup       Ctrl+Shift+G").clicked() {
+        app.click_track(t, false);
+        app.ungroup_selected();
+        ui.close();
+    }
+    if ui.button(if is_group { "Duplicate Group" } else { "Duplicate Track" }).clicked() {
+        app.edit(|p| p.duplicate_track(t));
+        app.clear_structure_selection();
+        ui.close();
+    }
+    if ui.button(if is_group { "Delete Group and Tracks" } else { "Delete Track" }).clicked() {
         app.delete_track(t);
         ui.close();
     }
 }
 
+/// Group slot: launches the children's clips of that scene (Live).
+fn group_slot(app: &mut DawApp, ui: &mut egui::Ui, g: usize, s: usize) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
+    let p = &app.project;
+    let kids = g + 1..p.subtree_end(g);
+    let has = kids.clone().any(|c| p.tracks[c].slots.get(s).is_some_and(Option::is_some));
+    let playing = kids.clone().any(|c| app.track_status.get(c).is_some_and(|st| st.playing_scene == Some(s as u32)));
+    let color = rgb(p.tracks[g].color);
+    let painter = ui.painter_at(rect);
+    if has {
+        painter.rect_filled(rect, CornerRadius::same(2), shade(color, if playing { 0.8 } else { 0.4 }));
+        let launch = rect.left_center() + vec2(10.0, 0.0);
+        draw_icon(&painter, Icon::Play, launch, if playing { PLAY_GREEN } else { Color32::from_gray(25) });
+        // Mini overview: one tick per child with a clip.
+        let n = kids.len().max(1) as f32;
+        for (k, c) in kids.clone().enumerate() {
+            if let Some(Some(clip)) = p.tracks[c].slots.get(s) {
+                let w = (rect.width() - 26.0) / n;
+                let r = Rect::from_min_size(
+                    pos2(rect.min.x + 22.0 + k as f32 * w, rect.min.y + 6.0),
+                    vec2((w - 2.0).max(1.0), rect.height() - 12.0),
+                );
+                painter.rect_filled(r, CornerRadius::same(1), rgb(clip.color));
+            }
+        }
+    } else {
+        painter.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(56) } else { shade(SLOT_BG, 0.9) });
+    }
+    if resp.clicked() {
+        app.click_track(g, false);
+        if has {
+            app.launch_group_slot(g, s);
+        } else {
+            app.stop_group(g);
+        }
+    }
+}
+
 fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
+    if app.project.tracks[t].kind == TrackKind::Group {
+        return group_slot(app, ui, t, s);
+    }
     let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click_and_drag());
     let st = app.track_status.get(t).copied().unwrap_or_default();
     let playing = st.playing_scene == Some(s as u32);
@@ -273,6 +357,9 @@ fn clip_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize) {
 }
 
 pub fn drop_on_slot(app: &mut DawApp, item: &DragItem, t: usize, s: usize, copy: bool) {
+    if app.project.tracks[t].kind == TrackKind::Group {
+        return;
+    }
     match item {
         DragItem::Sample { key, name } => {
             if app.project.tracks[t].kind == TrackKind::Audio {
@@ -344,8 +431,13 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem) {
 
 fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H - 4.0), Sense::click());
+    let is_group = app.project.tracks[t].kind == TrackKind::Group;
     let st = app.track_status.get(t).copied().unwrap_or_default();
-    let active = st.playing_scene.is_some();
+    let active = if is_group {
+        (t + 1..app.project.subtree_end(t)).any(|c| app.track_status.get(c).is_some_and(|s| s.playing_scene.is_some()))
+    } else {
+        st.playing_scene.is_some()
+    };
     ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(66) } else { Color32::from_gray(40) });
     let c = if st.pending == Some(PendingLaunch::Stop) {
         ACCENT
@@ -355,10 +447,12 @@ fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         Color32::from_gray(90)
     };
     ui.painter().rect_filled(Rect::from_center_size(rect.center(), vec2(8.0, 8.0)), CornerRadius::ZERO, c);
-    if resp.clicked()
-        && let Some(rt) = app.rt(t)
-    {
-        app.send(Command::StopTrack { track: rt });
+    if resp.clicked() {
+        if is_group {
+            app.stop_group(t);
+        } else if let Some(rt) = app.rt(t) {
+            app.send(Command::StopTrack { track: rt });
+        }
     }
 }
 
@@ -403,7 +497,7 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     ui.painter().rect_filled(
         rect,
         CornerRadius::same(3),
-        if app.selected_track == t { Color32::from_gray(52) } else { Color32::from_gray(42) },
+        if app.is_track_selected(t) { Color32::from_gray(52) } else { Color32::from_gray(42) },
     );
     let ui = &mut child;
     ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
@@ -444,7 +538,7 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         if toggle_box(ui, "S", solo, Color32::from_rgb(80, 160, 255), "Solo (Ctrl: add)").clicked() {
             app.toggle_track_flag(t, TrackFlag::Solo, excl);
         }
-        if toggle_box(ui, "REC", arm, REC_RED, "Arm for recording (Ctrl: add)").clicked() {
+        if kind != TrackKind::Group && toggle_box(ui, "REC", arm, REC_RED, "Arm for recording (Ctrl: add)").clicked() {
             app.toggle_track_flag(t, TrackFlag::Arm, excl);
         }
         if kind == TrackKind::Audio && toggle_box(ui, "IN", mon, ACCENT, "Monitor input").clicked() {
@@ -454,9 +548,13 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let label = app.project.tracks[t].instrument.label();
     let voices = app.track_status.get(t).map_or(0, |s| s.voices);
     ui.label(
-        egui::RichText::new(if kind == TrackKind::Audio { "Audio".to_string() } else { format!("{label} · {voices}v") })
-            .small()
-            .color(Color32::GRAY),
+        egui::RichText::new(match kind {
+            TrackKind::Audio => "Audio".to_string(),
+            TrackKind::Group => "Group bus".to_string(),
+            TrackKind::Midi => format!("{label} · {voices}v"),
+        })
+        .small()
+        .color(Color32::GRAY),
     );
 }
 

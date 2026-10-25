@@ -20,6 +20,8 @@ no_denormals = "0.3"
 hound = "3.5"
 symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4"] }
 rubato = "5"
+# Opus (symphonia 0.6 demuxes Ogg Opus but ships no decoder); pure Rust, no FFI.
+opus-decoder = "0.1"
 midir = "0.11"
 
 # GUI (glow = OpenGL renderer: lighter and faster to build than the wgpu default)

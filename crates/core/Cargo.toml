@@ -9,5 +9,6 @@ rust-version.workspace = true
 daw-engine.workspace = true
 daw-project.workspace = true
 symphonia.workspace = true
+opus-decoder.workspace = true
 rubato.workspace = true
 hound.workspace = true

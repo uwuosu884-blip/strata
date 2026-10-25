@@ -1,6 +1,7 @@
 //! `daw` — the desktop application.
 
 mod app;
+mod arr_ops;
 mod audio;
 mod midi;
 mod ui;

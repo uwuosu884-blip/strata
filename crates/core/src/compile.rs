@@ -94,7 +94,10 @@ pub fn compile(project: &Project, cache: &mut SampleCache, slots: &mut RtSlots) 
         .iter()
         .filter_map(|t| {
             let rt = slots.assign(t.id)?; // > MAX_TRACKS tracks: extra ones are silent
+            // Parents precede children (Project::normalize), so the group's slot already exists.
+            let output = t.group.and_then(|g| slots.get(g));
             Some(e::SongTrack {
+                output,
                 rt,
                 gain: db_to_gain(t.gain_db),
                 pan: t.pan.clamp(-1.0, 1.0),

@@ -939,6 +939,7 @@ dependencies = [
  "daw-engine",
  "daw-project",
  "hound",
+ "opus-decoder",
  "rubato",
  "symphonia",
 ]
@@ -2641,6 +2642,15 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "opus-decoder"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15ae32c275dabb0cd2c863460bf349e9abc3568ba2abf0f9eb7b7d2edeeed07e"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "orbclient"

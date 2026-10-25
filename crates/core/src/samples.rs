@@ -29,7 +29,46 @@ pub fn decode_file(path: &Path) -> Result<SampleBuffer, String> {
         .map_err(|e| format!("{}: unsupported format ({e})", path.display()))?;
     let track = format.default_track(TrackType::Audio).ok_or("no audio track")?;
     let track_id = track.id;
+    let (delay, num_frames) = (track.delay.unwrap_or(0) as usize, track.num_frames);
     let params = track.codec_params.as_ref().and_then(|p| p.audio()).ok_or("not an audio track")?.clone();
+    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sample");
+    if params.codec == symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS {
+        let ch = params.channels.as_ref().map_or(2, |c| c.count());
+        if !(1..=2).contains(&ch) {
+            return Err(format!("{}: {ch}-channel Opus is not supported", path.display()));
+        }
+        let mut dec = opus_decoder::OpusDecoder::new(48_000, ch).map_err(|e| format!("opus: {e}"))?;
+        let mut pcm = vec![0.0f32; dec.max_frame_size_per_channel() * ch];
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        loop {
+            let packet = match format.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) | Err(Error::ResetRequired) => break,
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(format!("read error: {e}")),
+            };
+            if packet.track_id != track_id {
+                continue;
+            }
+            let Ok(n) = dec.decode_float(&packet.data, &mut pcm, false) else { continue }; // skip corrupt packet
+            for f in pcm[..n * ch].chunks_exact(ch) {
+                left.push(f[0]);
+                right.push(f[ch - 1]);
+            }
+        }
+        // Encoder pre-skip at the start, padding at the end (granule position).
+        let skip = delay.min(left.len());
+        left.drain(..skip);
+        right.drain(..skip);
+        if let Some(n) = num_frames {
+            left.truncate(n as usize);
+            right.truncate(n as usize);
+        }
+        if left.is_empty() {
+            return Err(format!("{}: no audio decoded", path.display()));
+        }
+        return Ok(SampleBuffer::new(name, 48_000, left, right));
+    }
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(&params, &AudioDecoderOptions::default())
         .map_err(|e| format!("no decoder: {e}"))?;
@@ -67,7 +106,6 @@ pub fn decode_file(path: &Path) -> Result<SampleBuffer, String> {
     if left.is_empty() {
         return Err(format!("{}: no audio decoded", path.display()));
     }
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sample");
     Ok(SampleBuffer::new(name, rate, left, right))
 }
 
@@ -235,6 +273,30 @@ mod tests {
             }
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn decodes_ogg_vorbis() {
+        // 0.5 s 440 Hz stereo, encoded with oggenc -q 0.
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/sine.ogg");
+        let b = decode_file(&p).unwrap();
+        assert_eq!(b.sample_rate, 44_100);
+        assert!((b.len() as i64 - 22_050).abs() < 2048, "len {}", b.len());
+        let peak = b.left.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.05, "peak {peak}");
+    }
+
+    #[test]
+    fn decodes_ogg_opus() {
+        // 0.5 s 440 Hz stereo Opus in Ogg (ffmpeg libopus); symphonia has no Opus decoder.
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/sine_opus.ogg");
+        let b = decode_file(&p).unwrap();
+        assert_eq!(b.sample_rate, 48_000);
+        assert!((b.len() as i64 - 24_000).abs() < 1200, "len {}", b.len());
+        // ~440 Hz: count rising zero crossings over the steady middle part.
+        let mid = &b.left[4800..19_200]; // 0.3 s
+        let ups = mid.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        assert!((ups as i64 - 132).abs() <= 3, "crossings {ups}");
     }
 
     #[test]

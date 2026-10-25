@@ -106,8 +106,8 @@ impl TrackRt {
     }
 
     /// Equal-power pan normalised to unity at centre.
-    fn target_gains(&self, any_solo: bool) -> (f32, f32) {
-        if self.mute || (any_solo && !self.solo) {
+    fn target_gains(&self, audible: bool) -> (f32, f32) {
+        if self.mute || !audible {
             return (0.0, 0.0);
         }
         let a = (self.pan.clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;
@@ -188,8 +188,9 @@ impl TrackRt {
     }
 
     /// Apply gain/pan (smoothed) and add into the master bus.
-    pub fn mix_into(&mut self, ml: &mut [f32], mr: &mut [f32], any_solo: bool) {
-        let (tl, tr) = self.target_gains(any_solo);
+    /// `audible` is false when another track is soloed (see `render_segment`).
+    pub fn mix_into(&mut self, ml: &mut [f32], mr: &mut [f32], audible: bool) {
+        let (tl, tr) = self.target_gains(audible);
         self.gl.set_target(tl);
         self.gr.set_target(tr);
         let n = ml.len();
@@ -210,6 +211,14 @@ impl TrackRt {
         }
         self.peak[0] = self.peak[0].max(pk[0]);
         self.peak[1] = self.peak[1].max(pk[1]);
+    }
+
+    /// Sum this track (post fader) into a group bus's buffers.
+    pub fn mix_into_group(&mut self, group: &mut TrackRt, n: usize, audible: bool) {
+        self.mix_into(&mut group.l[..n], &mut group.r[..n], audible);
+        if !self.silent {
+            group.silent = false;
+        }
     }
 }
 

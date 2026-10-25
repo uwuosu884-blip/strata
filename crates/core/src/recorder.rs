@@ -203,19 +203,7 @@ mod tests {
         let (mut engine, mut h) = create(EngineConfig { sample_rate: 48_000.0, max_block_frames: 512 });
         let mut input = h.take_input().unwrap();
         let rec = Recorder::spawn(h.take_recorder().unwrap());
-        let song = daw_engine::Song {
-            tracks: vec![daw_engine::SongTrack {
-                rt: 0,
-                gain: 1.0,
-                pan: 0.0,
-                mute: false,
-                solo: false,
-                monitor: false,
-                instrument: daw_engine::Instrument::None,
-                slots: vec![],
-                arrangement: vec![],
-            }],
-        };
+        let song = daw_engine::Song { tracks: vec![daw_engine::SongTrack { rt: 0, ..Default::default() }] };
         h.set_song(song).unwrap();
         for c in [Command::SetLaunchQuantize(0.0), Command::SetMidiTarget(Some(0)), Command::SetRecording(true), Command::Play] {
             h.send(c).unwrap();

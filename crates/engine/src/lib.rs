@@ -588,12 +588,48 @@ impl Engine {
         }
 
         let input = (&input_l[offset..offset + n], &input_r[offset..offset + n]);
-        let any_solo = song.tracks.iter().any(|t| tracks[t.rt as usize].solo);
+        // Solo with groups: a track is audible if nothing is soloed, or it,
+        // an ancestor group or a descendant is soloed. Tracks are in pre-order
+        // (groups before children), see `Song::prepare`.
+        let mut solo_up = [false; MAX_TRACKS];
+        let mut solo_down = [false; MAX_TRACKS];
+        let mut any_solo = false;
+        for st in &song.tracks {
+            let rt = st.rt as usize;
+            let s = tracks[rt].solo;
+            any_solo |= s;
+            solo_up[rt] = s || st.output.is_some_and(|o| solo_up[o as usize]);
+        }
+        for st in song.tracks.iter().rev() {
+            let rt = st.rt as usize;
+            solo_down[rt] |= tracks[rt].solo;
+            if let Some(o) = st.output {
+                solo_down[o as usize] |= solo_down[rt];
+            }
+        }
         for st in &song.tracks {
             let t = &mut tracks[st.rt as usize];
             let monitor = t.monitor.then_some(input);
             t.render(st, &ctx, monitor);
-            t.mix_into(ml, mr, any_solo);
+        }
+        // Children first (reverse pre-order) so groups have their full sum when mixed.
+        for st in song.tracks.iter().rev() {
+            let rt = st.rt as usize;
+            let audible = !any_solo || solo_up[rt] || solo_down[rt];
+            match st.output {
+                Some(o) if (o as usize) != rt => {
+                    let o = o as usize;
+                    let (child, group) = if rt < o {
+                        let (a, b) = tracks.split_at_mut(o);
+                        (&mut a[rt], &mut b[0])
+                    } else {
+                        let (a, b) = tracks.split_at_mut(rt);
+                        (&mut b[0], &mut a[o])
+                    };
+                    child.mix_into_group(group, n, audible);
+                }
+                _ => tracks[rt].mix_into(ml, mr, audible),
+            }
         }
 
         for i in 0..n {

@@ -181,3 +181,39 @@ fn hardware_midi_goes_to_midi_target() {
     midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
     assert_eq!(nonzero(&left(&render(&mut e, 512, 512))), vec![0]);
 }
+
+#[test]
+fn group_bus_sums_children_and_solo_propagates() {
+    let (mut e, mut h) = engine();
+    let g = SongTrack { rt: 5, ..Default::default() };
+    let a = SongTrack { output: Some(5), ..audio_track(0, dc_clip(0.25)) };
+    let b = SongTrack { output: Some(5), ..audio_track(1, dc_clip(0.125)) };
+    let c = audio_track(2, dc_clip(0.0625)); // outside the group
+    h.set_song(Song { tracks: vec![g, a, b, c] }).unwrap();
+    h.send(Command::LaunchScene { scene: 0 }).unwrap();
+    let level = |e: &mut Engine| *left(&render(e, 4800, 480)).last().unwrap();
+    assert!((level(&mut e) - 0.4375).abs() < 1e-4, "all to master");
+    h.send(Command::SetTrackGain { track: 5, gain: 2.0 }).unwrap();
+    assert!((level(&mut e) - (0.75 + 0.0625)).abs() < 1e-4, "group gain scales children");
+    assert!(h.track(5).peak[0] > 0.74, "group meter");
+    h.send(Command::SetTrackMute { track: 5, mute: true }).unwrap();
+    assert!((level(&mut e) - 0.0625).abs() < 1e-4, "group mute");
+    send_all(&mut h, &[Command::SetTrackMute { track: 5, mute: false }, Command::SetTrackSolo { track: 1, solo: true }]);
+    assert!((level(&mut e) - 0.25).abs() < 1e-4, "solo child keeps its group audible, siblings/others silent");
+    send_all(&mut h, &[Command::SetTrackSolo { track: 1, solo: false }, Command::SetTrackSolo { track: 5, solo: true }]);
+    assert!((level(&mut e) - 0.75).abs() < 1e-4, "solo group keeps children");
+}
+
+#[test]
+fn group_output_must_precede_child() {
+    // Child listed before its "group" → routed to master instead (no cycle / lost audio).
+    let mut s = Song {
+        tracks: vec![
+            SongTrack { output: Some(1), ..audio_track(0, dc_clip(0.1)) },
+            SongTrack { rt: 1, output: Some(0), ..Default::default() },
+        ],
+    };
+    s.prepare();
+    assert_eq!(s.tracks[0].output, None);
+    assert_eq!(s.tracks[1].output, Some(0));
+}

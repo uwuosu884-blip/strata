@@ -65,6 +65,8 @@ pub struct SongTrack {
     pub slots: Vec<Option<Clip>>,
     /// Must be sorted by `start`.
     pub arrangement: Vec<ArrangementClip>,
+    /// Group bus (`rt` of an earlier track in `Song::tracks`) or `None` = master.
+    pub output: Option<u16>,
 }
 
 impl Default for SongTrack {
@@ -79,6 +81,7 @@ impl Default for SongTrack {
             instrument: Instrument::None,
             slots: Vec::new(),
             arrangement: Vec::new(),
+            output: None,
         }
     }
 }
@@ -95,6 +98,15 @@ impl Song {
         self.tracks.retain(|t| (t.rt as usize) < MAX_TRACKS);
         let mut seen = [false; MAX_TRACKS];
         self.tracks.retain(|t| !std::mem::replace(&mut seen[t.rt as usize], true));
+        // A group must precede its children so the reverse mixing pass sums
+        // children before the group itself is mixed (also rules out cycles).
+        let mut before = [false; MAX_TRACKS];
+        for t in &mut self.tracks {
+            if t.output.is_some_and(|o| !before.get(o as usize).copied().unwrap_or(false)) {
+                t.output = None;
+            }
+            before[t.rt as usize] = true;
+        }
         for t in &mut self.tracks {
             t.gain = if t.gain.is_finite() { t.gain.clamp(0.0, 4.0) } else { 0.0 };
             t.pan = if t.pan.is_finite() { t.pan.clamp(-1.0, 1.0) } else { 0.0 };

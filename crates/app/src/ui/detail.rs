@@ -52,16 +52,7 @@ fn clip_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef) {
                     Some(buf) => {
                         let mut c = clip.clone();
                         c.name.clear();
-                        super::arrangement::draw_clip(
-                            &p,
-                            rect,
-                            &c,
-                            false,
-                            Some(buf),
-                            app.audio.info.sample_rate,
-                            zoom,
-                            app.project.tempo_bpm,
-                        );
+                        super::arrangement::draw_clip(&p, rect, &c, false, Some(buf), zoom, app.project.tempo_bpm);
                     }
                     None => {
                         let msg = app.cache.error(sample).map_or("Loading…".to_string(), |e| format!("Missing sample: {e}"));
@@ -538,6 +529,16 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new("Drop an instrument from the browser here to replace").small().color(Color32::from_gray(110)));
         }
     });
+    if track.kind == TrackKind::Group {
+        let n = app.project.subtree_end(t) - t - 1;
+        ui.label(
+            egui::RichText::new(format!(
+                "Group bus with {n} track(s): their audio is summed here, then this track's volume, pan, mute and solo apply. Ctrl+Shift+G ungroups."
+            ))
+            .color(Color32::GRAY),
+        );
+        return;
+    }
     if track.kind == TrackKind::Audio {
         ui.label(egui::RichText::new("Audio track: drop samples on its slots or arrangement lane, arm it (red dot) and record with F9 or a slot's record button. IN = monitor input.").color(Color32::GRAY));
         return;

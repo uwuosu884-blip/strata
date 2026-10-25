@@ -40,6 +40,8 @@ fn big_song(variant: usize) -> Song {
             instrument: instruments[i % 4].clone(),
             slots: vec![Some(if i % 4 == 3 { audio.clone() } else { midi.clone() }), None, Some(midi.clone())],
             arrangement: vec![ArrangementClip { start: 1.0, clip: midi.clone() }],
+            // Exercise group routing on the RT path too.
+            output: (i % 3 == 2).then(|| ((i - 1 + variant) % MAX_TRACKS) as u16),
             ..Default::default()
         })
         .collect();

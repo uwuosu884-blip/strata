@@ -137,13 +137,29 @@ impl DawApp {
         if cmd_shift(Key::R) {
             self.dialog = Some(Dialog::Export { path: self.default_path("wav"), scene: None, bits: 24 });
         }
+        // Shift variants first: consume_key(COMMAND, k) also matches Ctrl+Shift+k.
         if cmd_shift(Key::T) {
-            self.add_track(TrackKind::Audio);
-        }
-        if cmd(Key::T) {
             self.add_track(TrackKind::Midi);
         }
-        if cmd(Key::D) {
+        if cmd(Key::T) {
+            self.add_track(TrackKind::Audio);
+        }
+        if cmd_shift(Key::G) {
+            self.ungroup_selected();
+        }
+        if cmd(Key::G) {
+            self.group_selected_tracks();
+        }
+        if cmd_shift(Key::M) {
+            self.insert_midi_clip_in_selection();
+        }
+        if cmd(Key::L) {
+            self.loop_selection();
+        }
+        if cmd(Key::E) {
+            self.split_selection();
+        }
+        if cmd(Key::D) && !(self.view == View::Arrangement && self.duplicate_arrangement_selection()) {
             self.duplicate_selected_clip();
         }
         if cmd(Key::B) {
@@ -152,6 +168,11 @@ impl DawApp {
         if typing {
             self.key_events.clear();
             return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.time_sel = None;
+            self.arr_sel.clear();
+            self.track_sel.clear();
         }
         let events = std::mem::take(&mut self.key_events);
         for ev in events {
@@ -178,7 +199,7 @@ impl DawApp {
                         continue;
                     }
                     Key::Delete | Key::Backspace => {
-                        if !self.delete_selected_notes() {
+                        if !self.delete_selected_notes() && !(self.view == View::Arrangement && self.delete_arrangement_selection()) {
                             self.delete_selected_clip();
                         }
                         continue;
@@ -359,12 +380,20 @@ impl DawApp {
             ui.close();
         }
         ui.separator();
-        if ui.button("Add MIDI Track  Ctrl+T").clicked() {
+        if ui.button("Add Audio Track Ctrl+T").clicked() {
+            self.add_track(TrackKind::Audio);
+            ui.close();
+        }
+        if ui.button("Add MIDI Track  Ctrl+Shift+T").clicked() {
             self.add_track(TrackKind::Midi);
             ui.close();
         }
-        if ui.button("Add Audio Track Ctrl+Shift+T").clicked() {
-            self.add_track(TrackKind::Audio);
+        if ui.button("Group Tracks    Ctrl+G").clicked() {
+            self.group_selected_tracks();
+            ui.close();
+        }
+        if ui.button("Ungroup   Ctrl+Shift+G").clicked() {
+            self.ungroup_selected();
             ui.close();
         }
         if ui.button("Add Scene").clicked() {
