@@ -85,7 +85,9 @@ pub fn save_project(project: &mut Project, path: &Path, cache: &mut SampleCache)
         if !is_special(s)
             && let Ok(rel) = Path::new(&*s).strip_prefix(&dir)
         {
-            *s = rel.to_string_lossy().into_owned();
+            // Always '/' on disk so projects move between Windows/Linux/macOS
+            // (Windows accepts '/' too).
+            *s = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
     });
     on_disk.save(path)

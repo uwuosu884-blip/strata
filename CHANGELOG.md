@@ -41,7 +41,9 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
 
 **Project and core (`daw-project`, `daw-core`)**
 - Project files (`.dawproj`) in human-readable RON, with format versioning.
-  Clip and track ids are repaired on load.
+  Samples inside the project folder are stored as relative `/` paths, so
+  project folders move between machines and operating systems. Clip and
+  track ids are repaired on load.
 - Undo/redo with 200 steps of history.
 - Sample loading for WAV, FLAC, MP3, AAC and MP4 (symphonia) with
   high-quality resampling (rubato). A background sample cache keeps disk
