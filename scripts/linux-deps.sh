@@ -12,6 +12,7 @@ BASE=(
   libwayland-dev        # Wayland windows
   libx11-dev libxcursor-dev libxrandr-dev libxi-dev   # X11 windows
   libgl1-mesa-dev       # OpenGL (egui glow renderer)
+  libxkbcommon-x11-0    # runtime: loaded with dlopen by winit on X11
 )
 EXTRA=(
   libjack-jackd2-dev    # --features jack
