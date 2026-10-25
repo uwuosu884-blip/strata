@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/project", "crates/render", "crates/app"]
+members = ["crates/engine", "crates/project", "crates/core", "crates/render", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ rust-version = "1.95"
 [workspace.dependencies]
 daw-engine = { path = "crates/engine" }
 daw-project = { path = "crates/project" }
+daw-core = { path = "crates/core" }
 
 # Audio / real-time
 cpal = { version = "0.18", features = ["realtime"] }
@@ -17,6 +18,9 @@ rtrb = "0.4"
 assert_no_alloc = "1.1"
 no_denormals = "0.3"
 hound = "3.5"
+symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4"] }
+rubato = "5"
+midir = "0.11"
 
 # GUI (glow = OpenGL renderer: lighter and faster to build than the wgpu default)
 eframe = { version = "0.37", default-features = false, features = [

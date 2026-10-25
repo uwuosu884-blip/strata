@@ -1,0 +1,13 @@
+[package]
+name = "daw-core"
+description = "Non-real-time services: sample loading, factory sounds, project→song compiler, recorder, offline export."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+daw-engine.workspace = true
+daw-project.workspace = true
+symphonia.workspace = true
+rubato.workspace = true
+hound.workspace = true

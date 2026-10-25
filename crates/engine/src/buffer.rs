@@ -26,6 +26,10 @@ impl StereoBuffer {
         (&mut self.left[..frames], &mut self.right[..frames])
     }
 
+    pub fn range_mut(&mut self, offset: usize, n: usize) -> (&mut [f32], &mut [f32]) {
+        (&mut self.left[offset..offset + n], &mut self.right[offset..offset + n])
+    }
+
     pub fn peak(&self, frames: usize) -> [f32; 2] {
         let p = |ch: &[f32]| ch.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         [p(&self.left[..frames]), p(&self.right[..frames])]

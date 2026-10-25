@@ -32,6 +32,17 @@ impl Smoothed {
     }
 }
 
+impl Smoothed {
+    /// Advance `n` samples without producing output (exact for a one-pole).
+    pub fn skip(&mut self, n: usize) {
+        if self.current == self.target || n == 0 {
+            return;
+        }
+        let next = self.target + (self.current - self.target) * self.coeff.powi(n.min(i32::MAX as usize) as i32);
+        self.current = if (next - self.target).abs() < 1.0e-6 { self.target } else { next };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

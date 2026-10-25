@@ -10,11 +10,22 @@ pub struct Transport {
     pub beats_per_bar: u32,
     /// Playhead in beats from the start of the song (0.0 = bar 1, beat 1).
     pub beat_position: f64,
+    pub loop_enabled: bool,
+    pub loop_start: f64,
+    pub loop_end: f64,
 }
 
 impl Default for Transport {
     fn default() -> Self {
-        Self { playing: false, tempo_bpm: 120.0, beats_per_bar: 4, beat_position: 0.0 }
+        Self {
+            playing: false,
+            tempo_bpm: 120.0,
+            beats_per_bar: 4,
+            beat_position: 0.0,
+            loop_enabled: false,
+            loop_start: 0.0,
+            loop_end: 16.0,
+        }
     }
 }
 
@@ -33,6 +44,11 @@ impl Transport {
     #[inline]
     pub fn beats_per_sample(&self, sample_rate: f64) -> f64 {
         self.tempo_bpm / (60.0 * sample_rate)
+    }
+
+    /// Loop region if active and valid.
+    pub fn active_loop(&self) -> Option<(f64, f64)> {
+        (self.loop_enabled && self.loop_end - self.loop_start >= 1.0 / 16.0).then_some((self.loop_start, self.loop_end))
     }
 
     pub fn position(&self) -> MusicalPosition {
