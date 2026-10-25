@@ -17,10 +17,19 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     egui::ScrollArea::both().id_salt("session").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
         ui.horizontal_top(|ui| {
+            let n0 = app.project.tracks.len();
             for t in app.project.visible_tracks() {
+                if app.project.tracks.len() != n0 {
+                    // A header menu added/removed tracks: indices are stale, redraw next frame.
+                    ui.ctx().request_repaint();
+                    break;
+                }
                 ui.vertical(|ui| {
                     ui.set_width(COL_W);
                     track_header(app, ui, t);
+                    if app.project.tracks.len() != n0 {
+                        return;
+                    }
                     for s in 0..app.project.scenes.len() {
                         slot(app, ui, t, s, blink);
                     }

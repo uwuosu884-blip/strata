@@ -148,7 +148,14 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // ---- Rows ----------------------------------------------------------------------
     let first = g.row_at(body.min.y);
     let last = g.row_at(body.max.y).min(g.rows.len());
+    let n0 = app.project.tracks.len();
     for k in first..=last {
+        if app.project.tracks.len() != n0 {
+            // A header menu added/removed tracks: row indices are stale, redraw next frame.
+            ui.ctx().request_repaint();
+            ui.allocate_rect(full, Sense::hover());
+            return;
+        }
         if k == g.rows.len() {
             drop_zone_row(ui, &g, k);
             continue;
@@ -156,6 +163,11 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         let t = g.rows[k];
         lane_row(app, ui, &g, k, t);
         header(app, ui, &g, k, t);
+    }
+    if app.project.tracks.len() != n0 {
+        ui.ctx().request_repaint();
+        ui.allocate_rect(full, Sense::hover());
+        return;
     }
 
     lanes_interaction(app, ui, &g, &lr);
@@ -328,6 +340,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
                 }
                 let r = Rect::from_min_max(pos2(x1, y), pos2(x2.max(x1 + 2.0), y + (h - 1.0).max(1.0)));
                 painter.rect_filled(r, CornerRadius::same(1), shade(rgb(a.clip.color), 0.8));
+                painter.rect_stroke(r, CornerRadius::same(1), Stroke::new(1.0, Color32::from_black_alpha(90)), egui::StrokeKind::Inside);
             }
         }
         if selected {

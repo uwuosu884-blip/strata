@@ -118,6 +118,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn group_children_route_to_the_group_bus() {
+        let mut proj = Project::new_default();
+        let g = proj.group_tracks(&[1, 2]).unwrap();
+        let mut cache = SampleCache::new(48_000);
+        let mut slots = RtSlots::default();
+        let mut song = compile(&proj, &mut cache, &mut slots);
+        song.prepare();
+        let grt = song.tracks[g].rt;
+        assert_eq!(song.tracks[g].output, None);
+        assert_eq!(song.tracks[g + 1].output, Some(grt));
+        assert_eq!(song.tracks[g + 2].output, Some(grt));
+        assert_eq!(song.tracks[0].output, None);
+        assert_eq!(song.tracks.last().unwrap().output, None);
+    }
+
+    #[test]
     fn compiles_default_project_with_stable_slots() {
         let mut proj = Project::new_default();
         proj.new_midi_clip(0, 0, 4.0);

@@ -385,6 +385,21 @@ impl DawApp {
         self.dirty = true;
         self.needs_compile = true;
         self.sync_globals();
+        self.clamp_selection();
+    }
+
+    /// Indices may be stale after undo/redo or structural edits (same frame).
+    pub fn clamp_selection(&mut self) {
+        if self.selected_track >= self.project.tracks.len() {
+            self.selected_track = self.project.tracks.len().saturating_sub(1);
+        }
+        if let Some(c) = self.selected_clip
+            && self.clip(c).is_none()
+        {
+            self.selected_clip = None;
+        }
+        self.note_sel.clear();
+        self.sanitize_selection();
     }
 
     pub fn toast(&mut self, msg: impl Into<String>) {
@@ -416,6 +431,7 @@ impl DawApp {
             self.edit(|p| p.remove_track(idx)); // a group takes its children with it
             self.selected_clip = None;
             self.clear_structure_selection();
+            self.clamp_selection();
         }
     }
 

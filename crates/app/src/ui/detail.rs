@@ -519,7 +519,7 @@ fn c_or(c: Color32) -> Color32 {
 
 fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     let t = app.selected_track;
-    let track = &app.project.tracks[t];
+    let Some(track) = app.project.tracks.get(t) else { return };
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(2), rgb(track.color));

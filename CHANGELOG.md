@@ -10,6 +10,53 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), audio warping, multi-core track processing.
 
+## [0.2.0] - 2026-10-25
+
+### Added
+- **Group tracks** (Ctrl+G, Ctrl+Shift+G to ungroup). A group is a real audio
+  bus: its children are summed into it, then the group's volume, pan, mute
+  and solo apply. Groups can be nested. Soloing a child keeps its group
+  audible, and soloing a group keeps its children audible. Groups fold in
+  both views. The group lane shows an overview of its children's clips. In
+  the session view, a group's slot launches the children's clips of that
+  scene, and its stop button stops them. Deleting or duplicating a group
+  includes its tracks.
+- **Arrangement selection**:
+  - Drag on a lane or clip body to make a time selection across tracks.
+  - Click or Shift+click to select clips.
+  - Shift+click track headers to select several tracks.
+- **Ctrl+L** loops the selected region (or the selected clips) and turns
+  looping on.
+- **Ctrl+E** splits clips at the edges of the time selection, or splits the
+  selected clips (or the clips on the selected track) at the playhead.
+- Dragging inside a time selection cuts that part out of the clips and moves
+  it, across tracks too.
+- **Ctrl+Shift+M** inserts an empty MIDI clip over the selected region.
+- **Del / Ctrl+D** work on the time selection: delete or duplicate the
+  material in it.
+- Moving or dropping clips overwrites what lies underneath (like Live).
+- Arrangement zoom like Live: Ctrl+wheel zooms around the mouse and
+  Alt+wheel changes track height. Wheel and Shift+wheel scroll.
+- Clicking anywhere in the arrangement moves the playhead.
+- Files dragged from the OS file manager onto the arrangement are imported.
+- **Opus** audio (`.opus`, Opus in `.ogg`) via a pure-Rust decoder.
+- Small level meters in the arrangement track headers.
+
+### Changed
+- Arrangement track headers are on the right, like Live.
+- Ctrl+T now adds an audio track and Ctrl+Shift+T a MIDI track (swapped).
+- Dragging in the ruler sets the loop range without turning looping on.
+  Dragging the loop brace moves it. Clicking the brace still turns looping
+  on or off.
+- Clip moves snap the clip under the mouse to the grid.
+
+### Fixed
+- OGG files that failed to load: Opus-encoded `.ogg` files (common from
+  yt-dlp, voice notes and browsers) had no decoder. Vorbis and FLAC in OGG
+  are covered by tests.
+- Possible crash when a track was deleted from a header menu while the
+  views were drawing, or when undo removed the selected track.
+
 ## [0.1.0] - 2026-10-25
 
 First public version: a working "mini-Live" with session and arrangement
@@ -95,5 +142,6 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/uwuosu884-blip/strata/releases/tag/v0.1.0

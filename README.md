@@ -103,13 +103,28 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | F9 | Record |
 | A … ' | Play notes (computer keyboard MIDI); Z/X octave, C/V velocity |
 | Shift+M | Toggle computer keyboard MIDI |
-| Del | Delete selection |
+| Del | Delete selection (time selection, clips or notes) |
+| Esc | Clear the arrangement selection |
 | Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) | Undo / redo |
 | Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N | Save / save as / open / new |
 | Ctrl+Shift+R | Export audio |
-| Ctrl+T / Ctrl+Shift+T | Add MIDI / audio track |
-| Ctrl+D | Duplicate |
+| Ctrl+T / Ctrl+Shift+T | Add audio / MIDI track |
+| Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
+| Ctrl+L | Loop the selected region (or clips) |
+| Ctrl+E | Split clips at the selection edges or at the playhead |
+| Ctrl+Shift+M | Insert a MIDI clip over the selected region |
+| Ctrl+D | Duplicate (selection, clips or session clip) |
 | Ctrl+B | Show / hide browser |
+
+Arrangement mouse: drag a clip's title bar to move it (and all selected
+clips); drag its right edge to resize. Drag on a lane or clip body to make a
+time selection; drag inside a selection to cut that part out and move it.
+Click anywhere to move the playhead. Shift+click headers or clips to
+multi-select. Wheel scrolls, Shift+wheel scrolls horizontally, Ctrl+wheel
+zooms, Alt+wheel changes track height. Drag in the ruler to set the loop
+range; click the loop brace to switch looping on or off.
+
+Audio files: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG (Vorbis, FLAC and Opus).
 
 Offline render:
 ```bash

@@ -6,7 +6,7 @@ use crate::app::{DawApp, DragItem};
 use eframe::egui::{self, Color32, Sense};
 use std::path::PathBuf;
 
-const AUDIO_EXT: [&str; 9] = ["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a", "aac", "wave"];
+const AUDIO_EXT: [&str; 10] = ["wav", "flac", "mp3", "ogg", "opus", "aif", "aiff", "m4a", "aac", "wave"];
 
 fn item(ui: &mut egui::Ui, label: &str, payload: DragItem, color: Color32) -> egui::Response {
     let r = ui.add(egui::Label::new(egui::RichText::new(label).color(color)).sense(Sense::click_and_drag()).selectable(false).truncate());
