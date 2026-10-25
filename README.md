@@ -90,3 +90,10 @@ cargo test --workspace --release  # release
 `crates/engine/tests/realtime_safety.rs` installs an allocator that **aborts
 if `Engine::process` ever allocates memory**, so real-time safety is enforced
 by the test suite.
+
+## Releases
+
+Build artifacts are **not** kept in the repo or workspace. Release builds are
+produced with `cargo build --profile dist -p daw-app -p daw-render`, packaged
+in `/var/tmp/release/`, and uploaded to Google Drive under `daw/<version>/`
+(binary tarball + `.sha256` + source archive of the git tag).
