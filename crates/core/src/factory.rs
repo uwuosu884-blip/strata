@@ -41,7 +41,11 @@ pub fn generate(name: &str, sr: u32) -> Option<SampleBuffer> {
                 .map(|i| {
                     let t = i as f32 / s;
                     // Three quick bursts, then a tail.
-                    let burst = (0..3).map(|k| t - k as f32 * 0.011).filter(|&d| (0.0..0.011).contains(&d)).map(|d| (-d * 300.0).exp()).sum::<f32>();
+                    let burst = (0..3)
+                        .map(|k| t - k as f32 * 0.011)
+                        .filter(|&d| (0.0..0.011).contains(&d))
+                        .map(|d| (-d * 300.0).exp())
+                        .sum::<f32>();
                     let tail = if t > 0.022 { (-(t - 0.022) * 18.0).exp() } else { 0.0 };
                     bp.run(rng.noise()) * (burst + tail) * 1.8
                 })

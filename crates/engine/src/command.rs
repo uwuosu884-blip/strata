@@ -19,25 +19,60 @@ pub enum Command {
     /// Clip launch quantization in beats (0 = immediate).
     SetLaunchQuantize(f64),
     /// Arrangement loop region (beats).
-    SetLoop { enabled: bool, start: f64, end: f64 },
+    SetLoop {
+        enabled: bool,
+        start: f64,
+        end: f64,
+    },
 
-    SetTrackGain { track: u16, gain: f32 },
-    SetTrackPan { track: u16, pan: f32 },
-    SetTrackMute { track: u16, mute: bool },
-    SetTrackSolo { track: u16, solo: bool },
-    SetTrackMonitor { track: u16, monitor: bool },
+    SetTrackGain {
+        track: u16,
+        gain: f32,
+    },
+    SetTrackPan {
+        track: u16,
+        pan: f32,
+    },
+    SetTrackMute {
+        track: u16,
+        mute: bool,
+    },
+    SetTrackSolo {
+        track: u16,
+        solo: bool,
+    },
+    SetTrackMonitor {
+        track: u16,
+        monitor: bool,
+    },
 
     /// Launch the clip in `scene` (an empty slot stops the track).
-    LaunchClip { track: u16, scene: u32 },
-    StopTrack { track: u16 },
-    LaunchScene { scene: u32 },
+    LaunchClip {
+        track: u16,
+        scene: u32,
+    },
+    StopTrack {
+        track: u16,
+    },
+    LaunchScene {
+        scene: u32,
+    },
     StopAllClips,
     /// Return every track to arrangement playback.
     BackToArrangement,
 
-    NoteOn { track: u16, pitch: u8, velocity: u8 },
-    NoteOff { track: u16, pitch: u8 },
-    AllNotesOff { track: u16 },
+    NoteOn {
+        track: u16,
+        pitch: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        track: u16,
+        pitch: u8,
+    },
+    AllNotesOff {
+        track: u16,
+    },
     /// Track that receives hardware MIDI input (None = nowhere).
     SetMidiTarget(Option<u16>),
 
@@ -74,13 +109,30 @@ impl MidiEvent {
 pub enum RecordEvent {
     /// Recording began at this song position. `frame` = index (in the
     /// recorded-audio stream) of the take's first frame.
-    Started { beat: f64, frame: u64 },
+    Started {
+        beat: f64,
+        frame: u64,
+    },
     /// Recording ended. `frame` = index one past the take's last frame.
-    Stopped { beat: f64, frame: u64 },
+    Stopped {
+        beat: f64,
+        frame: u64,
+    },
     /// A live note played into `track` while recording. `clip_pos` is the
     /// position inside the session clip playing on that track (for overdub).
-    NoteOn { track: u16, pitch: u8, velocity: u8, beat: f64, clip_pos: Option<f64> },
-    NoteOff { track: u16, pitch: u8, beat: f64, clip_pos: Option<f64> },
+    NoteOn {
+        track: u16,
+        pitch: u8,
+        velocity: u8,
+        beat: f64,
+        clip_pos: Option<f64>,
+    },
+    NoteOff {
+        track: u16,
+        pitch: u8,
+        beat: f64,
+        clip_pos: Option<f64>,
+    },
 }
 
 #[cfg(test)]

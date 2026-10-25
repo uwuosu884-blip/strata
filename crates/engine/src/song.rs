@@ -108,10 +108,7 @@ impl Song {
 
     /// End of the last arrangement clip, in beats.
     pub fn arrangement_end(&self) -> f64 {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.arrangement.iter().map(|a| a.start + a.clip.length))
-            .fold(0.0, f64::max)
+        self.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.start + a.clip.length)).fold(0.0, f64::max)
     }
 }
 

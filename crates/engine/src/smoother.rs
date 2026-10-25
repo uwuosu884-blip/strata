@@ -23,11 +23,7 @@ impl Smoothed {
         let next = self.target + (self.current - self.target) * self.coeff;
         // Snap when close enough, or when f32 rounding stalls progress (near the
         // target each step can be smaller than one ULP, so `next == current`).
-        self.current = if next == self.current || (next - self.target).abs() < 1.0e-6 {
-            self.target
-        } else {
-            next
-        };
+        self.current = if next == self.current || (next - self.target).abs() < 1.0e-6 { self.target } else { next };
         self.current
     }
 }

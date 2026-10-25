@@ -4,7 +4,7 @@
 
 use assert_no_alloc::assert_no_alloc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use daw_engine::{Engine, EngineConfig, EngineHandle, create};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,8 @@ pub struct AudioOptions {
     pub buffer_frames: Option<u32>,
     /// Skip the sound card entirely.
     pub force_null: bool,
+    /// Don't open an input device (no audio recording / monitoring).
+    pub no_input: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,13 +40,23 @@ pub struct AudioInfo {
     pub sample_format: String,
     /// Some(reason) when running without a sound card.
     pub null_reason: Option<String>,
+    /// Input device name, or why there is none.
+    pub input: Result<String, String>,
+    /// Input buffer frames (for latency compensation).
+    pub input_buffer_frames: Option<u32>,
+}
+
+impl AudioInfo {
+    /// Round-trip latency estimate used to line recorded audio up with the grid.
+    pub fn round_trip_frames(&self) -> usize {
+        (self.buffer_frames.unwrap_or(512) + self.input_buffer_frames.unwrap_or(512)) as usize
+    }
 }
 
 impl AudioInfo {
     pub fn summary(&self) -> String {
-        let buffer = self.buffer_frames.map_or("default".into(), |b| {
-            format!("{b} ({:.1} ms)", b as f64 * 1000.0 / self.sample_rate as f64)
-        });
+        let buffer =
+            self.buffer_frames.map_or("default".into(), |b| format!("{b} ({:.1} ms)", b as f64 * 1000.0 / self.sample_rate as f64));
         match &self.null_reason {
             Some(reason) => format!("No audio output ({reason}) · engine running silently at {} Hz", self.sample_rate),
             None => format!(
@@ -66,8 +78,8 @@ pub struct AudioHealth {
 }
 
 enum Backend {
-    Device(#[allow(dead_code)] cpal::Stream),
-    Null(NullOutput),
+    Device(#[allow(dead_code)] cpal::Stream, #[allow(dead_code)] Option<cpal::Stream>),
+    Null(#[allow(dead_code)] NullOutput),
 }
 
 /// Owns the running audio stream. Dropping it stops audio.
@@ -95,10 +107,7 @@ pub fn start(opts: &AudioOptions) -> (AudioSystem, EngineHandle) {
 }
 
 fn start_null(reason: String, health: Arc<AudioHealth>) -> (AudioSystem, EngineHandle) {
-    let (engine, handle) = create(EngineConfig {
-        sample_rate: NULL_SAMPLE_RATE as f64,
-        max_block_frames: ENGINE_BLOCK,
-    });
+    let (engine, handle) = create(EngineConfig { sample_rate: NULL_SAMPLE_RATE as f64, max_block_frames: ENGINE_BLOCK });
     let info = AudioInfo {
         host: "Null".into(),
         device: "none".into(),
@@ -107,6 +116,8 @@ fn start_null(reason: String, health: Arc<AudioHealth>) -> (AudioSystem, EngineH
         buffer_frames: Some(NULL_BLOCK as u32),
         sample_format: "f32".into(),
         null_reason: Some(reason),
+        input: Err("no audio device".into()),
+        input_buffer_frames: None,
     };
     let backend = Backend::Null(NullOutput::spawn(engine, NULL_SAMPLE_RATE, NULL_BLOCK));
     (AudioSystem { _backend: backend, info, health }, handle)
@@ -115,13 +126,10 @@ fn start_null(reason: String, health: Arc<AudioHealth>) -> (AudioSystem, EngineH
 fn pick_host(name: Option<&str>) -> Result<cpal::Host, String> {
     let Some(name) = name else { return Ok(cpal::default_host()) };
     let available = cpal::available_hosts();
-    let id = available
-        .iter()
-        .find(|id| id.name().eq_ignore_ascii_case(name))
-        .ok_or_else(|| {
-            let names: Vec<_> = available.iter().map(|h| h.name()).collect();
-            format!("audio host '{name}' not available (compiled-in hosts: {})", names.join(", "))
-        })?;
+    let id = available.iter().find(|id| id.name().eq_ignore_ascii_case(name)).ok_or_else(|| {
+        let names: Vec<_> = available.iter().map(|h| h.name()).collect();
+        format!("audio host '{name}' not available (compiled-in hosts: {})", names.join(", "))
+    })?;
     cpal::host_from_id(*id).map_err(|e| format!("could not open host {}: {e}", id.name()))
 }
 
@@ -129,10 +137,7 @@ fn device_name(device: &cpal::Device) -> String {
     device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "unknown device".into())
 }
 
-fn start_device(
-    opts: &AudioOptions,
-    health: &Arc<AudioHealth>,
-) -> Result<(Backend, AudioInfo, EngineHandle), String> {
+fn start_device(opts: &AudioOptions, health: &Arc<AudioHealth>) -> Result<(Backend, AudioInfo, EngineHandle), String> {
     let host = pick_host(opts.host.as_deref())?;
     let device = host.default_output_device().ok_or("no default output device")?;
     let supported = device.default_output_config().map_err(|e| format!("no usable output config: {e}"))?;
@@ -143,10 +148,21 @@ fn start_device(
         config.buffer_size = cpal::BufferSize::Fixed(frames);
     }
 
-    let (engine, handle) = create(EngineConfig {
-        sample_rate: config.sample_rate as f64,
-        max_block_frames: ENGINE_BLOCK,
-    });
+    let (engine, mut handle) = create(EngineConfig { sample_rate: config.sample_rate as f64, max_block_frames: ENGINE_BLOCK });
+
+    // Input first (optional): failures only disable recording.
+    let (input_stream, input, input_buffer_frames) = if opts.no_input {
+        (None, Err("disabled with --no-input".to_string()), None)
+    } else {
+        let producer = handle.take_input().expect("input producer");
+        match start_input(&host, config.sample_rate, opts.buffer_frames, producer, health) {
+            Ok((s, name, frames)) => (Some(s), Ok(name), frames),
+            Err(e) => {
+                eprintln!("audio input: {e}");
+                (None, Err(e), None)
+            }
+        }
+    };
 
     let stream = match sample_format {
         SampleFormat::F32 => build_stream::<f32>(&device, &config, engine, health),
@@ -168,8 +184,82 @@ fn start_device(
         buffer_frames: stream.buffer_size().ok().or(opts.buffer_frames),
         sample_format: sample_format.to_string(),
         null_reason: None,
+        input,
+        input_buffer_frames,
     };
-    Ok((Backend::Device(stream), info, handle))
+    Ok((Backend::Device(stream, input_stream), info, handle))
+}
+
+/// Open the default input device at the output's sample rate and stream it
+/// (as interleaved stereo) into the engine's input ring.
+fn start_input(
+    host: &cpal::Host,
+    sample_rate: u32,
+    buffer: Option<u32>,
+    producer: rtrb::Producer<f32>,
+    health: &Arc<AudioHealth>,
+) -> Result<(cpal::Stream, String, Option<u32>), String> {
+    let device = host.default_input_device().ok_or("no input device")?;
+    let name = device_name(&device);
+    let supported = device
+        .supported_input_configs()
+        .map_err(|e| format!("{name}: {e}"))?
+        .filter(|c| c.min_sample_rate() <= sample_rate && sample_rate <= c.max_sample_rate())
+        .max_by_key(|c| (c.sample_format() == SampleFormat::F32, c.channels() == 2))
+        .ok_or_else(|| format!("{name} does not support {sample_rate} Hz"))?
+        .with_sample_rate(sample_rate);
+    let format = supported.sample_format();
+    let mut config: StreamConfig = supported.config();
+    if let Some(frames) = buffer {
+        config.buffer_size = cpal::BufferSize::Fixed(frames);
+    }
+    let stream = match format {
+        SampleFormat::F32 => build_input::<f32>(&device, &config, producer, health),
+        SampleFormat::I16 => build_input::<i16>(&device, &config, producer, health),
+        SampleFormat::I32 => build_input::<i32>(&device, &config, producer, health),
+        SampleFormat::U16 => build_input::<u16>(&device, &config, producer, health),
+        other => return Err(format!("unsupported input format {other}")),
+    }?;
+    stream.play().map_err(|e| format!("could not start input: {e}"))?;
+    let frames = stream.buffer_size().ok().or(buffer);
+    Ok((stream, name, frames))
+}
+
+fn build_input<T>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    mut producer: rtrb::Producer<f32>,
+    health: &Arc<AudioHealth>,
+) -> Result<cpal::Stream, String>
+where
+    T: SizedSample + Send + 'static,
+    f32: FromSample<T>,
+{
+    let ch = config.channels.max(1) as usize;
+    let data_callback = move |data: &[T], _: &cpal::InputCallbackInfo| {
+        assert_no_alloc(|| {
+            let frames = data.len() / ch;
+            // Ring full (engine stalled): drop the block rather than block.
+            if let Ok(chunk) = producer.write_chunk_uninit(frames * 2) {
+                chunk.fill_from_iter(data.chunks_exact(ch).flat_map(|f| {
+                    let l = f32::from_sample(f[0]);
+                    let r = if ch > 1 { f32::from_sample(f[1]) } else { l };
+                    [l, r]
+                }));
+            }
+        });
+    };
+    let health = Arc::clone(health);
+    let error_callback = move |err: cpal::Error| {
+        if matches!(err.kind(), cpal::ErrorKind::Xrun) {
+            health.xruns.fetch_add(1, Relaxed);
+        } else {
+            health.stream_errors.fetch_add(1, Relaxed);
+        }
+    };
+    device
+        .build_input_stream::<T, _, _>(config.clone(), data_callback, error_callback, None)
+        .map_err(|e| format!("could not open input stream: {e}"))
 }
 
 /// Build the output stream. The callback is the real-time hot path.

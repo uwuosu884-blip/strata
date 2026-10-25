@@ -242,11 +242,7 @@ impl Engine {
 
     /// Next launch boundary at or after the current position.
     fn quantized(&self, beat: f64) -> f64 {
-        if !self.transport.playing || self.quantum <= 0.0 {
-            beat
-        } else {
-            ((beat / self.quantum) - 1.0e-9).ceil() * self.quantum
-        }
+        if !self.transport.playing || self.quantum <= 0.0 { beat } else { ((beat / self.quantum) - 1.0e-9).ceil() * self.quantum }
     }
 
     fn launch(&mut self, rt: u16, action: Action) {
@@ -314,9 +310,7 @@ impl Engine {
                     }
                 }
                 Command::LaunchClip { track, scene } => {
-                    let has_clip = self
-                        .song_track(track)
-                        .is_some_and(|t| t.slots.get(scene as usize).is_some_and(Option::is_some));
+                    let has_clip = self.song_track(track).is_some_and(|t| t.slots.get(scene as usize).is_some_and(Option::is_some));
                     self.launch(track, if has_clip { Action::Launch(scene) } else { Action::Stop });
                 }
                 Command::StopTrack { track } => self.launch(track, Action::Stop),

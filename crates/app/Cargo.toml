@@ -19,6 +19,9 @@ asio = ["cpal/asio"]             # Windows low-latency; needs ASIO SDK + LLVM/cl
 [dependencies]
 daw-engine.workspace = true
 daw-project.workspace = true
+daw-core.workspace = true
+midir.workspace = true
+rtrb.workspace = true
 cpal.workspace = true
 eframe.workspace = true
 assert_no_alloc.workspace = true

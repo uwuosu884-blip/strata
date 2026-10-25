@@ -23,12 +23,7 @@ pub struct SamplerParams {
 
 impl Default for SamplerParams {
     fn default() -> Self {
-        Self {
-            root_note: 60,
-            tune_semitones: 0.0,
-            gain: 0.8,
-            amp: AdsrParams { attack: 0.001, decay: 0.1, sustain: 1.0, release: 0.15 },
-        }
+        Self { root_note: 60, tune_semitones: 0.0, gain: 0.8, amp: AdsrParams { attack: 0.001, decay: 0.1, sustain: 1.0, release: 0.15 } }
     }
 }
 
@@ -74,24 +69,12 @@ const DRUM_ENV: AdsrParams = AdsrParams { attack: 0.0005, decay: 1.0, sustain: 1
 impl<const N: usize> SampleVoices<N> {
     fn alloc(&mut self) -> usize {
         self.clock = self.clock.wrapping_add(1);
-        self.voices
-            .iter()
-            .position(|v| !v.active)
-            .unwrap_or_else(|| (0..N).min_by_key(|&i| self.voices[i].age).unwrap_or(0))
+        self.voices.iter().position(|v| !v.active).unwrap_or_else(|| (0..N).min_by_key(|&i| self.voices[i].age).unwrap_or(0))
     }
 
     /// Sampler note: pitch relative to root.
     #[allow(clippy::too_many_arguments)]
-    pub fn sampler_on(
-        &mut self,
-        sample: &SampleBuffer,
-        p: &SamplerParams,
-        pitch: u8,
-        vel: u8,
-        remaining: u32,
-        from_clip: bool,
-        sr: f32,
-    ) {
+    pub fn sampler_on(&mut self, sample: &SampleBuffer, p: &SamplerParams, pitch: u8, vel: u8, remaining: u32, from_clip: bool, sr: f32) {
         let i = self.alloc();
         let semis = pitch as f64 - p.root_note as f64 + p.tune_semitones as f64;
         let rate = (semis / 12.0).exp2() * sample.sample_rate as f64 / sr as f64;

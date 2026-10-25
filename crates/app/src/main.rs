@@ -1,6 +1,8 @@
 //! `daw` — the desktop application.
 
+mod app;
 mod audio;
+mod midi;
 mod ui;
 
 use std::process::ExitCode;
@@ -15,18 +17,27 @@ const USAGE: &str = "\
 daw — a Rust DAW
 
 USAGE:
-    daw [OPTIONS]
+    daw [OPTIONS] [PROJECT.dawproj]
 
 OPTIONS:
         --host <NAME>     Audio backend: ALSA, JACK, PipeWire, PulseAudio (Linux),
                           WASAPI, ASIO (Windows), CoreAudio (macOS)
         --buffer <FRAMES> Request an audio buffer size, e.g. 128 or 256
         --null-audio      Run without a sound card (silent, for testing)
+        --no-input        Don't open an audio input (no audio recording)
+        --no-midi         Don't open MIDI input ports
         --list-devices    Show available audio hosts and output devices
     -h, --help            Show this help";
 
-fn parse_args() -> Result<Option<audio::AudioOptions>, String> {
+struct Args {
+    audio: audio::AudioOptions,
+    midi: bool,
+    project: Option<std::path::PathBuf>,
+}
+
+fn parse_args() -> Result<Option<Args>, String> {
     let mut opts = audio::AudioOptions::default();
+    let (mut midi, mut project) = (true, None);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -40,6 +51,8 @@ fn parse_args() -> Result<Option<audio::AudioOptions>, String> {
                 opts.buffer_frames = Some(frames);
             }
             "--null-audio" => opts.force_null = true,
+            "--no-input" => opts.no_input = true,
+            "--no-midi" => midi = false,
             "--list-devices" => {
                 audio::list_devices();
                 return Ok(None);
@@ -48,15 +61,16 @@ fn parse_args() -> Result<Option<audio::AudioOptions>, String> {
                 println!("{USAGE}");
                 return Ok(None);
             }
+            other if !other.starts_with('-') && project.is_none() => project = Some(std::path::PathBuf::from(other)),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(Some(opts))
+    Ok(Some(Args { audio: opts, midi, project }))
 }
 
 fn main() -> ExitCode {
-    let opts = match parse_args() {
-        Ok(Some(opts)) => opts,
+    let args = match parse_args() {
+        Ok(Some(a)) => a,
         Ok(None) => return ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("error: {msg}\n\n{USAGE}");
@@ -64,22 +78,36 @@ fn main() -> ExitCode {
         }
     };
 
-    let (audio, engine) = audio::start(&opts);
+    // Load before opening audio so a bad path fails fast.
+    let (project, path) = match &args.project {
+        Some(p) => match daw_core::load_project(p) {
+            Ok(proj) => (proj, Some(p.clone())),
+            Err(e) => {
+                eprintln!("error: {}: {e}", p.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => (daw_project::Project::new_default(), None),
+    };
+    let (audio, engine) = audio::start(&args.audio);
     println!("audio: {}", audio.info.summary());
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("daw")
             .with_app_id("daw")
-            .with_inner_size([1100.0, 680.0])
-            .with_min_inner_size([720.0, 400.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
     };
 
     let result = eframe::run_native(
         "daw",
         native_options,
-        Box::new(move |cc| Ok(Box::new(ui::DawApp::new(cc, engine, audio)))),
+        Box::new(move |cc| {
+            cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
+            Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi)))
+        }),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,

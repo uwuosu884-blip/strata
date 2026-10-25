@@ -130,13 +130,19 @@ pub fn render_with_cache(p: &Project, cache: &mut SampleCache, opts: &ExportOpti
     Ok(Rendered { data, sample_rate: opts.sample_rate, warnings, beats })
 }
 
-/// Write interleaved stereo as 16-bit PCM or 32-bit float WAV.
+/// Write interleaved stereo as 16/24-bit PCM (TPDF-dithered) or 32-bit float WAV.
 pub fn write_wav(path: &Path, data: &[f32], sample_rate: u32, bits: u16) -> Result<(), String> {
     let float = bits == 32;
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate,
-        bits_per_sample: if float { 32 } else { 16 },
+        bits_per_sample: if float {
+            32
+        } else if bits == 24 {
+            24
+        } else {
+            16
+        },
         sample_format: if float { hound::SampleFormat::Float } else { hound::SampleFormat::Int },
     };
     let tmp = path.with_extension("wav.tmp");
@@ -144,8 +150,7 @@ pub fn write_wav(path: &Path, data: &[f32], sample_rate: u32, bits: u16) -> Resu
     let res: Result<(), hound::Error> = if float {
         data.iter().try_for_each(|&s| w.write_sample(s))
     } else {
-        let mut w16 = w.get_i16_writer(data.len() as u32);
-        // TPDF dither when reducing to 16 bits.
+        // TPDF dither when reducing word length.
         let mut seed = 0x1234_5678u32;
         let mut rnd = || {
             seed ^= seed << 13;
@@ -153,11 +158,20 @@ pub fn write_wav(path: &Path, data: &[f32], sample_rate: u32, bits: u16) -> Resu
             seed ^= seed << 5;
             seed as f32 / u32::MAX as f32
         };
-        for &s in data {
-            let d = (rnd() - rnd()) / 32768.0;
-            w16.write_sample(((s + d).clamp(-1.0, 1.0) * 32767.0).round() as i16);
+        if bits == 24 {
+            const FS: f32 = 8_388_607.0;
+            data.iter().try_for_each(|&s| {
+                let d = (rnd() - rnd()) / FS;
+                w.write_sample(((s + d).clamp(-1.0, 1.0) * FS).round() as i32)
+            })
+        } else {
+            let mut w16 = w.get_i16_writer(data.len() as u32);
+            for &s in data {
+                let d = (rnd() - rnd()) / 32768.0;
+                w16.write_sample(((s + d).clamp(-1.0, 1.0) * 32767.0).round() as i16);
+            }
+            w16.flush()
         }
-        w16.flush()
     };
     res.and_then(|_| w.finalize()).map_err(|e| format!("write failed: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -172,7 +186,10 @@ mod tests {
         let mut p = Project::new_default();
         let notes: Vec<Note> = (0..4).map(|i| Note { start: i as f64, length: 0.25, pitch: 36, velocity: 110 }).collect();
         p.tracks[0].slots[0] = Some(Clip { length: 4.0, content: ClipContent::Midi { notes: notes.clone() }, ..Default::default() });
-        p.tracks[0].arrangement.push(ArrangementClip { start: 4.0, clip: Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() } });
+        p.tracks[0].arrangement.push(ArrangementClip {
+            start: 4.0,
+            clip: Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },
+        });
         p
     }
 
@@ -210,7 +227,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("daw-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let data: Vec<f32> = (0..2000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
-        for bits in [16, 32] {
+        for bits in [16, 24, 32] {
             let path = dir.join(format!("t{bits}.wav"));
             write_wav(&path, &data, 44_100, bits).unwrap();
             let r = hound::WavReader::open(&path).unwrap();

@@ -106,7 +106,12 @@ mod tests {
         let mut cache = SampleCache::new(48_000);
         cache.insert("recording:take1", SampleBuffer::new("take1", 48_000, vec![0.25; 4800], vec![-0.25; 4800]));
         let mut p = Project::new_default();
-        let audio = |s: &str| Some(Clip { content: ClipContent::Audio { sample: s.into(), offset_frames: 0.0, warp_bpm: None, gain_db: 0.0 }, ..Default::default() });
+        let audio = |s: &str| {
+            Some(Clip {
+                content: ClipContent::Audio { sample: s.into(), offset_frames: 0.0, warp_bpm: None, gain_db: 0.0 },
+                ..Default::default()
+            })
+        };
         p.tracks[3].slots[0] = audio("recording:take1");
         p.tracks[3].slots[1] = audio("recording:take1");
         p.tracks[3].slots[2] = audio("/elsewhere/loop.wav");
@@ -115,7 +120,15 @@ mod tests {
         let wav = dir.join("My Song Samples").join("take1.wav");
         assert!(wav.exists());
         let wav_s = wav.to_string_lossy().into_owned();
-        let refs: Vec<String> = p.tracks[3].slots.iter().flatten().map(|c| match &c.content { ClipContent::Audio { sample, .. } => sample.clone(), _ => unreachable!() }).collect();
+        let refs: Vec<String> = p.tracks[3]
+            .slots
+            .iter()
+            .flatten()
+            .map(|c| match &c.content {
+                ClipContent::Audio { sample, .. } => sample.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
         assert_eq!(refs, vec![wav_s.clone(), wav_s.clone(), "/elsewhere/loop.wav".into()]);
         assert!(cache.peek(&wav_s).is_some());
 

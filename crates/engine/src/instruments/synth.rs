@@ -180,9 +180,7 @@ impl Synth {
             .voices
             .iter()
             .position(|v| !v.active)
-            .or_else(|| {
-                (0..SYNTH_VOICES).filter(|&i| self.voices[i].amp.is_released()).min_by_key(|&i| self.voices[i].age)
-            })
+            .or_else(|| (0..SYNTH_VOICES).filter(|&i| self.voices[i].amp.is_released()).min_by_key(|&i| self.voices[i].age))
             .unwrap_or_else(|| (0..SYNTH_VOICES).min_by_key(|&i| self.voices[i].age).unwrap_or(0));
         let v = &mut self.voices[idx];
         let f1 = midi_hz(pitch as f32);

@@ -1,0 +1,604 @@
+//! GUI root: layout, transport bar, shortcuts, dialogs. Views live in submodules.
+
+mod arrangement;
+mod browser;
+mod detail;
+mod session;
+pub mod widgets;
+
+use crate::app::{DawApp, Dialog, DragItem, PendingAction, View};
+use daw_engine::{Command, RecordState};
+use daw_project::{InstrumentDef, TrackKind, db_to_gain};
+use eframe::egui::{self, Color32, Key, Modifiers};
+use std::path::PathBuf;
+use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
+use widgets::*;
+
+impl eframe::App for DawApp {
+    /// Take plain (unmodified) key presses before egui sees them, unless a text
+    /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
+    /// not egui's focus navigation, and piano keys must not trigger widgets.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if self.dialog.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let mut took_key = false;
+        raw.events.retain(|e| match e {
+            egui::Event::Key { modifiers, key, .. } if !modifiers.command && !modifiers.alt && *key != Key::Escape => {
+                self.key_events.push(e.clone());
+                took_key = true;
+                false
+            }
+            egui::Event::Text(_) => !took_key,
+            _ => true,
+        });
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.begin_frame();
+        self.handle_close(&ctx);
+        self.shortcuts(&ctx);
+
+        egui::Panel::top("transport")
+            .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 6)))
+            .show(ui, |ui| self.transport_bar(ui));
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 3)))
+            .show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("detail")
+            .resizable(true)
+            .default_size(250.0)
+            .size_range(120.0..=600.0)
+            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::same(4)))
+            .show(ui, |ui| detail::detail_panel(self, ui));
+        if self.show_browser {
+            egui::Panel::left("browser")
+                .resizable(true)
+                .default_size(190.0)
+                .size_range(140.0..=400.0)
+                .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::same(6)))
+                .show(ui, |ui| browser::browser(self, ui));
+        }
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG_DARK)).show(ui, |ui| match self.view {
+            View::Session => session::session_view(self, ui),
+            View::Arrangement => arrangement::arrangement_view(self, ui),
+        });
+
+        self.dialogs(&ctx);
+        drag_preview(&ctx);
+        self.end_frame();
+        self.update_title(&ctx);
+
+        let moving = self.status.playing
+            || self.meter.iter().any(|m| *m > 1e-4)
+            || self.track_meters.iter().any(|m| m[0] > 1e-4)
+            || self.message.is_some()
+            || self.cache.is_pending();
+        ctx.request_repaint_after(if moving { Duration::from_millis(16) } else { Duration::from_millis(250) });
+    }
+}
+
+impl DawApp {
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.dialog = Some(Dialog::ConfirmDiscard(PendingAction::Quit));
+        }
+        if self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let t = format!("{}{} — daw", self.project.name, if self.dirty { " *" } else { "" });
+        if t != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(t.clone()));
+            self.title = t;
+        }
+    }
+
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_some() {
+            self.key_events.clear();
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.dialog = None;
+            }
+            return;
+        }
+        let typing = ctx.egui_wants_keyboard_input();
+        let cmd = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
+        let cmd_shift = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, k));
+        if cmd_shift(Key::Z) {
+            self.redo();
+        }
+        if cmd(Key::Z) {
+            self.undo();
+        }
+        if cmd(Key::Y) {
+            self.redo();
+        }
+        if cmd_shift(Key::S) {
+            self.dialog = Some(Dialog::SaveAs(self.default_path("dawproj")));
+        }
+        if cmd(Key::S) {
+            self.save();
+        }
+        if cmd(Key::O) {
+            self.dialog = Some(Dialog::Open(self.default_path("dawproj")));
+        }
+        if cmd(Key::N) {
+            self.guarded(PendingAction::New);
+        }
+        if cmd_shift(Key::R) {
+            self.dialog = Some(Dialog::Export { path: self.default_path("wav"), scene: None, bits: 24 });
+        }
+        if cmd_shift(Key::T) {
+            self.add_track(TrackKind::Audio);
+        }
+        if cmd(Key::T) {
+            self.add_track(TrackKind::Midi);
+        }
+        if cmd(Key::D) {
+            self.duplicate_selected_clip();
+        }
+        if cmd(Key::B) {
+            self.show_browser = !self.show_browser;
+        }
+        if typing {
+            self.key_events.clear();
+            return;
+        }
+        let events = std::mem::take(&mut self.key_events);
+        for ev in events {
+            let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
+            if modifiers.command || modifiers.alt {
+                continue;
+            }
+            if pressed && !repeat {
+                match key {
+                    Key::Space => {
+                        if modifiers.shift {
+                            self.send_now(Command::Play); // continue from position
+                        } else {
+                            self.toggle_play();
+                        }
+                        continue;
+                    }
+                    Key::Tab => {
+                        self.view = if self.view == View::Session { View::Arrangement } else { View::Session };
+                        continue;
+                    }
+                    Key::F9 => {
+                        self.toggle_record();
+                        continue;
+                    }
+                    Key::Delete | Key::Backspace => {
+                        if !self.delete_selected_notes() {
+                            self.delete_selected_clip();
+                        }
+                        continue;
+                    }
+                    Key::M if modifiers.shift => {
+                        self.kb.enabled = !self.kb.enabled;
+                        continue;
+                    }
+                    Key::Enter => {
+                        if let Some(crate::app::ClipRef::Slot { scene, .. }) = self.selected_clip {
+                            self.launch_scene(scene);
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            if self.kb.enabled && !(pressed && repeat) {
+                self.key_note(key, pressed);
+            }
+        }
+        // Release held notes if the window loses focus.
+        if !ctx.input(|i| i.focused) && !self.kb.held.is_empty() {
+            for (k, _) in self.kb.held.clone() {
+                self.key_note(k, false);
+            }
+        }
+    }
+
+    fn transport_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.menu_button("File", |ui| self.file_menu(ui));
+
+            let mut tempo = self.project.tempo_bpm;
+            let r = ui.add(egui::DragValue::new(&mut tempo).range(20.0..=999.0).speed(0.1).fixed_decimals(2).suffix(" BPM"));
+            if r.drag_started() || r.gained_focus() {
+                self.begin_gesture();
+            }
+            if r.changed() {
+                self.project.tempo_bpm = tempo;
+                self.send_now(Command::SetTempo(tempo));
+            }
+            let mut bpb = self.project.beats_per_bar;
+            if ui.add(egui::DragValue::new(&mut bpb).range(1..=32).suffix(" / 4")).changed() {
+                self.edit(|p| p.beats_per_bar = bpb);
+                self.send_now(Command::SetBeatsPerBar(bpb));
+            }
+            if icon_button(ui, Icon::Metronome, self.project.metronome, "Metronome").clicked() {
+                let on = !self.project.metronome;
+                self.edit(|p| p.metronome = on);
+                self.send_now(Command::SetMetronome(on));
+            }
+            let q = self.project.launch_quantize;
+            egui::ComboBox::from_id_salt("quant")
+                .width(64.0)
+                .selected_text(quant_label(q))
+                .show_ui(ui, |ui| {
+                    for v in [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
+                        if ui.selectable_label(q == v, quant_label(v)).clicked() {
+                            self.edit(|p| p.launch_quantize = v);
+                            self.send_now(Command::SetLaunchQuantize(v));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Global launch quantization");
+
+            ui.add_space(12.0);
+            let pos = self.status.position;
+            ui.label(
+                egui::RichText::new(format!("{:>3}.{}.{}", pos.bar, pos.beat, pos.sixteenth))
+                    .monospace()
+                    .size(17.0)
+                    .color(if self.status.playing { Color32::WHITE } else { Color32::LIGHT_GRAY }),
+            );
+            if icon_button(ui, Icon::Play, self.status.playing, "Play / Stop (Space)").clicked() {
+                if self.status.playing {
+                    self.send_now(Command::Rewind);
+                } else {
+                    self.send_now(Command::Play);
+                }
+            }
+            if icon_button(ui, Icon::Stop, false, "Stop; press again to return to start").clicked() {
+                self.stop();
+            }
+            let rec_active = matches!(self.status.record_state, RecordState::Recording | RecordState::StartPending);
+            let blink = matches!(self.status.record_state, RecordState::StartPending | RecordState::StopPending)
+                && (self.status.beat_position * 2.0).fract() < 0.5;
+            if icon_button(ui, Icon::Record, rec_active && !blink, "Record (F9): arrangement recording into armed tracks").clicked() {
+                self.toggle_record();
+            }
+            if icon_button(ui, Icon::Loop, self.project.loop_enabled, "Arrangement loop").clicked() {
+                let on = !self.project.loop_enabled;
+                self.edit(|p| p.loop_enabled = on);
+                self.send_loop();
+            }
+            if self.track_status.iter().any(|t| t.arrangement_off) {
+                let b = ui
+                    .add(egui::Button::new(egui::RichText::new("Back to Arrangement").color(Color32::BLACK)).fill(ACCENT))
+                    .on_hover_text("Session clips override the arrangement on some tracks");
+                if b.clicked() {
+                    self.send_now(Command::BackToArrangement);
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(format!("CPU {:>3.0}%", self.cpu_display * 100.0)).monospace());
+                if stereo_meter(ui, self.meter, self.clipped, egui::vec2(120.0, 18.0)).clicked() {
+                    self.clipped = false;
+                }
+                let mut db = self.project.master_gain_db;
+                let r = ui
+                    .add(egui::DragValue::new(&mut db).range(-60.0..=6.0).speed(0.2).fixed_decimals(1).suffix(" dB"))
+                    .on_hover_text("Master volume");
+                if r.drag_started() {
+                    self.begin_gesture();
+                }
+                if r.changed() {
+                    self.project.master_gain_db = db;
+                    self.send_now(Command::SetMasterGain(db_to_gain(db)));
+                }
+                ui.label("Master");
+                ui.separator();
+                if icon_button(ui, Icon::Arrangement, self.view == View::Arrangement, "Arrangement view (Tab)").clicked() {
+                    self.view = View::Arrangement;
+                }
+                if icon_button(ui, Icon::Session, self.view == View::Session, "Session view (Tab)").clicked() {
+                    self.view = View::Session;
+                }
+                let kb = icon_button(
+                    ui,
+                    Icon::Keyboard,
+                    self.kb.enabled,
+                    "Computer MIDI keyboard (Shift+M)\nA W S E D F T G Y H U J K = notes, Z/X octave, C/V velocity",
+                );
+                if kb.clicked() {
+                    self.kb.enabled = !self.kb.enabled;
+                }
+            });
+        });
+    }
+
+    pub fn send_loop(&mut self) {
+        let p = &self.project;
+        let c = Command::SetLoop { enabled: p.loop_enabled, start: p.loop_start, end: p.loop_end };
+        self.send_now(c);
+    }
+
+    fn file_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("New            Ctrl+N").clicked() {
+            self.guarded(PendingAction::New);
+            ui.close();
+        }
+        if ui.button("Open…          Ctrl+O").clicked() {
+            self.dialog = Some(Dialog::Open(self.default_path("dawproj")));
+            ui.close();
+        }
+        if ui.button("Save           Ctrl+S").clicked() {
+            self.save();
+            ui.close();
+        }
+        if ui.button("Save As…  Ctrl+Shift+S").clicked() {
+            self.dialog = Some(Dialog::SaveAs(self.default_path("dawproj")));
+            ui.close();
+        }
+        if ui.button("Export Audio… Ctrl+Shift+R").clicked() {
+            self.dialog = Some(Dialog::Export { path: self.default_path("wav"), scene: None, bits: 24 });
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo           Ctrl+Z")).clicked() {
+            self.undo();
+            ui.close();
+        }
+        if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo     Ctrl+Shift+Z")).clicked() {
+            self.redo();
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Add MIDI Track  Ctrl+T").clicked() {
+            self.add_track(TrackKind::Midi);
+            ui.close();
+        }
+        if ui.button("Add Audio Track Ctrl+Shift+T").clicked() {
+            self.add_track(TrackKind::Audio);
+            ui.close();
+        }
+        if ui.button("Add Scene").clicked() {
+            self.edit(|p| {
+                p.add_scene();
+            });
+            ui.close();
+        }
+        if ui.button("Rescan MIDI devices").clicked() {
+            self.midi.rescan();
+            ui.close();
+        }
+        if ui.button(if self.show_browser { "Hide Browser   Ctrl+B" } else { "Show Browser   Ctrl+B" }).clicked() {
+            self.show_browser = !self.show_browser;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("About").clicked() {
+            self.dialog = Some(Dialog::About);
+            ui.close();
+        }
+        if ui.button("Quit").clicked() {
+            self.guarded(PendingAction::Quit);
+            ui.close();
+        }
+    }
+
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let info = &self.audio.info;
+            let ok = info.null_reason.is_none();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.0, if ok { PLAY_GREEN } else { REC_RED });
+            ui.label(egui::RichText::new(info.summary()).small());
+            let input = match &info.input {
+                Ok(n) => format!("In: {n}"),
+                Err(e) => format!("No input ({e})"),
+            };
+            ui.label(egui::RichText::new(input).small().color(Color32::GRAY));
+            let midi = if self.midi.ports.is_empty() {
+                self.midi.error.clone().unwrap_or_else(|| "No MIDI devices".into())
+            } else {
+                format!("MIDI: {}", self.midi.ports.join(", "))
+            };
+            ui.label(egui::RichText::new(midi).small().color(Color32::GRAY));
+            if self.kb.enabled {
+                ui.label(egui::RichText::new(format!("Keys: C{} vel {}", self.kb.octave, self.kb.velocity)).small().color(ACCENT));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let h = &self.audio.health;
+                let xruns = h.xruns.load(Relaxed);
+                if xruns > 0 {
+                    ui.colored_label(ACCENT, format!("{xruns} dropouts"));
+                }
+                let errs = h.stream_errors.load(Relaxed);
+                if errs > 0 {
+                    let last = h.last_error.try_lock().ok().and_then(|g| g.clone()).unwrap_or_default();
+                    ui.colored_label(Color32::LIGHT_RED, format!("{errs} audio errors")).on_hover_text(last);
+                }
+                if h.realtime_denied.load(Relaxed) {
+                    ui.colored_label(ACCENT, "no RT priority");
+                }
+                if self.dropped_commands > 0 {
+                    ui.colored_label(Color32::LIGHT_RED, format!("{} commands dropped", self.dropped_commands));
+                }
+                if let Some((msg, at)) = &self.message {
+                    if at.elapsed() < Duration::from_secs(4) {
+                        ui.label(egui::RichText::new(msg).color(Color32::WHITE));
+                    } else {
+                        self.message = None;
+                    }
+                }
+            });
+        });
+    }
+
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.dialog.clone() else { return };
+        let mut close = false;
+        let mut action: Option<Box<dyn FnOnce(&mut DawApp)>> = None;
+        let title = match &dialog {
+            Dialog::Open(_) => "Open Project",
+            Dialog::SaveAs(_) => "Save Project As",
+            Dialog::Export { .. } => "Export Audio",
+            Dialog::ConfirmDiscard(_) => "Unsaved Changes",
+            Dialog::About => "About daw",
+        };
+        let scenes = self.project.scenes.len();
+        egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            match &mut dialog {
+                Dialog::Open(path) | Dialog::SaveAs(path) => {
+                    let is_open = matches!(self.dialog, Some(Dialog::Open(_)));
+                    ui.label("File path:");
+                    let r = ui.add(egui::TextEdit::singleline(path).desired_width(420.0));
+                    r.request_focus();
+                    if is_open {
+                        // Quick picks: project files next to the current folder.
+                        let dir = PathBuf::from(&*path).parent().map(PathBuf::from).unwrap_or_default();
+                        if let Ok(rd) = std::fs::read_dir(&dir) {
+                            let mut files: Vec<PathBuf> = rd
+                                .flatten()
+                                .map(|e| e.path())
+                                .filter(|p| p.extension().is_some_and(|e| e == daw_project::FILE_EXTENSION))
+                                .collect();
+                            files.sort();
+                            for f in files.into_iter().take(12) {
+                                if ui.selectable_label(false, f.file_name().unwrap_or_default().to_string_lossy()).clicked() {
+                                    *path = f.to_string_lossy().into_owned();
+                                }
+                            }
+                        }
+                    }
+                    let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.button(if is_open { "Open" } else { "Save" }).clicked() || enter {
+                            let p = path.clone();
+                            action = Some(if is_open {
+                                Box::new(move |a: &mut DawApp| a.guarded(PendingAction::Open(p)))
+                            } else {
+                                Box::new(move |a: &mut DawApp| {
+                                    a.save_as(PathBuf::from(p));
+                                })
+                            });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Export { path, scene, bits } => {
+                    ui.label("Output WAV file:");
+                    ui.add(egui::TextEdit::singleline(path).desired_width(420.0));
+                    ui.horizontal(|ui| {
+                        ui.label("Source:");
+                        ui.radio_value(scene, None, "Arrangement");
+                        egui::ComboBox::from_id_salt("exp_scene")
+                            .selected_text(scene.map_or("Scene…".to_string(), |s| format!("Scene {}", s + 1)))
+                            .show_ui(ui, |ui| {
+                                for s in 0..scenes {
+                                    ui.selectable_value(scene, Some(s), format!("Scene {}", s + 1));
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Format:");
+                        ui.radio_value(bits, 16, "16-bit");
+                        ui.radio_value(bits, 24, "24-bit");
+                        ui.radio_value(bits, 32, "32-bit float");
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Export").clicked() {
+                            let (p, s, b) = (PathBuf::from(&*path), *scene, *bits);
+                            action = Some(Box::new(move |a: &mut DawApp| a.export(p, s, b)));
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::ConfirmDiscard(pending) => {
+                    ui.label("The project has unsaved changes.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            let pa = pending.clone();
+                            action = Some(Box::new(move |a: &mut DawApp| {
+                                if a.save() {
+                                    a.run_pending(pa);
+                                }
+                            }));
+                            close = true;
+                        }
+                        if ui.button("Don't Save").clicked() {
+                            let pa = pending.clone();
+                            action = Some(Box::new(move |a: &mut DawApp| a.run_pending(pa)));
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::About => {
+                    ui.label("daw: a small, fast Rust DAW.");
+                    ui.label(format!("Engine at {} Hz", self.audio.info.sample_rate));
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                }
+            }
+        });
+        self.dialog = if close { None } else { Some(dialog) };
+        if let Some(a) = action {
+            a(self);
+        }
+    }
+}
+
+fn quant_label(q: f64) -> String {
+    match q {
+        0.0 => "None".into(),
+        0.25 => "1/16".into(),
+        0.5 => "1/8".into(),
+        1.0 => "1/4".into(),
+        2.0 => "1/2".into(),
+        4.0 => "1 Bar".into(),
+        v => format!("{} Bars", v / 4.0),
+    }
+}
+
+/// Floating label next to the cursor while dragging something from the browser.
+#[allow(deprecated)]
+fn drag_preview(ctx: &egui::Context) {
+    let Some(item) = egui::DragAndDrop::payload::<DragItem>(ctx) else { return };
+    let Some(pos) = ctx.pointer_latest_pos() else { return };
+    let text = match &*item {
+        DragItem::Sample { name, .. } => name.clone(),
+        DragItem::SynthPreset(n) => format!("Synth: {n}"),
+        DragItem::DrumKit => "Drum Rack".into(),
+        DragItem::SessionClip { .. } => "Clip".into(),
+    };
+    egui::Area::new(egui::Id::new("drag_preview"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos + egui::vec2(12.0, 8.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(text));
+        });
+}
+
+/// Instrument for a dropped browser item.
+pub fn instrument_for(item: &DragItem) -> Option<InstrumentDef> {
+    match item {
+        DragItem::SynthPreset(n) => Some(InstrumentDef::Synth(daw_engine::SynthParams::preset(n))),
+        DragItem::DrumKit => Some(InstrumentDef::factory_drums()),
+        DragItem::Sample { key, .. } => Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: Default::default() }),
+        DragItem::SessionClip { .. } => None,
+    }
+}

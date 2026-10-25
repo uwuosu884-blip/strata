@@ -204,7 +204,17 @@ mod tests {
         let mut input = h.take_input().unwrap();
         let rec = Recorder::spawn(h.take_recorder().unwrap());
         let song = daw_engine::Song {
-            tracks: vec![daw_engine::SongTrack { rt: 0, gain: 1.0, pan: 0.0, mute: false, solo: false, monitor: false, instrument: daw_engine::Instrument::None, slots: vec![], arrangement: vec![] }],
+            tracks: vec![daw_engine::SongTrack {
+                rt: 0,
+                gain: 1.0,
+                pan: 0.0,
+                mute: false,
+                solo: false,
+                monitor: false,
+                instrument: daw_engine::Instrument::None,
+                slots: vec![],
+                arrangement: vec![],
+            }],
         };
         h.set_song(song).unwrap();
         for c in [Command::SetLaunchQuantize(0.0), Command::SetMidiTarget(Some(0)), Command::SetRecording(true), Command::Play] {

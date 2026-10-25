@@ -50,7 +50,12 @@ fn clip(c: &p::Clip, cache: &mut SampleCache) -> e::Clip {
     let content = match &c.content {
         p::ClipContent::Midi { notes } => e::ClipContent::Midi(notes.clone()),
         p::ClipContent::Audio { sample, offset_frames, warp_bpm, gain_db } => match cache.get(sample) {
-            Some(buf) => e::ClipContent::Audio(e::AudioClip { sample: buf, offset_frames: *offset_frames, warp_bpm: *warp_bpm, gain: db_to_gain(*gain_db) }),
+            Some(buf) => e::ClipContent::Audio(e::AudioClip {
+                sample: buf,
+                offset_frames: *offset_frames,
+                warp_bpm: *warp_bpm,
+                gain: db_to_gain(*gain_db),
+            }),
             // Not loaded yet: silent placeholder keeps launch timing intact.
             None => e::ClipContent::Midi(Vec::new()),
         },

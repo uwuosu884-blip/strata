@@ -70,11 +70,7 @@ impl MusicalPosition {
         let bpb = beats_per_bar.max(1) as u64;
         let whole_beats = beats.floor() as u64;
         let sixteenth = ((beats.fract() * 4.0).floor() as u32).min(3);
-        Self {
-            bar: whole_beats / bpb + 1,
-            beat: (whole_beats % bpb) as u32 + 1,
-            sixteenth: sixteenth + 1,
-        }
+        Self { bar: whole_beats / bpb + 1, beat: (whole_beats % bpb) as u32 + 1, sixteenth: sixteenth + 1 }
     }
 }
 

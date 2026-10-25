@@ -20,8 +20,9 @@ OPTIONS:
         --tail <SECONDS>    Release tail after the end [default: 2]
         --metronome         Include the metronome click
         --demo              Render a built-in demo beat (no project needed)
+        --write-demo <FILE> Save the demo as a project file and exit
         --sample-rate <HZ>  [default: 48000]
-        --bits <16|32>      16-bit PCM (dithered) or 32-bit float [default: 32]
+        --bits <16|24|32>   16/24-bit PCM (dithered) or 32-bit float [default: 32]
     -h, --help              Show this help";
 
 struct Args {
@@ -54,6 +55,12 @@ fn parse_args() -> Result<Args, String> {
             "--tail" => opts.tail_seconds = value(&flag)?.parse().map_err(|_| "invalid --tail")?,
             "--metronome" => opts.metronome = true,
             "--demo" => demo = true,
+            "--write-demo" => {
+                let path = PathBuf::from(value(&flag)?);
+                demo_project().save(&path).map_err(|e| e.to_string())?;
+                println!("Wrote {}", path.display());
+                return Err(String::new() + "\u{0}");
+            }
             "--sample-rate" => opts.sample_rate = value(&flag)?.parse().map_err(|_| "invalid --sample-rate")?,
             "--bits" => bits = value(&flag)?.parse().map_err(|_| "invalid --bits")?,
             "-h" | "--help" => return Err(String::new()),
@@ -64,8 +71,8 @@ fn parse_args() -> Result<Args, String> {
     if !(8_000..=384_000).contains(&opts.sample_rate) {
         return Err("--sample-rate must be between 8000 and 384000".into());
     }
-    if bits != 16 && bits != 32 {
-        return Err("--bits must be 16 or 32".into());
+    if ![16, 24, 32].contains(&bits) {
+        return Err("--bits must be 16, 24 or 32".into());
     }
     if project.is_none() && !demo {
         return Err("give a PROJECT file or --demo".into());
@@ -86,7 +93,8 @@ fn demo_project() -> Project {
         drums.extend((0..8).map(|i| n(o + i as f64 * 0.5, 0.1, 39, if i % 2 == 0 { 90 } else { 60 })));
     }
     let bass: Vec<Note> = [36u8, 36, 39, 41, 36, 36, 43, 41].iter().enumerate().map(|(i, &p)| n(i as f64, 0.45, p, 105)).collect();
-    let chords: Vec<Note> = [(0.0, [60u8, 63, 67]), (4.0, [58, 62, 65])].iter().flat_map(|(s, ch)| ch.iter().map(move |&p| n(*s, 3.5, p, 80))).collect();
+    let chords: Vec<Note> =
+        [(0.0, [60u8, 63, 67]), (4.0, [58, 62, 65])].iter().flat_map(|(s, ch)| ch.iter().map(move |&p| n(*s, 3.5, p, 80))).collect();
     let clip = |len: f64, notes: Vec<Note>| Clip { length: len, content: ClipContent::Midi { notes }, ..Default::default() };
     for (t, db) in [(0, -5.0), (1, -6.0), (2, -10.0)] {
         p.tracks[t].gain_db = db;
@@ -96,7 +104,9 @@ fn demo_project() -> Project {
     p.tracks[2].slots[0] = Some(clip(8.0, chords.clone()));
     for (t, notes) in [(0, drums), (1, bass), (2, chords)] {
         for k in 0..2 {
-            p.tracks[t].arrangement.push(ArrangementClip { start: k as f64 * 8.0, clip: Clip { looping: false, ..clip(8.0, notes.clone()) } });
+            p.tracks[t]
+                .arrangement
+                .push(ArrangementClip { start: k as f64 * 8.0, clip: Clip { looping: false, ..clip(8.0, notes.clone()) } });
         }
     }
     p
@@ -139,6 +149,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Err(msg) if msg == "\u{0}" => ExitCode::SUCCESS,
         Err(msg) if msg.is_empty() => {
             println!("{USAGE}");
             ExitCode::SUCCESS

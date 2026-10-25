@@ -3,7 +3,9 @@
 //! monitoring, MIDI input, loop jumps. The custom allocator aborts the test
 //! process on any allocation inside `assert_no_alloc` (debug builds).
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+#[cfg(debug_assertions)]
+use assert_no_alloc::AllocDisabler;
+use assert_no_alloc::assert_no_alloc;
 use daw_engine::*;
 use std::sync::Arc;
 
@@ -18,9 +20,12 @@ fn big_song(variant: usize) -> Song {
         looping: true,
         content: ClipContent::Audio(AudioClip { sample: sample.clone(), offset_frames: 0.0, warp_bpm: Some(100.0), gain: 0.5 }),
     };
-    let many_notes: Vec<Note> = (0..600).map(|i| Note { start: i as f64 / 150.0, length: 0.1, pitch: 30 + (i % 60) as u8, velocity: 100 }).collect();
+    let many_notes: Vec<Note> =
+        (0..600).map(|i| Note { start: i as f64 / 150.0, length: 0.1, pitch: 30 + (i % 60) as u8, velocity: 100 }).collect();
     let midi = Clip { length: 4.0, looping: true, content: ClipContent::Midi(many_notes) };
-    let pads = (0..16).map(|i| DrumPad { name: "p".into(), sample: Some(sample.clone()), gain: 0.5, tune_semitones: 0.0, choke: (i % 3) as u8 }).collect();
+    let pads = (0..16)
+        .map(|i| DrumPad { name: "p".into(), sample: Some(sample.clone()), gain: 0.5, tune_semitones: 0.0, choke: (i % 3) as u8 })
+        .collect();
     let instruments = [
         Instrument::Synth(SynthParams::preset("Pad")),
         Instrument::Sampler { sample: Some(sample.clone()), params: SamplerParams::default() },

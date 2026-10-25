@@ -109,10 +109,7 @@ impl SharedStatus {
             position: MusicalPosition::from_beats(beat_position, beats_per_bar),
             tempo: f64::from_bits(self.tempo.load(Relaxed)),
             beats_per_bar,
-            peak: [
-                f32::from_bits(self.peak_left.swap(0, Relaxed)),
-                f32::from_bits(self.peak_right.swap(0, Relaxed)),
-            ],
+            peak: [f32::from_bits(self.peak_left.swap(0, Relaxed)), f32::from_bits(self.peak_right.swap(0, Relaxed))],
             cpu_load: f32::from_bits(self.cpu_load.load(Relaxed)),
             record_state: RecordState::from_u8(self.record_state.load(Relaxed)),
         }
@@ -179,7 +176,7 @@ pub enum PendingLaunch {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TrackSnapshot {
     pub playing_scene: Option<u32>,
     pub pending: Option<PendingLaunch>,

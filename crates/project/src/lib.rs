@@ -128,8 +128,13 @@ pub enum InstrumentDef {
     #[default]
     None,
     Synth(SynthParams),
-    Sampler { sample: Option<String>, params: SamplerParams },
-    Drums { pads: Vec<PadDef> },
+    Sampler {
+        sample: Option<String>,
+        params: SamplerParams,
+    },
+    Drums {
+        pads: Vec<PadDef>,
+    },
 }
 
 impl InstrumentDef {
@@ -334,13 +339,31 @@ impl Project {
             .tracks
             .iter()
             .flat_map(|t| {
-                std::iter::once(t.id)
-                    .chain(t.slots.iter().flatten().map(|c| c.id))
-                    .chain(t.arrangement.iter().map(|a| a.clip.id))
+                std::iter::once(t.id).chain(t.slots.iter().flatten().map(|c| c.id)).chain(t.arrangement.iter().map(|a| a.clip.id))
             })
             .max()
             .unwrap_or(0);
         self.next_id = self.next_id.max(max_id + 1);
+        // Ids must be unique and non-zero (old/hand-written files may repeat them).
+        let mut seen = std::collections::HashSet::new();
+        let mut next = self.next_id;
+        let mut fix = |id: &mut u64| {
+            if *id == 0 || !seen.insert(*id) {
+                *id = next;
+                seen.insert(next);
+                next += 1;
+            }
+        };
+        for t in &mut self.tracks {
+            fix(&mut t.id);
+            for c in t.slots.iter_mut().flatten() {
+                fix(&mut c.id);
+            }
+            for a in &mut t.arrangement {
+                fix(&mut a.clip.id);
+            }
+        }
+        self.next_id = next;
     }
 
     pub fn track_index(&self, id: u64) -> Option<usize> {
@@ -352,8 +375,63 @@ impl Project {
         let id = self.alloc_id();
         let t = self.tracks.get_mut(track)?;
         let slot = t.slots.get_mut(scene)?;
-        *slot = Some(Clip { id, name: format!("Clip {id}"), color: t.color, length, looping: true, content: ClipContent::Midi { notes: Vec::new() } });
+        *slot = Some(Clip {
+            id,
+            name: format!("Clip {id}"),
+            color: t.color,
+            length,
+            looping: true,
+            content: ClipContent::Midi { notes: Vec::new() },
+        });
         Some(id)
+    }
+
+    /// Make room for new material in `[start, end)` on a track's arrangement:
+    /// covered clips are removed, overlapping ones trimmed or split
+    /// (MIDI notes / audio offsets are shifted so content stays in place).
+    pub fn clear_arrangement_range(&mut self, track: usize, start: f64, end: f64, frames_per_beat: impl Fn(&Clip) -> f64) {
+        if end <= start {
+            return;
+        }
+        let mut next_id = self.next_id;
+        let Some(t) = self.tracks.get_mut(track) else { return };
+        let mut out = Vec::with_capacity(t.arrangement.len() + 1);
+        for a in t.arrangement.drain(..) {
+            let (s, e) = (a.start, a.start + a.clip.length);
+            if e <= start || s >= end {
+                out.push(a);
+                continue;
+            }
+            if s < start {
+                // Head survives.
+                let mut head = a.clone();
+                head.clip.length = start - s;
+                out.push(head);
+            }
+            if e > end {
+                // Tail survives: shift content left by (end - s).
+                let cut = end - s;
+                let mut tail = a.clone();
+                tail.start = end;
+                tail.clip.length = e - end;
+                if s < start {
+                    tail.clip.id = next_id;
+                    next_id += 1;
+                }
+                let fpb = frames_per_beat(&tail.clip);
+                match &mut tail.clip.content {
+                    ClipContent::Midi { notes } => {
+                        notes.retain(|n| n.start >= cut);
+                        notes.iter_mut().for_each(|n| n.start -= cut);
+                    }
+                    ClipContent::Audio { offset_frames, .. } => *offset_frames += cut * fpb,
+                }
+                out.push(tail);
+            }
+        }
+        out.sort_by(|a, b| a.start.total_cmp(&b.start));
+        t.arrangement = out;
+        self.next_id = next_id;
     }
 
     /// End of the arrangement (beats).
@@ -418,8 +496,12 @@ mod tests {
         }
         p.tracks[3].arrangement.push(ArrangementClip {
             start: 4.0,
-            clip: Clip { content: ClipContent::Audio { sample: "factory:Kick".into(), offset_frames: 0.0, warp_bpm: Some(120.0), gain_db: -3.0 }, ..Default::default() },
+            clip: Clip {
+                content: ClipContent::Audio { sample: "factory:Kick".into(), offset_frames: 0.0, warp_bpm: Some(120.0), gain_db: -3.0 },
+                ..Default::default()
+            },
         });
+        p.normalize();
         let back = Project::from_ron(&p.to_ron().unwrap()).unwrap();
         assert_eq!(back, p);
         assert!(id > 0 && back.next_id > id);
@@ -462,6 +544,68 @@ mod tests {
         let mut text_loaded = Project::from_ron(&p.to_ron().unwrap()).unwrap();
         let fresh = text_loaded.alloc_id();
         assert!(!ids.contains(&fresh));
+    }
+
+    #[test]
+    fn normalize_repairs_zero_and_duplicate_ids() {
+        let mut p = Project::new_default();
+        for t in 0..2 {
+            p.tracks[t].slots[0] = Some(Clip::default());
+            p.tracks[t].arrangement.push(ArrangementClip::default());
+        }
+        p.tracks[1].id = p.tracks[0].id;
+        p.normalize();
+        let mut ids: Vec<u64> = p.tracks.iter().map(|t| t.id).collect();
+        ids.extend(p.tracks.iter().flat_map(|t| t.slots.iter().flatten().map(|c| c.id).chain(t.arrangement.iter().map(|a| a.clip.id))));
+        assert!(ids.iter().all(|&i| i > 0));
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+        assert!(p.next_id > *ids.last().unwrap());
+    }
+
+    #[test]
+    fn clearing_a_range_trims_splits_and_removes() {
+        let mut p = Project::new_default();
+        let midi = |len: f64, starts: &[f64]| Clip {
+            length: len,
+            content: ClipContent::Midi {
+                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100 }).collect(),
+            },
+            ..Default::default()
+        };
+        p.tracks[1].arrangement = vec![
+            ArrangementClip { start: 0.0, clip: midi(8.0, &[0.0, 3.0, 6.0]) }, // split around [2,5)
+            ArrangementClip { start: 10.0, clip: midi(2.0, &[0.0]) },          // untouched
+        ];
+        p.normalize();
+        p.clear_arrangement_range(1, 2.0, 5.0, |_| 0.0);
+        let a = &p.tracks[1].arrangement;
+        assert_eq!(a.len(), 3);
+        assert_eq!((a[0].start, a[0].clip.length), (0.0, 2.0));
+        assert_eq!((a[1].start, a[1].clip.length), (5.0, 3.0));
+        match &a[1].clip.content {
+            ClipContent::Midi { notes } => assert_eq!(notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![1.0]),
+            _ => unreachable!(),
+        }
+        assert_ne!(a[0].clip.id, a[1].clip.id);
+        assert_eq!(a[2].start, 10.0);
+        // Fully covered → removed; audio tail gets an offset.
+        p.tracks[3].arrangement = vec![ArrangementClip {
+            start: 4.0,
+            clip: Clip {
+                length: 4.0,
+                content: ClipContent::Audio { sample: "x".into(), offset_frames: 0.0, warp_bpm: None, gain_db: 0.0 },
+                ..Default::default()
+            },
+        }];
+        p.clear_arrangement_range(3, 0.0, 6.0, |_| 24_000.0);
+        let a = &p.tracks[3].arrangement;
+        assert_eq!((a.len(), a[0].start, a[0].clip.length), (1, 6.0, 2.0));
+        assert!(matches!(a[0].clip.content, ClipContent::Audio { offset_frames, .. } if offset_frames == 48_000.0));
+        p.clear_arrangement_range(1, 0.0, 100.0, |_| 0.0);
+        assert!(p.tracks[1].arrangement.is_empty());
     }
 
     #[test]

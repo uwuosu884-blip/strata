@@ -80,8 +80,8 @@ pub fn resample(buf: SampleBuffer, target: u32) -> Result<SampleBuffer, String> 
     }
     let frames = buf.len();
     let data: Vec<f32> = buf.left.iter().zip(&buf.right).flat_map(|(l, r)| [*l, *r]).collect();
-    let mut rs = Fft::<f32>::new(buf.sample_rate as usize, target as usize, 1024, 2, FixedSync::Input)
-        .map_err(|e| format!("resampler: {e}"))?;
+    let mut rs =
+        Fft::<f32>::new(buf.sample_rate as usize, target as usize, 1024, 2, FixedSync::Input).map_err(|e| format!("resampler: {e}"))?;
     let input = InterleavedSlice::new(&data, 2, frames).map_err(|e| format!("resampler input: {e}"))?;
     let out = rs.process_all(&input, frames, None).map_err(|e| format!("resample: {e}"))?.take_data();
     let (mut l, mut r) = (Vec::with_capacity(out.len() / 2), Vec::with_capacity(out.len() / 2));

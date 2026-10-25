@@ -296,12 +296,8 @@ fn play_clip(
                     let at = base + note.start - u0;
                     let off = (((at + EPS) / ctx.bps).floor().max(0.0) as usize).min(ctx.n - 1);
                     let len_beats = note.length.min(len - note.start);
-                    events[*n_events] = NoteEvent {
-                        offset: off as u32,
-                        pitch: note.pitch,
-                        vel: note.velocity,
-                        len: ((len_beats / ctx.bps) as u32).max(1),
-                    };
+                    events[*n_events] =
+                        NoteEvent { offset: off as u32, pitch: note.pitch, vel: note.velocity, len: ((len_beats / ctx.bps) as u32).max(1) };
                     *n_events += 1;
                 }
             }

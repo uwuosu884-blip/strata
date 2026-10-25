@@ -13,7 +13,10 @@ pub enum Instrument {
     #[default]
     None,
     Synth(SynthParams),
-    Sampler { sample: Option<Arc<SampleBuffer>>, params: SamplerParams },
+    Sampler {
+        sample: Option<Arc<SampleBuffer>>,
+        params: SamplerParams,
+    },
     Drums(Vec<DrumPad>),
 }
 
@@ -35,9 +38,7 @@ impl Voices {
         match def {
             Instrument::None => {}
             Instrument::Synth(p) => self.synth.note_on(p, pitch, vel, remaining, from_clip, sr),
-            Instrument::Sampler { sample: Some(s), params } => {
-                self.sampler.sampler_on(s, params, pitch, vel, remaining, from_clip, sr)
-            }
+            Instrument::Sampler { sample: Some(s), params } => self.sampler.sampler_on(s, params, pitch, vel, remaining, from_clip, sr),
             Instrument::Sampler { sample: None, .. } => {}
             Instrument::Drums(pads) => self.drums.drum_on(pads, pitch, vel, from_clip, sr),
         }
