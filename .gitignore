@@ -1,0 +1,6 @@
+/target
+/dist
+/renders
+*.wav
+*.flac
+*.mp3

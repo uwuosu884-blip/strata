@@ -1,0 +1,10 @@
+[package]
+name = "daw-project"
+description = "Project data model and file format (saved with serde + RON)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+ron.workspace = true

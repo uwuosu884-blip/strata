@@ -1,0 +1,25 @@
+[package]
+name = "daw-app"
+description = "The desktop DAW application (GUI + audio device)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "daw"
+path = "src/main.rs"
+
+[features]
+# Optional audio backends. Defaults: ALSA (Linux), WASAPI (Windows), CoreAudio (macOS).
+jack = ["cpal/jack"]             # Linux/macOS/Windows; needs libjack-jackd2-dev on Linux
+pipewire = ["cpal/pipewire"]     # Linux; needs libpipewire-0.3-dev + clang
+pulseaudio = ["cpal/pulseaudio"] # Linux; needs libpulse-dev
+asio = ["cpal/asio"]             # Windows low-latency; needs ASIO SDK + LLVM/clang
+
+[dependencies]
+daw-engine.workspace = true
+daw-project.workspace = true
+cpal.workspace = true
+eframe.workspace = true
+assert_no_alloc.workspace = true
+no_denormals.workspace = true

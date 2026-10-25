@@ -1,0 +1,16 @@
+[package]
+name = "daw-render"
+description = "Offline renderer: runs the engine faster than real time and writes a WAV file."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "daw-render"
+path = "src/main.rs"
+
+[dependencies]
+daw-engine.workspace = true
+daw-project.workspace = true
+hound.workspace = true
+assert_no_alloc.workspace = true

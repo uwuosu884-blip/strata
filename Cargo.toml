@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine", "crates/project", "crates/render", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
+daw-engine = { path = "crates/engine" }
+daw-project = { path = "crates/project" }
+
+# Audio / real-time
+cpal = { version = "0.18", features = ["realtime"] }
+rtrb = "0.4"
+assert_no_alloc = "1.1"
+no_denormals = "0.3"
+hound = "3.5"
+
+# GUI (glow = OpenGL renderer: lighter and faster to build than the wgpu default)
+eframe = { version = "0.37", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "wayland",
+    "x11",
+    "accesskit",
+] }
+
+# Project files
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+
+# ---------------------------------------------------------------------------
+# Build profiles
+# ---------------------------------------------------------------------------
+
+# Debug builds: our code lightly optimized (realtime audio must keep up),
+# all dependencies fully optimized. Overflow checks stay ON in our code.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Day-to-day release builds (thin LTO keeps RAM use reasonable on small machines).
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Shipping builds: `cargo build --profile dist`. Maximum optimization.
+# (Output lands in target/dist/, which is outside the saved workspace.)
+[profile.dist]
+inherits = "release"
+lto = "fat"

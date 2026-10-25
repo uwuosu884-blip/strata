@@ -1,0 +1,75 @@
+name: CI
+
+# Builds and tests on Linux, Windows and macOS for every push / pull request.
+# Release binaries are uploaded as workflow artifacts (Actions tab → run → Artifacts).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            exe: ""
+          - name: windows-x86_64
+            os: windows-latest
+            exe: ".exe"
+          - name: macos-arm64
+            os: macos-latest
+            exe: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo bash scripts/linux-deps.sh
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (debug — keeps overflow checks and the no-allocation check)
+        run: cargo test --workspace
+
+      - name: Test (release)
+        run: cargo test --workspace --release
+
+      - name: Build shipping binaries
+        run: cargo build --profile dist -p daw-app -p daw-render
+
+      - name: Linux optional backends compile (JACK + PipeWire)
+        if: runner.os == 'Linux'
+        run: cargo check -p daw-app --features jack,pipewire
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.name }}
+          cp target/dist/daw${{ matrix.exe }} target/dist/daw-render${{ matrix.exe }} dist/${{ matrix.name }}/
+          cp README.md dist/${{ matrix.name }}/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daw-${{ matrix.name }}
+          path: dist/${{ matrix.name }}
