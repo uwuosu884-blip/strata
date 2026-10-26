@@ -106,7 +106,7 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Shift+M | Toggle computer keyboard MIDI |
 | Del | Delete selection (notes, time selection, clips or tracks) |
 | 0 | Deactivate / activate the selected clips or notes |
-| Esc | Clear the arrangement selection |
+| Esc | Clear the selection (and the last-touched track) |
 | Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) | Undo / redo |
 | Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N | Save / save as / open / new |
 | Ctrl+Shift+R | Export audio |
@@ -114,7 +114,9 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
 | Ctrl+L | Loop the selected region (or clips); again: loop off |
 | Ctrl+J | Consolidate clips (audio is rendered to a new sample) |
-| Ctrl+R | Rename the selected track (or double-click its header) |
+| Ctrl+R | Rename the selected clip, else the selected track (or double-click a header / clip title) |
+| Ctrl+A | Select all notes (piano roll) or all clips |
+| ↑ / ↓, Shift+↑ / ↓ | Transpose the selected notes by a semitone / an octave |
 | Ctrl+E | Split clips at the selection edges or at the playhead |
 | Ctrl+Shift+M | Insert a MIDI clip over the selected region |
 | Ctrl+D | Duplicate (notes, selection, clips or session clip) |
@@ -123,18 +125,26 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 Arrangement mouse: drag a clip's title bar to move it (and all selected
 clips); drag its left/right edge to trim (up to the clip's content). Drag on a lane or clip body to make a
 time selection; drag inside a selection to cut that part out and move it.
-Click anywhere to move the playhead. Shift+click headers or clips to
-multi-select. Wheel scrolls, Shift+wheel scrolls horizontally, Ctrl+wheel
-zooms, Alt+wheel changes the height of the selected tracks (all when none
-is selected); zoom fully out, or use the ⊳ header button, to collapse a
+Click empty space to move the playhead; click a clip to select it and put the
+start point at its start. Shift+click selects a range (headers: the tracks in
+between; clips: every clip in the tracks × time rectangle), Ctrl+click toggles.
+Wheel scrolls, Shift+wheel scrolls horizontally, Ctrl+wheel zooms, Alt+wheel
+changes the height of the track touched last (all after Esc); zoom fully out,
+or use the ⊳ header button, to collapse a
 track to clip title bars. Drag headers to reorder tracks or move them into
 or out of groups. Drag in the ruler to set the loop range, drag the loop
 brace or its edges to adjust it, and click it to switch looping on or off. Hold
 Alt to ignore the grid. Right-click → Grid sets the grid size.
 
-Piano roll: double-click adds or removes notes, drag on empty space to select
-with a rubber band, Ctrl+wheel / Alt+wheel zoom, Shift+wheel scrolls, and
-clicking the ruler moves the playhead.
+Piano roll: double-click adds or removes notes (new notes use the last length
+and velocity you set), drag on empty space to select with a rubber band
+(Ctrl+D then duplicates that time range), Ctrl+drag copies notes, Ctrl+wheel /
+Alt+wheel zoom, Shift+wheel scrolls, and clicking the ruler moves the playhead.
+Notes dragged past the clip end are kept but silent. The headphones button
+toggles note preview; drag the line above the velocity lane to resize it.
+
+Tempo box: drag or wheel in whole BPM, Shift for 0.01 steps, double-click to
+type. Time signature: drag or wheel, double-click for 4/4.
 
 Audio files: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG (Vorbis, FLAC and Opus).
 

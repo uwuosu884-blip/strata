@@ -426,3 +426,31 @@ pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode) {
         ui.label(egui::RichText::new("Hold Alt to ignore the grid").small().color(Color32::GRAY));
     });
 }
+
+/// Header toggle painted into `rect` (arrangement headers: activator, S, arm).
+/// `text == "REC"` paints the record dot.
+pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: bool, on_color: Color32, tooltip: &str) -> egui::Response {
+    let resp = ui.interact(rect, id, Sense::click());
+    let bg = if on {
+        on_color
+    } else if resp.hovered() {
+        Color32::from_gray(74)
+    } else {
+        Color32::from_gray(58)
+    };
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::same(2), bg);
+    if text == "REC" {
+        p.circle_filled(rect.center(), (rect.height() * 0.28).min(4.0), if on { Color32::BLACK } else { REC_RED });
+    } else {
+        let fg = if on { Color32::BLACK } else { Color32::from_gray(210) };
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.5), fg);
+    }
+    resp.on_hover_text(tooltip)
+}
+
+/// Black or white text, whichever reads better on `bg`.
+pub fn text_on(bg: Color32) -> Color32 {
+    let l = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    if l > 140.0 { Color32::BLACK } else { Color32::WHITE }
+}

@@ -11,6 +11,26 @@ pub const COLLAPSED_H: f32 = 20.0;
 pub const ROW_MIN: f32 = 40.0;
 pub const ROW_MAX: f32 = 300.0;
 
+/// How a click changes a selection: plain, Ctrl = toggle one item, Shift = range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelMode {
+    Single,
+    Toggle,
+    Range,
+}
+
+impl SelMode {
+    pub fn from_mods(m: &eframe::egui::Modifiers) -> Self {
+        if m.shift {
+            Self::Range
+        } else if m.command {
+            Self::Toggle
+        } else {
+            Self::Single
+        }
+    }
+}
+
 /// Snap grid (right-click menu in the arrangement / piano roll). Alt bypasses snapping.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GridMode {
@@ -112,19 +132,44 @@ impl DawApp {
         if self.track_sel.is_empty() { self.selected_track == t } else { self.track_sel.contains(&t) }
     }
 
-    /// Header click: explicit track selection (Alt+wheel zooms and Del deletes
-    /// these). The detail panel switches to the track's devices.
-    pub fn select_track_header(&mut self, t: usize, toggle: bool) {
-        self.click_track(t, toggle);
+    /// Header click: explicit track selection (Del deletes these). Shift selects
+    /// every visible track between the anchor and `t`, Ctrl toggles `t`.
+    /// The detail panel switches to the track's devices.
+    pub fn select_track_header(&mut self, t: usize, mode: SelMode) {
+        match mode {
+            SelMode::Range => {
+                let anchor = self.track_anchor.filter(|&a| a < self.project.tracks.len()).unwrap_or(self.selected_track);
+                let rows = self.project.visible_tracks();
+                let (pa, pt) = (rows.iter().position(|&r| r == anchor), rows.iter().position(|&r| r == t));
+                self.track_sel = match (pa, pt) {
+                    (Some(a), Some(b)) => rows[a.min(b)..=a.max(b)].to_vec(),
+                    _ => vec![t],
+                };
+                self.selected_track = t;
+                if self.track_anchor.is_none() {
+                    self.track_anchor = Some(anchor);
+                }
+            }
+            SelMode::Toggle => {
+                self.click_track(t, true);
+                self.track_anchor = Some(t);
+            }
+            SelMode::Single => {
+                self.click_track(t, false);
+                self.track_anchor = Some(t);
+            }
+        }
         if self.track_sel.is_empty() {
             self.track_sel.push(t);
         }
+        self.touched_track = Some(t);
         self.detail_mode = DetailMode::Device;
         self.focus_detail = false;
     }
 
     /// Header click: plain selects one track, Shift/Ctrl toggles it in the selection.
     pub fn click_track(&mut self, t: usize, toggle: bool) {
+        self.touched_track = Some(t);
         if toggle {
             if self.track_sel.is_empty() {
                 self.track_sel.push(self.selected_track);
@@ -151,6 +196,8 @@ impl DawApp {
     /// Indices invalidated (structure change): drop index-based selections.
     pub fn clear_structure_selection(&mut self) {
         self.track_sel.clear();
+        self.touched_track = None;
+        self.track_anchor = None;
         self.time_sel = None;
         self.resync_selected_clip();
     }
@@ -159,6 +206,8 @@ impl DawApp {
     pub fn sanitize_selection(&mut self) {
         let n = self.project.tracks.len();
         self.track_sel.retain(|&t| t < n);
+        self.touched_track = self.touched_track.filter(|&t| t < n);
+        self.track_anchor = self.track_anchor.filter(|&t| t < n);
         if let Some(ts) = &mut self.time_sel {
             if n == 0 {
                 self.time_sel = None;
@@ -187,16 +236,67 @@ impl DawApp {
 
     /// Select one arrangement clip (or toggle it with `toggle`).
     pub fn select_arr_clip(&mut self, id: u64, toggle: bool) {
-        if toggle {
-            if let Some(i) = self.arr_sel.iter().position(|&x| x == id) {
-                self.arr_sel.remove(i);
-            } else {
-                self.arr_sel.insert(0, id);
+        self.select_arr_clip_mode(id, if toggle { SelMode::Toggle } else { SelMode::Single });
+    }
+
+    /// Clip click: plain selects it (keeps a multi-selection it belongs to, for
+    /// dragging), Ctrl toggles it, Shift selects every clip inside the rectangle
+    /// spanned by the anchor clip and this one (tracks × time, Live).
+    pub fn select_arr_clip_mode(&mut self, id: u64, mode: SelMode) {
+        let anchor = self.clip_anchor.or(self.arr_sel.first().copied()).filter(|&a| a != id);
+        match (mode, anchor.and_then(|a| self.project.find_arrangement_clip(a))) {
+            (SelMode::Range, Some((ta, ia))) if self.project.find_arrangement_clip(id).is_some() => {
+                let (tb, ib) = self.project.find_arrangement_clip(id).expect("checked");
+                let p = &self.project;
+                let (a, b) = (&p.tracks[ta].arrangement[ia], &p.tracks[tb].arrangement[ib]);
+                let s = a.start.min(b.start);
+                let e = (a.start + a.clip.length).max(b.start + b.clip.length);
+                let ts = TimeSel::new(s, e, ta, tb);
+                let mut sel = vec![id];
+                for t in self.time_sel_tracks(&ts) {
+                    for c in &p.tracks[t].arrangement {
+                        if c.start >= s - EPS && c.start + c.clip.length <= e + EPS && c.clip.id != id {
+                            sel.push(c.clip.id);
+                        }
+                    }
+                }
+                self.arr_sel = sel;
+                if self.clip_anchor.is_none() {
+                    self.clip_anchor = anchor;
+                }
             }
-        } else if !(self.arr_sel.len() > 1 && self.arr_sel.contains(&id)) {
-            self.arr_sel = vec![id];
+            (SelMode::Toggle, _) => {
+                if let Some(i) = self.arr_sel.iter().position(|&x| x == id) {
+                    self.arr_sel.remove(i);
+                } else {
+                    self.arr_sel.insert(0, id);
+                }
+                self.clip_anchor = Some(id);
+            }
+            _ => {
+                if !(self.arr_sel.len() > 1 && self.arr_sel.contains(&id)) {
+                    self.arr_sel = vec![id];
+                }
+                self.clip_anchor = Some(id);
+            }
+        }
+        if let Some((t, _)) = self.project.find_arrangement_clip(id) {
+            self.touched_track = Some(t);
         }
         self.resync_selected_clip();
+    }
+
+    /// Clicking a clip moves the start point (and the playhead) to its start.
+    pub fn playhead_to_clip(&mut self, id: u64) {
+        if let Some((t, i)) = self.project.find_arrangement_clip(id) {
+            let s = self.project.tracks[t].arrangement[i].start;
+            if self.status.playing {
+                // While playing only the start point for the next play moves (no jump).
+                self.play_start = s;
+            } else {
+                self.set_playhead(s);
+            }
+        }
     }
 
     /// Tracks covered by a time selection: visible rows in range; a group row covers its children.
@@ -499,12 +599,19 @@ impl DawApp {
         }
     }
 
-    /// Alt+wheel: scale the explicitly selected tracks (header selection), or all
-    /// tracks when none is selected. Zooming out past the minimum collapses lanes
-    /// to their clip title bars; zooming in expands them again.
+    /// Alt+wheel: scale the track touched last (with the rest of the header
+    /// selection when it is part of it), or all tracks when none is touched.
+    /// Zooming out past the minimum collapses lanes to their clip title bars;
+    /// zooming in expands them again.
     pub fn zoom_track_heights(&mut self, factor: f32) {
-        let targets: Vec<usize> = if self.track_sel.is_empty() { (0..self.project.tracks.len()).collect() } else { self.track_sel.clone() };
-        if self.track_sel.is_empty() {
+        let all = self.touched_track.is_none_or(|t| t >= self.project.tracks.len());
+        let targets: Vec<usize> = match self.touched_track {
+            _ if all => (0..self.project.tracks.len()).collect(),
+            Some(t) if self.track_sel.len() > 1 && self.track_sel.contains(&t) => self.track_sel.clone(),
+            Some(t) => vec![t],
+            None => Vec::new(),
+        };
+        if all {
             self.arr_row_h = (self.arr_row_h * factor).clamp(ROW_MIN, ROW_MAX);
         }
         for t in targets {
@@ -569,21 +676,65 @@ impl DawApp {
         self.clear_structure_selection();
         idx.sort_unstable();
         self.selected_track = idx.first().copied().unwrap_or(0);
+        self.touched_track = idx.first().copied();
+        self.track_anchor = self.touched_track;
         self.track_sel = idx;
     }
 
     /// Ctrl+R / double-click: start renaming track `t`.
     pub fn start_rename(&mut self, t: usize) {
         if let Some(tr) = self.project.tracks.get(t) {
-            self.renaming = Some(crate::app::Rename { id: tr.id, text: self.project.track_label(t), fresh: true });
+            self.renaming =
+                Some(crate::app::Rename { id: tr.id, text: self.project.track_label(t), fresh: true, clip: false, in_detail: false });
+        }
+    }
+
+    /// Ctrl+R on a selected clip / double-click its title bar: rename clip `id`
+    /// (arrangement or session), in place or in the detail panel's name bar.
+    pub fn start_rename_clip(&mut self, id: u64, in_detail: bool) {
+        if let Some(c) = clip_by_id(&mut self.project, id) {
+            self.renaming = Some(crate::app::Rename { id, text: c.name.clone(), fresh: true, clip: true, in_detail });
+            if in_detail {
+                // The editor lives in the clip view's name bar.
+                self.detail_mode = crate::app::DetailMode::Clip;
+            }
+        }
+    }
+
+    /// Ctrl+R: the selected clip (arrangement selection / selected session
+    /// clip), else the selected track.
+    pub fn rename_selection(&mut self) {
+        use crate::app::View;
+        match self.view {
+            View::Arrangement if !self.arr_sel.is_empty() => {
+                let in_detail = self.focus_detail && self.detail_mode == crate::app::DetailMode::Clip;
+                self.start_rename_clip(self.arr_sel[0], in_detail)
+            }
+            View::Session if matches!(self.selected_clip, Some(ClipRef::Slot { .. })) => {
+                if let Some(id) = self.selected_clip.and_then(|c| self.clip(c)).map(|c| c.id) {
+                    self.start_rename_clip(id, true);
+                }
+            }
+            _ => self.start_rename(self.selected_track),
         }
     }
 
     /// Finish a rename. Leaving the shown text unchanged keeps the name (and its auto number).
     pub fn commit_rename(&mut self) {
         let Some(r) = self.renaming.take() else { return };
-        let Some(t) = self.project.track_index(r.id) else { return };
         let text = r.text.trim().to_string();
+        if r.clip {
+            let same = clip_by_id(&mut self.project, r.id).is_none_or(|c| c.name == text);
+            if !text.is_empty() && !same {
+                self.edit(|p| {
+                    if let Some(c) = clip_by_id(p, r.id) {
+                        c.name = text;
+                    }
+                });
+            }
+            return;
+        }
+        let Some(t) = self.project.track_index(r.id) else { return };
         if text.is_empty() || text == self.project.track_label(t) {
             return;
         }
@@ -639,27 +790,32 @@ impl DawApp {
         }
     }
 
-    /// Ctrl+D with notes selected in the piano roll: copy them right after themselves.
+    /// Ctrl+D in the piano roll: copy the selected notes together with the
+    /// rubber-band time range (if any) right after that range. Without a range
+    /// the notes' span is rounded up to the grid. The range moves along so
+    /// repeated Ctrl+D keeps appending.
     pub fn duplicate_selected_notes(&mut self) -> bool {
         let Some(c) = self.selected_clip else { return false };
-        if !self.focus_detail || self.note_sel.is_empty() {
+        if !self.focus_detail || (self.note_sel.is_empty() && self.pr_time_sel.is_none()) {
             return false;
         }
         let Some(Clip { content: ClipContent::Midi { notes }, .. }) = self.clip(c) else { return false };
         let picked: Vec<Note> = self.note_sel.iter().filter_map(|&i| notes.get(i).copied()).collect();
-        if picked.is_empty() {
+        let (mut s, mut e) = picked.iter().fold((f64::MAX, f64::MIN), |(s, e), n| (s.min(n.start), e.max(n.start + n.length)));
+        if let Some((a, b)) = self.pr_time_sel {
+            s = s.min(a);
+            e = e.max(b);
+        }
+        if e - s <= EPS {
             return false;
         }
-        let s = picked.iter().map(|n| n.start).fold(f64::MAX, f64::min);
-        let e = picked.iter().map(|n| n.start + n.length).fold(f64::MIN, f64::max);
-        // Shift by the selection span rounded up to the grid (Live).
         let g = self.pr_grid_now.max(1.0 / 64.0);
-        let shift = (((e - s) / g) - 1e-9).ceil().max(1.0) * g;
+        let shift = if self.pr_time_sel.is_some() { e - s } else { (((e - s) / g) - 1e-9).ceil().max(1.0) * g };
         let copies: Vec<Note> = picked.iter().map(|n| Note { start: n.start + shift, ..*n }).collect();
+        let end = (e + shift).max(copies.iter().map(|n| n.start + n.length).fold(0.0, f64::max));
         let sel = self.edit(|p| {
             let Some(clip) = DawApp::clip_mut(p, c) else { return Vec::new() };
-            let end = copies.iter().map(|n| n.start + n.length).fold(0.0, f64::max);
-            if end > clip.length {
+            if end > clip.length + EPS {
                 clip.length = (end / g).ceil() * g;
                 clip.full = 0.0;
             }
@@ -669,6 +825,65 @@ impl DawApp {
             copies.iter().filter_map(|c| notes.iter().position(|n| n == c)).collect()
         });
         self.note_sel = sel;
+        if self.pr_time_sel.is_some() {
+            self.pr_time_sel = Some((s + shift, e + shift));
+        }
+        true
+    }
+
+    /// Apply `f` to the selected notes of the clip in the piano roll (one undo step).
+    fn edit_selected_notes(&mut self, f: impl Fn(&mut [Note], &[usize])) -> bool {
+        let Some(c) = self.selected_clip else { return false };
+        if self.note_sel.is_empty() || !matches!(self.clip(c).map(|x| &x.content), Some(ClipContent::Midi { .. })) {
+            return false;
+        }
+        let sel = self.note_sel.clone();
+        let new_sel = self.edit(|p| {
+            let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(p, c) else { return Vec::new() };
+            let idx: Vec<usize> = sel.iter().copied().filter(|&i| i < notes.len()).collect();
+            f(notes, &idx);
+            // Re-sort, keeping the selection on the same notes.
+            let picked: Vec<Note> = idx.iter().map(|&i| notes[i]).collect();
+            notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+            let mut out: Vec<usize> = Vec::new();
+            for n in &picked {
+                if let Some(i) = (0..notes.len()).find(|i| notes[*i] == *n && !out.contains(i)) {
+                    out.push(i);
+                }
+            }
+            out
+        });
+        self.note_sel = new_sel;
+        true
+    }
+
+    /// ±12 buttons / Shift+Up/Down (octave), Up/Down (semitone): transpose the selected notes.
+    pub fn transpose_selected_notes(&mut self, semis: i32) -> bool {
+        self.edit_selected_notes(|notes, idx| {
+            for &i in idx {
+                notes[i].pitch = (notes[i].pitch as i32 + semis).clamp(0, 127) as u8;
+            }
+        })
+    }
+
+    /// ×2 / ÷2: stretch the selected notes (positions from the first selected
+    /// note, and lengths) by `factor`.
+    pub fn scale_selected_notes(&mut self, factor: f64) -> bool {
+        self.edit_selected_notes(|notes, idx| {
+            let s0 = idx.iter().map(|&i| notes[i].start).fold(f64::MAX, f64::min);
+            for &i in idx {
+                let n = &mut notes[i];
+                n.start = s0 + (n.start - s0) * factor;
+                n.length = (n.length * factor).max(1.0 / 128.0);
+            }
+        })
+    }
+
+    /// Ctrl+A in the piano roll.
+    pub fn select_all_notes(&mut self) -> bool {
+        let Some(c) = self.selected_clip else { return false };
+        let Some(Clip { content: ClipContent::Midi { notes }, .. }) = self.clip(c) else { return false };
+        self.note_sel = (0..notes.len()).collect();
         true
     }
 
@@ -773,6 +988,11 @@ impl DawApp {
     }
 }
 
+/// Arrangement or session clip by id.
+pub fn clip_by_id(p: &mut Project, id: u64) -> Option<&mut Clip> {
+    p.tracks.iter_mut().find_map(|t| t.arrangement.iter_mut().map(|a| &mut a.clip).chain(t.slots.iter_mut().flatten()).find(|c| c.id == id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::TimeSel;
@@ -818,6 +1038,110 @@ mod app_tests {
         id
     }
 
+    fn tracks(n: usize) -> DawApp {
+        let mut a = app();
+        a.project.tracks.clear();
+        for _ in 0..n {
+            a.project.add_track(TrackKind::Midi);
+        }
+        a
+    }
+
+    #[test]
+    fn shift_click_selects_track_range_ctrl_toggles() {
+        use super::SelMode::*;
+        let mut a = tracks(4);
+        a.select_track_header(0, Single);
+        a.select_track_header(2, Range);
+        assert_eq!(a.track_sel, vec![0, 1, 2]);
+        // Range again from the same anchor.
+        a.select_track_header(1, Range);
+        assert_eq!(a.track_sel, vec![0, 1]);
+        a.select_track_header(3, Toggle);
+        a.select_track_header(0, Toggle);
+        let mut s = a.track_sel.clone();
+        s.sort_unstable();
+        assert_eq!(s, vec![1, 3]);
+        assert_eq!(a.touched_track, Some(0));
+    }
+
+    #[test]
+    fn shift_click_selects_clip_rectangle_live_style() {
+        use super::SelMode::*;
+        let mut a = tracks(3);
+        let ca = midi_clip(&mut a.project, 0, 0.0, 4.0, 60);
+        let cb = midi_clip(&mut a.project, 1, 4.0, 4.0, 60);
+        let cc = midi_clip(&mut a.project, 2, 8.0, 4.0, 60);
+        let cd = midi_clip(&mut a.project, 1, 20.0, 4.0, 60);
+        a.select_arr_clip_mode(ca, Single);
+        a.select_arr_clip_mode(cc, Range);
+        let mut s = a.arr_sel.clone();
+        s.sort_unstable();
+        assert_eq!(s, vec![ca, cb, cc]);
+        a.select_arr_clip_mode(cd, Toggle);
+        a.select_arr_clip_mode(cb, Toggle);
+        let mut s = a.arr_sel.clone();
+        s.sort_unstable();
+        assert_eq!(s, vec![ca, cc, cd]);
+        // Clicking a clip moves the start point to its start (nothing plays).
+        a.playhead_to_clip(cc);
+        assert_eq!(a.play_start, 8.0);
+        assert!(!a.status.playing);
+    }
+
+    #[test]
+    fn arming_several_tracks_keeps_all_armed() {
+        let mut a = tracks(3);
+        a.toggle_track_flag(0, crate::app::TrackFlag::Arm, false);
+        a.toggle_track_flag(2, crate::app::TrackFlag::Arm, false);
+        assert!(a.project.tracks[0].arm && a.project.tracks[2].arm && !a.project.tracks[1].arm);
+    }
+
+    fn note_app() -> (DawApp, ClipRef) {
+        let mut a = tracks(1);
+        let id = midi_clip(&mut a.project, 0, 0.0, 4.0, 60);
+        if let Some(ClipContent::Midi { notes }) = super::clip_by_id(&mut a.project, id).map(|c| &mut c.content) {
+            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false });
+        }
+        let c = ClipRef::Arr { track: 0, index: 0 };
+        a.selected_clip = Some(c);
+        a.focus_detail = true;
+        a.pr_grid_now = 0.25;
+        (a, c)
+    }
+
+    fn notes_of(a: &DawApp, c: ClipRef) -> Vec<(f64, u8, f64)> {
+        match &a.clip(c).unwrap().content {
+            ClipContent::Midi { notes } => notes.iter().map(|n| (n.start, n.pitch, n.length)).collect(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn ctrl_d_duplicates_the_whole_time_region() {
+        let (mut a, c) = note_app();
+        // Region 0..3 with only the first note in it: the copy lands at 3, not right after the note.
+        a.note_sel = vec![0];
+        a.pr_time_sel = Some((0.0, 3.0));
+        assert!(a.duplicate_selected_notes());
+        assert_eq!(notes_of(&a, c), vec![(0.0, 60, 0.5), (1.0, 64, 0.5), (3.0, 60, 0.5)]);
+        assert_eq!(a.pr_time_sel, Some((3.0, 6.0)));
+        assert!(a.clip(c).unwrap().length >= 6.0);
+    }
+
+    #[test]
+    fn octave_and_stretch_only_touch_selected_notes() {
+        let (mut a, c) = note_app();
+        a.note_sel = vec![1];
+        assert!(a.transpose_selected_notes(12));
+        assert!(a.scale_selected_notes(2.0));
+        assert_eq!(notes_of(&a, c), vec![(0.0, 60, 0.5), (1.0, 76, 1.0)]);
+        assert!(a.select_all_notes());
+        assert_eq!(a.note_sel.len(), 2);
+        assert!(a.transpose_selected_notes(-12));
+        assert_eq!(notes_of(&a, c), vec![(0.0, 48, 0.5), (1.0, 64, 1.0)]);
+    }
+
     #[test]
     fn track_height_zoom_targets_selection_and_collapses() {
         let mut a = app();
@@ -825,12 +1149,12 @@ mod app_tests {
         a.project.add_track(TrackKind::Midi);
         let h0 = a.track_height(0);
         // Selected track only.
-        a.track_sel = vec![1];
+        a.touched_track = Some(1);
         a.zoom_track_heights(2.0);
         assert_eq!(a.track_height(0), h0);
         assert!(a.track_height(1) > h0);
-        // Nothing selected: all tracks; zooming far out collapses.
-        a.track_sel.clear();
+        // Nothing touched: all tracks; zooming far out collapses.
+        a.touched_track = None;
         for _ in 0..20 {
             a.zoom_track_heights(0.5);
         }

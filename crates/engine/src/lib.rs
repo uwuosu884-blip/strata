@@ -97,6 +97,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         transport,
         metronome: Metronome::new(sr),
         master_gain: Smoothed::new(1.0, sr, 0.02),
+        master_pan: [Smoothed::new(1.0, sr, 0.02), Smoothed::new(1.0, sr, 0.02)],
         master: StereoBuffer::new(mb),
         input_l: vec![0.0; mb],
         input_r: vec![0.0; mb],
@@ -104,7 +105,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr)).collect(),
         rt_to_song: [NONE; MAX_TRACKS],
         quantum: 4.0,
-        midi_target: None,
+        midi_targets: 0,
         rec: Recorder { state: RecordState::Idle, beat: 0.0 },
         dropped_record_samples: 0,
         rec_frames: 0,
@@ -137,6 +138,8 @@ pub struct Engine {
     transport: Transport,
     metronome: Metronome,
     master_gain: Smoothed,
+    /// Left/right pan gains of the master bus.
+    master_pan: [Smoothed; 2],
     master: StereoBuffer,
     input_l: Vec<f32>,
     input_r: Vec<f32>,
@@ -144,7 +147,7 @@ pub struct Engine {
     tracks: Vec<TrackRt>,
     rt_to_song: [u16; MAX_TRACKS],
     quantum: f64,
-    midi_target: Option<u16>,
+    midi_targets: u64,
     rec: Recorder,
     dropped_record_samples: u64,
     /// Frames pushed to the recorded-audio ring so far.
@@ -276,6 +279,11 @@ impl Engine {
                 Command::SetBeatsPerBar(n) => self.transport.beats_per_bar = n.clamp(1, 32),
                 Command::SetMetronome(on) => self.metronome.enabled = on,
                 Command::SetMasterGain(g) => self.master_gain.set_target(clamp_gain(g)),
+                Command::SetMasterPan(pan) => {
+                    let a = (if pan.is_finite() { pan.clamp(-1.0, 1.0) } else { 0.0 } + 1.0) * std::f32::consts::FRAC_PI_4;
+                    self.master_pan[0].set_target(a.cos() * std::f32::consts::SQRT_2);
+                    self.master_pan[1].set_target(a.sin() * std::f32::consts::SQRT_2);
+                }
                 Command::SetLaunchQuantize(q) => self.quantum = if q.is_finite() { q.clamp(0.0, 64.0) } else { 0.0 },
                 Command::SetLoop { enabled, start, end } => {
                     if start.is_finite() && end.is_finite() {
@@ -348,7 +356,7 @@ impl Engine {
                         t.voices.release_clip_notes();
                     }
                 }
-                Command::SetMidiTarget(t) => self.midi_target = t.filter(|&t| (t as usize) < MAX_TRACKS),
+                Command::SetMidiTargets(mask) => self.midi_targets = mask,
                 Command::SetRecording(on) => self.set_recording(on),
             }
         }
@@ -356,13 +364,18 @@ impl Engine {
 
     fn drain_midi(&mut self) {
         while let Ok(ev) = self.midi.pop() {
-            let Some(track) = self.midi_target else { continue };
-            match ev {
-                MidiEvent::NoteOn { pitch, velocity } => self.live_note(track, pitch, velocity),
-                MidiEvent::NoteOff { pitch } => self.live_note(track, pitch, 0),
-                MidiEvent::AllNotesOff => {
-                    for p in 0..128 {
-                        self.tracks[track as usize].voices.note_off(p);
+            // Every armed MIDI track plays (and records) the input.
+            let mut mask = self.midi_targets;
+            while mask != 0 {
+                let track = mask.trailing_zeros() as u16;
+                mask &= mask - 1;
+                match ev {
+                    MidiEvent::NoteOn { pitch, velocity } => self.live_note(track, pitch, velocity),
+                    MidiEvent::NoteOff { pitch } => self.live_note(track, pitch, 0),
+                    MidiEvent::AllNotesOff => {
+                        for p in 0..128 {
+                            self.tracks[track as usize].voices.note_off(p);
+                        }
                     }
                 }
             }
@@ -634,8 +647,8 @@ impl Engine {
 
         for i in 0..n {
             let g = self.master_gain.next();
-            ml[i] *= g;
-            mr[i] *= g;
+            ml[i] *= g * self.master_pan[0].next();
+            mr[i] *= g * self.master_pan[1].next();
         }
 
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {

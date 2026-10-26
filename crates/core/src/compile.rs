@@ -51,7 +51,9 @@ fn clip(c: &p::Clip, cache: &mut SampleCache) -> e::Clip {
         // Deactivated clips keep their timing (session launch) but play nothing.
         _ if c.muted => e::ClipContent::Midi(Vec::new()),
         // Left-trimmed (negative start) and deactivated notes are not played.
-        p::ClipContent::Midi { notes } => e::ClipContent::Midi(notes.iter().filter(|n| !n.muted && n.start >= 0.0).copied().collect()),
+        p::ClipContent::Midi { notes } => {
+            e::ClipContent::Midi(notes.iter().filter(|n| !n.muted && n.start >= 0.0 && n.start < c.length).copied().collect())
+        }
         p::ClipContent::Audio { sample, offset_frames, warp_bpm, gain_db } => match cache.get(sample) {
             Some(buf) => e::ClipContent::Audio(e::AudioClip {
                 sample: buf,
@@ -160,6 +162,21 @@ mod tests {
         let song = compile(&proj, &mut cache, &mut slots);
         assert_eq!(song.tracks[0].rt, slots.get(drum_id).unwrap());
         assert_eq!(song.tracks.last().unwrap().rt, 4);
+    }
+
+    #[test]
+    fn notes_past_the_clip_end_are_silent() {
+        let mut proj = Project::new_default();
+        let n = |start| p::Note { start, length: 0.5, pitch: 60, velocity: 100, muted: false };
+        proj.tracks[1].slots[0] = Some(p::Clip {
+            length: 4.0,
+            content: p::ClipContent::Midi { notes: vec![n(1.0), n(3.9), n(4.0), n(6.0)] },
+            ..Default::default()
+        });
+        let mut cache = SampleCache::new(48_000);
+        let song = compile(&proj, &mut cache, &mut RtSlots::default());
+        let c = song.tracks[1].slots[0].as_ref().unwrap();
+        assert!(matches!(&c.content, e::ClipContent::Midi(v) if v.len() == 2));
     }
 
     #[test]

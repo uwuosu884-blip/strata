@@ -114,7 +114,7 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         draw_fold_arrow(p, fold_zone.center(), folded, Color32::BLACK);
         x += 14.0;
     }
-    let renaming = app.renaming.as_ref().is_some_and(|r| r.id == track.id);
+    let renaming = app.renaming.as_ref().is_some_and(|r| r.id == track.id && !r.clip);
     if !renaming {
         p.with_clip_rect(rect.shrink(2.0)).text(
             pos2(x, rect.center().y),
@@ -128,17 +128,24 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         if is_group && resp.interact_pointer_pos().is_some_and(|p| fold_zone.contains(p)) {
             app.toggle_fold(t);
         } else {
-            let toggle = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            app.select_track_header(t, toggle);
+            let mode = ui.input(|i| crate::arr_ops::SelMode::from_mods(&i.modifiers));
+            app.select_track_header(t, mode);
             app.selected_clip = None;
         }
     }
     if resp.double_clicked() {
-        app.select_track_header(t, false);
+        app.select_track_header(t, crate::arr_ops::SelMode::Single);
         app.start_rename(t);
     }
     if renaming {
-        super::rename_editor(app, ui, Rect::from_min_max(pos2(x - 2.0, rect.min.y + 1.0), rect.max - vec2(1.0, 1.0)), t);
+        super::rename_editor(
+            app,
+            ui,
+            Rect::from_min_max(pos2(x - 2.0, rect.min.y + 1.0), rect.max - vec2(1.0, 1.0)),
+            app.project.tracks[t].id,
+            false,
+            false,
+        );
     }
     if let Some(item) = resp.dnd_release_payload::<DragItem>()
         && let Some(def) = super::instrument_for(&item)
@@ -160,7 +167,7 @@ pub fn draw_fold_arrow(p: &egui::Painter, c: egui::Pos2, folded: bool, col: Colo
 
 pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     if ui.button("Rename               Ctrl+R").clicked() {
-        app.select_track_header(t, false);
+        app.select_track_header(t, crate::arr_ops::SelMode::Single);
         app.start_rename(t);
         ui.close();
     }

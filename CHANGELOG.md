@@ -10,6 +10,59 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), audio warping, multi-core track processing.
 
+## [0.4.0] - 2026-10-26
+
+### Added
+- **Master track in the arrangement**, pinned below the tracks (Live style).
+  It is collapsed by default. It has no activator, solo or arm; volume and
+  pan are visible even when collapsed. Master pan is new (engine, export
+  and project file).
+- **Live-style track headers**: the left area is in the track colour and holds
+  the collapse button and the name. On the right, row 1 has the activator
+  (track number), solo and arm; row 2 has volume under the activator and pan
+  under solo. Collapsed tracks show only the triangle, name, activator and
+  solo.
+- **Clip rename**: double-click a clip's title bar, its name bar in the clip
+  view, or press Ctrl+R with a clip selected.
+- **Save-changes dialog keys**: ←/→ (or Tab) move the highlight, Enter/Space
+  confirms, `S` saves, `D` doesn't save, `C` cancels.
+- **Piano roll**:
+  - Ctrl+A selects all notes.
+  - ↑/↓ transpose the selected notes by a semitone; Shift+↑/↓ by an octave.
+  - Ctrl+drag a note to copy it.
+  - Headphones button above the keys toggles note preview.
+  - The velocity lane can be resized with a splitter. It has a 1/64/127 scale,
+    shows the value while dragging, and draws each note's length as a thin
+    line.
+  - Double-clicked notes use the length and velocity you last set.
+  - Notes can be dragged past the clip end. There they are kept but silent,
+    drawn in the darker area, and hidden in the arrangement. Shortening a
+    clip no longer loses the notes beyond its end, and the view zooms out to
+    the furthest note.
+
+### Changed
+- **Selection**: Shift+click selects a range of track headers; Ctrl+click
+  toggles. For clips, Shift+click selects every clip in the rectangle spanned
+  by the anchor clip and the clicked clip (tracks × time); Ctrl+click toggles.
+- Clicking a clip moves the start point to the clip's start. Nothing starts
+  playing, and playback doesn't jump while playing.
+- **Alt+wheel** resizes the track you touched last (header, lane or clip), or
+  all tracks after Esc or a click on empty space.
+- **Arming** is no longer exclusive. Every armed MIDI track receives the
+  hardware and computer-keyboard MIDI input and records.
+- **Ctrl+D in the piano roll** duplicates the whole rubber-band time range
+  with its notes, placed right after the range, which moves along.
+- The ±12 and ×2/÷2 buttons act on the selected notes only.
+- **Tempo**: drag or wheel steps whole BPM and shows no decimals. Hold Shift
+  for 0.01 steps (e.g. 120.23).
+- **Time signature box**: drag or wheel to change; double-click resets to 4/4.
+- Vertical piano-roll zoom (Alt+wheel) keeps the pitch under the pointer in
+  place.
+
+### Fixed
+- The detail panel keeps the height you set when switching between the piano
+  roll and the device view.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added
@@ -203,7 +256,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/uwuosu884-blip/strata/releases/tag/v0.1.0

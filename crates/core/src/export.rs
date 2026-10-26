@@ -105,6 +105,7 @@ pub fn render_with_cache(p: &Project, cache: &mut SampleCache, opts: &ExportOpti
         Command::SetBeatsPerBar(p.beats_per_bar),
         Command::SetMetronome(opts.metronome),
         Command::SetMasterGain(p.master_gain_linear()),
+        Command::SetMasterPan(p.master_pan),
         Command::SetLoop { enabled: false, start: 0.0, end: 0.0 },
         Command::SetLaunchQuantize(0.0),
     ];

@@ -25,10 +25,14 @@ pub enum DetailMode {
 /// Inline track rename in progress.
 #[derive(Clone, Debug)]
 pub struct Rename {
+    /// Track id, or clip id when `clip`.
     pub id: u64,
     pub text: String,
     /// Focus has not been requested yet.
     pub fresh: bool,
+    pub clip: bool,
+    /// Edit in the detail panel's clip name bar (else in place: header / clip title).
+    pub in_detail: bool,
 }
 
 /// What the detail panel (bottom) shows.
@@ -135,7 +139,10 @@ pub struct DawApp {
     pub kb: KeyboardMidi,
     /// Plain key events taken from egui's raw input (see `raw_input_hook`).
     pub key_events: Vec<eframe::egui::Event>,
-    pub midi_target: Option<u16>,
+    /// Runtime tracks receiving live MIDI (bit mask): every armed MIDI track.
+    pub midi_targets: u64,
+    /// Plain keys pressed while a dialog is open (dialog keyboard navigation).
+    pub dialog_keys: Vec<eframe::egui::Key>,
     /// Session recording into (track id, scene).
     pub session_rec: Option<(u64, usize)>,
     rec_counter: u32,
@@ -168,6 +175,20 @@ pub struct DawApp {
     /// Where Space starts playback (set by clicking the timeline).
     pub play_start: f64,
     pub renaming: Option<Rename>,
+    /// Track touched last (any click on its header, lane or clips): Alt+wheel
+    /// resizes it; None (Esc / empty area) = all tracks.
+    pub touched_track: Option<usize>,
+    /// Shift+click range anchors (header / clip).
+    pub track_anchor: Option<usize>,
+    pub clip_anchor: Option<u64>,
+    /// Piano roll: time range of the last rubber band (Ctrl+D duplicates the
+    /// whole range), last adjusted note length (0 = grid) / velocity for new
+    /// notes, velocity lane height, preview notes while editing.
+    pub pr_time_sel: Option<(f64, f64)>,
+    pub pr_note_len: f64,
+    pub pr_note_vel: u8,
+    pub pr_vel_h: f32,
+    pub pr_audition: bool,
     pub browser_dir: PathBuf,
     pub show_browser: bool,
 }
@@ -211,7 +232,8 @@ impl DawApp {
             audition: Vec::new(),
             kb: KeyboardMidi { enabled: true, octave: 4, velocity: 100, held: Vec::new() },
             key_events: Vec::new(),
-            midi_target: None,
+            midi_targets: 0,
+            dialog_keys: Vec::new(),
             session_rec: None,
             rec_counter: 0,
             dialog: None,
@@ -236,6 +258,14 @@ impl DawApp {
             focus_detail: false,
             play_start: 0.0,
             renaming: None,
+            touched_track: None,
+            track_anchor: None,
+            clip_anchor: None,
+            pr_time_sel: None,
+            pr_note_len: 0.0,
+            pr_note_vel: 100,
+            pr_vel_h: 48.0,
+            pr_audition: true,
             browser_dir,
             show_browser: true,
         };
@@ -273,6 +303,7 @@ impl DawApp {
             Command::SetBeatsPerBar(p.beats_per_bar),
             Command::SetMetronome(p.metronome),
             Command::SetMasterGain(p.master_gain_linear()),
+            Command::SetMasterPan(p.master_pan),
             Command::SetLaunchQuantize(p.launch_quantize),
             Command::SetLoop { enabled: p.loop_enabled, start: p.loop_start, end: p.loop_end },
         ];
@@ -376,17 +407,16 @@ impl DawApp {
     }
 
     fn update_midi_target(&mut self) {
-        // First armed MIDI track, else the selected track (Live's auto-arm).
+        // Every armed MIDI track, else the selected track (Live's auto-arm).
         let p = &self.project;
-        let idx = p
-            .tracks
-            .iter()
-            .position(|t| t.arm && t.kind == TrackKind::Midi)
-            .or_else(|| p.tracks.get(self.selected_track).filter(|t| t.kind == TrackKind::Midi).map(|_| self.selected_track));
-        let target = idx.and_then(|i| self.rt(i));
-        if target != self.midi_target {
-            self.midi_target = target;
-            self.send_now(Command::SetMidiTarget(target));
+        let mut idx: Vec<usize> = (0..p.tracks.len()).filter(|&i| p.tracks[i].arm && p.tracks[i].kind == TrackKind::Midi).collect();
+        if idx.is_empty() && p.tracks.get(self.selected_track).is_some_and(|t| t.kind == TrackKind::Midi) {
+            idx.push(self.selected_track);
+        }
+        let mask = idx.into_iter().filter_map(|i| self.rt(i)).fold(0u64, |m, rt| m | (1u64 << (rt as u32 & 63)));
+        if mask != self.midi_targets {
+            self.midi_targets = mask;
+            self.send_now(Command::SetMidiTargets(mask));
         }
     }
 
@@ -622,14 +652,12 @@ impl DawApp {
                 *f = !*f;
                 *f
             };
-            // Plain click on solo/arm is exclusive (Live default); Ctrl adds.
-            if exclusive && v && matches!(flag, TrackFlag::Solo | TrackFlag::Arm) {
+            // Plain click on solo is exclusive (Live default); Ctrl adds. Arm is
+            // never exclusive: every armed track records.
+            if exclusive && v && flag == TrackFlag::Solo {
                 for (i, t) in p.tracks.iter_mut().enumerate() {
                     if i != track {
-                        match flag {
-                            TrackFlag::Solo => t.solo = false,
-                            _ => t.arm = false,
-                        }
+                        t.solo = false;
                     }
                 }
             }
@@ -851,17 +879,21 @@ impl DawApp {
             }
         }
         let Some(&(_, off)) = KEY_NOTES.iter().find(|(k, _)| *k == key) else { return false };
-        let Some(rt) = self.midi_target else { return true };
+        let targets: Vec<u16> = (0..64u16).filter(|b| self.midi_targets & (1u64 << b) != 0).collect();
         if pressed {
-            if self.kb.held.iter().any(|(k, _)| *k == key) {
-                return true; // key repeat
+            if targets.is_empty() || self.kb.held.iter().any(|(k, _)| *k == key) {
+                return true; // no target / key repeat
             }
             let pitch = ((self.kb.octave + 1) * 12 + off as i32).clamp(0, 127) as u8;
             self.kb.held.push((key, pitch));
-            self.send_now(Command::NoteOn { track: rt, pitch, velocity: self.kb.velocity });
+            for rt in targets {
+                self.send_now(Command::NoteOn { track: rt, pitch, velocity: self.kb.velocity });
+            }
         } else if let Some(i) = self.kb.held.iter().position(|(k, _)| *k == key) {
             let (_, pitch) = self.kb.held.remove(i);
-            self.send_now(Command::NoteOff { track: rt, pitch });
+            for rt in targets {
+                self.send_now(Command::NoteOff { track: rt, pitch });
+            }
         }
         true
     }
@@ -985,7 +1017,7 @@ impl DawApp {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum TrackFlag {
     Mute,
     Solo,

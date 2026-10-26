@@ -205,7 +205,7 @@ mod tests {
         let rec = Recorder::spawn(h.take_recorder().unwrap());
         let song = daw_engine::Song { tracks: vec![daw_engine::SongTrack { rt: 0, ..Default::default() }] };
         h.set_song(song).unwrap();
-        for c in [Command::SetLaunchQuantize(0.0), Command::SetMidiTarget(Some(0)), Command::SetRecording(true), Command::Play] {
+        for c in [Command::SetLaunchQuantize(0.0), Command::SetMidiTargets(1), Command::SetRecording(true), Command::Play] {
             h.send(c).unwrap();
         }
         let mut out = vec![0.0f32; 1024];

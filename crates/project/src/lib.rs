@@ -46,6 +46,11 @@ pub struct Project {
     pub beats_per_bar: u32,
     pub metronome: bool,
     pub master_gain_db: f32,
+    /// Master pan / balance (-1..1).
+    pub master_pan: f32,
+    /// Arrangement master row: collapsed (default, Live) and expanded height (0 = default).
+    pub master_collapsed: bool,
+    pub master_height: f32,
     /// Launch quantization in beats (0 = none).
     pub launch_quantize: f64,
     pub loop_enabled: bool,
@@ -65,6 +70,9 @@ impl Default for Project {
             beats_per_bar: 4,
             metronome: false,
             master_gain_db: 0.0,
+            master_pan: 0.0,
+            master_collapsed: true,
+            master_height: 0.0,
             launch_quantize: 4.0,
             loop_enabled: false,
             loop_start: 0.0,
@@ -250,8 +258,11 @@ impl Clip {
     /// `total_frames` = sample length for audio clips (None if not loaded: no limit).
     pub fn extend_limits(&self, fpb: f64, total_frames: Option<f64>) -> (f64, f64) {
         match &self.content {
-            ClipContent::Midi { .. } => {
-                let right = if self.looping { f64::INFINITY } else { (self.content_full() - self.head - self.length).max(0.0) };
+            ClipContent::Midi { notes } => {
+                // Notes parked past the end (inactive) also count as content.
+                let last = notes.iter().map(|n| n.start + n.length).fold(0.0, f64::max);
+                let full = self.content_full().max(self.head + last);
+                let right = if self.looping { f64::INFINITY } else { (full - self.head - self.length).max(0.0) };
                 (self.head.max(0.0), right)
             }
             ClipContent::Audio { offset_frames, .. } => {

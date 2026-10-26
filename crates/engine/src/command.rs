@@ -16,6 +16,8 @@ pub enum Command {
     SetMetronome(bool),
     /// Linear gain, clamped to 0–4.
     SetMasterGain(f32),
+    /// Master pan / balance (-1..1, equal power, unity at centre).
+    SetMasterPan(f32),
     /// Clip launch quantization in beats (0 = immediate).
     SetLaunchQuantize(f64),
     /// Arrangement loop region (beats).
@@ -73,8 +75,9 @@ pub enum Command {
     AllNotesOff {
         track: u16,
     },
-    /// Track that receives hardware MIDI input (None = nowhere).
-    SetMidiTarget(Option<u16>),
+    /// Tracks that receive hardware MIDI input: bit `i` = runtime track `i`
+    /// (every armed MIDI track; 0 = nowhere).
+    SetMidiTargets(u64),
 
     /// Start/stop recording at the next launch-quantize boundary.
     SetRecording(bool),

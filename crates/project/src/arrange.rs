@@ -318,6 +318,18 @@ mod tests {
     }
 
     #[test]
+    fn notes_past_the_end_extend_the_right_limit() {
+        // Shortening keeps notes beyond the end; dragging back out may reach them.
+        let notes = vec![Note { start: 6.0, length: 1.0, pitch: 60, velocity: 100, muted: false }];
+        let c = Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() };
+        assert_eq!(c.extend_limits(0.0, None).1, 3.0);
+        let a = ArrangementClip { start: 0.0, clip: c };
+        let short = trim_right(&a, 2.0, 0.25, 0.0, None);
+        assert!(matches!(&short.clip.content, ClipContent::Midi { notes } if notes.len() == 1));
+        assert_eq!(trim_right(&short, 99.0, 0.25, 0.0, None).clip.length, 7.0);
+    }
+
+    #[test]
     fn resize_is_clamped_to_the_material() {
         // MIDI: shrink from both sides, then drag back out: stops at the original edges.
         let notes = vec![Note { start: 0.5, length: 0.5, pitch: 60, velocity: 100, muted: false }];

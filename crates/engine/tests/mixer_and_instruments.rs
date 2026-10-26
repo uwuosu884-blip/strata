@@ -180,7 +180,7 @@ fn hardware_midi_goes_to_midi_target() {
     h.set_song(Song { tracks: vec![track(3, vec![])] }).unwrap();
     midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
     assert!(nonzero(&render(&mut e, 512, 512)).is_empty(), "no target yet");
-    h.send(Command::SetMidiTarget(Some(3))).unwrap();
+    h.send(Command::SetMidiTargets(1 << 3)).unwrap();
     midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
     assert_eq!(nonzero(&left(&render(&mut e, 512, 512))), vec![0]);
 }
@@ -219,4 +219,40 @@ fn group_output_must_precede_child() {
     s.prepare();
     assert_eq!(s.tracks[0].output, None);
     assert_eq!(s.tracks[1].output, Some(0));
+}
+
+#[test]
+fn hardware_midi_reaches_every_armed_track() {
+    let (mut e, mut h) = engine();
+    let mut midi = h.take_midi_input().unwrap();
+    h.set_song(Song { tracks: vec![track(1, vec![]), track(3, vec![]), track(4, vec![])] }).unwrap();
+    // Each impulse-sampler voice emits one sample: one target → v, two → 2v (track 4 silent).
+    // Prime every voice once (first-note state), then compare.
+    h.send(Command::SetMidiTargets((1 << 1) | (1 << 3) | (1 << 4))).unwrap();
+    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    render(&mut e, 9600, 480);
+    h.send(Command::SetMidiTargets(1 << 1)).unwrap();
+    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    let one = left(&render(&mut e, 512, 512))[0];
+    assert!(one > 0.0);
+    h.send(Command::SetMidiTargets((1 << 1) | (1 << 3))).unwrap();
+    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    let out = left(&render(&mut e, 512, 512));
+    assert_eq!(nonzero(&out), vec![0]);
+    assert!((out[0] - 2.0 * one).abs() < 1e-4, "both armed tracks play: {} vs {one}", out[0]);
+}
+
+#[test]
+fn master_pan_balances_the_mix() {
+    let (mut e, mut h) = engine();
+    h.set_song(Song { tracks: vec![audio_track(0, dc_clip(0.5))] }).unwrap();
+    h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
+    h.send(Command::SetMasterPan(1.0)).unwrap();
+    let out = render(&mut e, 9600, 480);
+    let (l, r) = (left(&out)[9000], right(&out)[9000]);
+    assert!(l.abs() < 1e-3 && (r - 0.707).abs() < 1e-3, "hard right: {l} {r}");
+    h.send(Command::SetMasterPan(0.0)).unwrap();
+    let out = render(&mut e, 9600, 480);
+    let (l, r) = (left(&out)[9000], right(&out)[9000]);
+    assert!((l - 0.5).abs() < 1e-3 && (r - 0.5).abs() < 1e-3, "centre is unity: {l} {r}");
 }

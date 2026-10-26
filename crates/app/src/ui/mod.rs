@@ -23,6 +23,20 @@ impl eframe::App for DawApp {
     /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
     /// not egui's focus navigation, and piano keys must not trigger widgets.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if matches!(self.dialog, Some(Dialog::ConfirmDiscard(_))) {
+            // Keyboard-driven dialog: arrows / Enter / S D C (see `dialogs`), not egui focus.
+            raw.events.retain(|e| match e {
+                egui::Event::Key { modifiers, key, pressed, .. } if !modifiers.command && !modifiers.alt && *key != Key::Escape => {
+                    if *pressed {
+                        self.dialog_keys.push(*key);
+                    }
+                    false
+                }
+                egui::Event::Text(_) => false,
+                _ => true,
+            });
+            return;
+        }
         if self.dialog.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -119,7 +133,12 @@ impl DawApp {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.dialog.is_some() {
-            self.key_events.clear();
+            // Plain keys drive the dialog (arrows / Enter / S D C in "Unsaved Changes").
+            for ev in self.key_events.drain(..) {
+                if let egui::Event::Key { key, pressed: true, .. } = ev {
+                    self.dialog_keys.push(key);
+                }
+            }
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.dialog = None;
             }
@@ -178,7 +197,14 @@ impl DawApp {
             self.consolidate_selection();
         }
         if cmd(Key::R) {
-            self.start_rename(self.selected_track);
+            self.rename_selection();
+        }
+        if cmd(Key::A) {
+            // Piano roll focused: all notes of the clip; else all arrangement clips.
+            if !(self.focus_detail && self.select_all_notes()) && self.view == View::Arrangement {
+                self.arr_sel = self.project.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.clip.id)).collect();
+                self.resync_selected_clip();
+            }
         }
         if cmd(Key::D) && !self.duplicate_selected_notes() && !(self.view == View::Arrangement && self.duplicate_arrangement_selection()) {
             self.duplicate_selected_clip();
@@ -195,6 +221,9 @@ impl DawApp {
             self.arr_sel.clear();
             self.track_sel.clear();
             self.note_sel.clear();
+            self.touched_track = None;
+            self.pr_time_sel = None;
+            self.renaming = None;
         }
         let events = std::mem::take(&mut self.key_events);
         for ev in events {
@@ -247,6 +276,12 @@ impl DawApp {
                         }
                         continue;
                     }
+                    // Selected notes: Up/Down = semitone, Shift+Up/Down = octave.
+                    Key::ArrowUp | Key::ArrowDown if self.focus_detail && !self.note_sel.is_empty() => {
+                        let s = if modifiers.shift { 12 } else { 1 };
+                        self.transpose_selected_notes(if key == Key::ArrowUp { s } else { -s });
+                        continue;
+                    }
                     Key::M if modifiers.shift => {
                         self.kb.enabled = !self.kb.enabled;
                         continue;
@@ -278,11 +313,7 @@ impl DawApp {
             ui.menu_button("File", |ui| self.file_menu(ui));
 
             self.tempo_box(ui);
-            let mut bpb = self.project.beats_per_bar;
-            if ui.add(egui::DragValue::new(&mut bpb).range(1..=32).suffix(" / 4")).changed() {
-                self.edit(|p| p.beats_per_bar = bpb);
-                self.send_now(Command::SetBeatsPerBar(bpb));
-            }
+            self.signature_box(ui);
             if icon_button(ui, Icon::Metronome, self.project.metronome, "Metronome").clicked() {
                 let on = !self.project.metronome;
                 self.edit(|p| p.metronome = on);
@@ -376,11 +407,13 @@ impl DawApp {
         });
     }
 
-    /// BPM: drag up/down with the cursor hidden and parked (never hits the screen
-    /// edge; Shift = fine), double-click to type a value.
+    /// BPM: drag up/down (or wheel) in whole BPM; Shift = 0.01 steps (the only
+    /// way to get decimals besides typing). The cursor is hidden and parked while
+    /// dragging so it never hits the screen edge. Double-click to type a value.
     fn tempo_box(&mut self, ui: &mut egui::Ui) {
         let id = ui.make_persistent_id("tempo_box");
         let edit_id = id.with("editing");
+        let acc_id = id.with("acc");
         let mut editing: Option<String> = ui.data(|d| d.get_temp(edit_id));
         let size = egui::vec2(84.0, 20.0);
         if let Some(text) = editing.as_mut() {
@@ -390,7 +423,7 @@ impl DawApp {
                 if !ui.input(|i| i.key_pressed(Key::Escape))
                     && let Ok(v) = text.trim().trim_end_matches("BPM").trim().parse::<f64>()
                 {
-                    let v = v.clamp(20.0, 999.0);
+                    let v = (v.clamp(20.0, 999.0) * 100.0).round() / 100.0;
                     self.edit(|p| p.tempo_bpm = v);
                     self.send_now(Command::SetTempo(v));
                 }
@@ -406,31 +439,99 @@ impl DawApp {
         }
         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let delta = endless_drag(ui, &resp);
+        let shift = ui.input(|i| i.modifiers.shift);
         if resp.drag_started() {
             self.begin_gesture();
+            ui.data_mut(|d| d.insert_temp(acc_id, self.project.tempo_bpm));
         }
+        // Wheel: one notch = 1 BPM (Shift: 0.01). Shift+wheel arrives as horizontal scroll.
+        let mut wheel = 0.0;
+        if resp.hovered() {
+            let notch = wheel_notch(ui);
+            if notch != 0.0 {
+                wheel = notch as f64;
+                ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            }
+        }
+        let mut target = None;
         if delta != egui::Vec2::ZERO {
-            let k = if ui.input(|i| i.modifiers.shift) { 0.01 } else { 0.25 };
-            let t = (self.project.tempo_bpm + ((delta.x - delta.y) * k) as f64).clamp(20.0, 999.0);
-            let t = (t * 100.0).round() / 100.0;
+            // Accumulate the raw drag so slow drags still step whole BPMs.
+            let k = if shift { 0.01 } else { 0.25 };
+            let acc: f64 = ui.data(|d| d.get_temp(acc_id)).unwrap_or(self.project.tempo_bpm) + ((delta.x - delta.y) * k) as f64;
+            ui.data_mut(|d| d.insert_temp(acc_id, acc));
+            target = Some(if shift { acc } else { acc.round() });
+        } else if wheel != 0.0 {
+            // One undo step per burst of wheel notches.
+            if ui.input(|i| i.time) - ui.data(|d| d.get_temp::<f64>(id.with("wt"))).unwrap_or(f64::MIN) > 0.6 {
+                self.begin_gesture();
+            }
+            ui.data_mut(|d| d.insert_temp(id.with("wt"), ui.input(|i| i.time)));
+            target = Some(if shift { self.project.tempo_bpm + wheel * 0.01 } else { self.project.tempo_bpm.round() + wheel });
+        }
+        if let Some(t) = target {
+            let t = (t.clamp(20.0, 999.0) * 100.0).round() / 100.0;
             if t != self.project.tempo_bpm {
                 self.project.tempo_bpm = t;
+                self.dirty = true;
                 self.send_now(Command::SetTempo(t));
             }
         }
         if resp.double_clicked() {
-            ui.data_mut(|d| d.insert_temp(edit_id, format!("{:.2}", self.project.tempo_bpm)));
+            ui.data_mut(|d| d.insert_temp(edit_id, tempo_text(self.project.tempo_bpm)));
         }
         let active = resp.hovered() || resp.dragged();
         ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("{:.2} BPM", self.project.tempo_bpm),
+            format!("{} BPM", tempo_text(self.project.tempo_bpm)),
             egui::FontId::proportional(12.0),
             Color32::WHITE,
         );
-        resp.on_hover_text("Tempo: drag up/down (Shift = fine), double-click to type");
+        resp.on_hover_text("Tempo: drag up/down or wheel (Shift = 0.01 steps), double-click to type");
+    }
+
+    /// Time signature (N/4): drag up/down or wheel; double-click resets to 4/4.
+    fn signature_box(&mut self, ui: &mut egui::Ui) {
+        let id = ui.make_persistent_id("sig_box");
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 20.0), egui::Sense::click_and_drag());
+        let delta = endless_drag(ui, &resp);
+        if resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(id, self.project.beats_per_bar as f32));
+        }
+        let mut target = None;
+        if delta != egui::Vec2::ZERO {
+            let acc: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(self.project.beats_per_bar as f32) + (delta.x - delta.y) * 0.08;
+            ui.data_mut(|d| d.insert_temp(id, acc));
+            target = Some(acc.round() as i64);
+        }
+        if resp.hovered() {
+            let notch = wheel_notch(ui);
+            if notch != 0.0 {
+                target = Some(self.project.beats_per_bar as i64 + notch as i64);
+                ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            }
+        }
+        if resp.double_clicked() {
+            target = Some(4);
+        }
+        if let Some(t) = target {
+            let bpb = t.clamp(1, 32) as u32;
+            if bpb != self.project.beats_per_bar {
+                self.edit(|p| p.beats_per_bar = bpb);
+                self.send_now(Command::SetBeatsPerBar(bpb));
+            }
+        }
+        let active = resp.hovered() || resp.dragged();
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{} / 4", self.project.beats_per_bar),
+            egui::FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+        resp.on_hover_text("Time signature: drag up/down or wheel, double-click = 4/4");
     }
 
     pub fn send_loop(&mut self) {
@@ -572,6 +673,7 @@ impl DawApp {
             Dialog::About => "About daw",
         };
         let scenes = self.project.scenes.len();
+        let keys = std::mem::take(&mut self.dialog_keys);
         egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             match &mut dialog {
                 Dialog::Open(path) | Dialog::SaveAs(path) => {
@@ -647,25 +749,51 @@ impl DawApp {
                 }
                 Dialog::ConfirmDiscard(pending) => {
                     ui.label("The project has unsaved changes.");
+                    // ←/→ (Tab) move the highlight, Enter/Space activates; S / D / C directly.
+                    let focus_id = egui::Id::unique("confirm_focus");
+                    let mut focus: usize = ui.data(|d| d.get_temp(focus_id)).unwrap_or(0);
+                    let mut choice: Option<usize> = None;
+                    for k in keys.iter() {
+                        match k {
+                            Key::ArrowLeft => focus = (focus + 2) % 3,
+                            Key::ArrowRight | Key::Tab => focus = (focus + 1) % 3,
+                            Key::Enter | Key::Space => choice = Some(focus),
+                            Key::S => choice = Some(0),
+                            Key::D => choice = Some(1),
+                            Key::C => choice = Some(2),
+                            _ => {}
+                        }
+                    }
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            let pa = pending.clone();
-                            action = Some(Box::new(move |a: &mut DawApp| {
+                        for (i, label) in ["Save (S)", "Don't Save (D)", "Cancel (C)"].into_iter().enumerate() {
+                            let mut b = egui::Button::new(label).min_size(egui::vec2(96.0, 24.0));
+                            if i == focus {
+                                b = b.stroke(egui::Stroke::new(2.0, ACCENT));
+                            }
+                            let r = ui.add(b);
+                            if r.hovered() && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO) {
+                                focus = i;
+                            }
+                            if r.clicked() {
+                                choice = Some(i);
+                            }
+                        }
+                    });
+                    ui.data_mut(|d| d.insert_temp(focus_id, focus));
+                    if let Some(c) = choice {
+                        let pa = pending.clone();
+                        action = match c {
+                            0 => Some(Box::new(move |a: &mut DawApp| {
                                 if a.save() {
                                     a.run_pending(pa);
                                 }
-                            }));
-                            close = true;
-                        }
-                        if ui.button("Don't Save").clicked() {
-                            let pa = pending.clone();
-                            action = Some(Box::new(move |a: &mut DawApp| a.run_pending(pa)));
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
+                            })),
+                            1 => Some(Box::new(move |a: &mut DawApp| a.run_pending(pa))),
+                            _ => None,
+                        };
+                        close = true;
+                        ui.data_mut(|d| d.remove::<usize>(focus_id));
+                    }
                 }
                 Dialog::About => {
                     ui.label("daw: a small, fast Rust DAW.");
@@ -681,6 +809,26 @@ impl DawApp {
             a(self);
         }
     }
+}
+
+/// -1 / 0 / +1 from this frame's mouse-wheel events (either axis: Shift turns
+/// the wheel into horizontal scroll).
+fn wheel_notch(ui: &egui::Ui) -> f32 {
+    let d: f32 = ui.input(|i| {
+        i.events
+            .iter()
+            .map(|e| match e {
+                egui::Event::MouseWheel { delta, .. } => delta.x + delta.y,
+                _ => 0.0,
+            })
+            .sum()
+    });
+    if d == 0.0 { 0.0 } else { d.signum() }
+}
+
+/// "120" for whole tempos, "120.25" otherwise.
+fn tempo_text(t: f64) -> String {
+    if (t - t.round()).abs() < 1e-6 { format!("{t:.0}") } else { format!("{t:.2}") }
 }
 
 fn quant_label(q: f64) -> String {
@@ -725,24 +873,25 @@ pub fn instrument_for(item: &DragItem) -> Option<InstrumentDef> {
     }
 }
 
-/// Inline track-name editor over `rect` (arrangement / session headers) while
-/// `app.renaming` targets track `t`. Enter or clicking elsewhere commits, Esc cancels.
-pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, t: usize) {
+/// Inline name editor over `rect` while `app.renaming` targets `id` (a track
+/// id, or a clip id when `clip`) at this location (`in_detail` = the detail
+/// panel's clip name bar). Enter or clicking elsewhere commits, Esc cancels.
+pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, id: u64, clip: bool, in_detail: bool) {
     let Some(r) = app.renaming.as_mut() else { return };
-    if app.project.tracks.get(t).is_none_or(|x| x.id != r.id) {
+    if r.id != id || r.clip != clip || (clip && r.in_detail != in_detail) {
         return;
     }
-    let id = ui.make_persistent_id(("rename", r.id));
+    let te_id = ui.make_persistent_id(("rename", r.id, clip));
     let resp =
-        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
+        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
     if r.fresh {
         r.fresh = false;
         resp.request_focus();
         // Select everything so typing replaces the name.
-        if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+        if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), te_id) {
             let n = r.text.chars().count();
             st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
-            st.store(ui.ctx(), id);
+            st.store(ui.ctx(), te_id);
         }
         return;
     }
