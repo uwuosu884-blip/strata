@@ -1299,18 +1299,26 @@ pub fn draw_clip(
             let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
             let span = (hi - lo).max(1) as f32 + 1.0;
             let nh = (body.height() / span).clamp(1.0, 4.0);
-            for n in notes.iter().filter(|n| n.start >= 0.0 && n.start < clip.length) {
-                let x1 = body.min.x + (n.start * zoom) as f32;
-                let x2 = (x1 + (n.length.min(clip.length - n.start) * zoom) as f32).max(x1 + 1.0);
-                if x2 < visible.min.x || x1 > visible.max.x {
+            // Playback order: start marker → loop end, then the loop repeated.
+            for (l0, l1, u0) in play_segments(clip) {
+                let (xs, xe) = (body.min.x + (l0 * zoom) as f32, body.min.x + (l1 * zoom) as f32);
+                if xe < visible.min.x || xs > visible.max.x {
                     continue;
                 }
-                let y = body.max.y - ((n.pitch - lo) as f32 + 1.0) / span * body.height();
-                p.rect_filled(
-                    Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)),
-                    CornerRadius::ZERO,
-                    if n.muted { shade(c, 0.7) } else { ink },
-                );
+                let u1 = u0 + (l1 - l0);
+                for n in notes.iter().filter(|n| n.start >= u0 - 1e-9 && n.start < u1) {
+                    let x1 = xs + ((n.start - u0) * zoom) as f32;
+                    let x2 = (x1 + (n.length.min(u1 - n.start) * zoom) as f32).max(x1 + 1.0);
+                    if x2 < visible.min.x || x1 > visible.max.x {
+                        continue;
+                    }
+                    let y = body.max.y - ((n.pitch - lo) as f32 + 1.0) / span * body.height();
+                    p.rect_filled(
+                        Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)),
+                        CornerRadius::ZERO,
+                        if n.muted { shade(c, 0.7) } else { ink },
+                    );
+                }
             }
         }
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
@@ -1318,43 +1326,70 @@ pub fn draw_clip(
                 p.text(body.center(), Align2::CENTER_CENTER, "loading…", FontId::proportional(10.0), Color32::GRAY);
                 return;
             };
-            let frames_per_beat = 60.0 / warp_bpm.unwrap_or(tempo) * buf.sample_rate as f64;
-            draw_wave(p, body, visible, buf, *offset_frames, frames_per_beat / zoom, clip.length, clip.looping, ink);
+            let sr = buf.sample_rate as f64;
+            // Unwarped = raw playback (markers ignored), like the engine.
+            let map = match warp_bpm {
+                Some(b) => daw_core::compile::warp_map(clip, *offset_frames, Some(*b), sr),
+                None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / tempo.max(1.0)),
+            };
+            let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
+            draw_wave(p, body, visible, buf, zoom, &frame_of, ink);
         }
     }
 }
 
+/// Clip playback as (local start, local end, content start) pieces.
+pub fn play_segments(clip: &Clip) -> Vec<(f64, f64, f64)> {
+    let (a, b) = clip.loop_range();
+    let end = clip.length;
+    let mut v = Vec::new();
+    let (mut local, mut u) = (0.0, clip.wrap(clip.start));
+    while local < end - 1e-9 && v.len() < 4096 {
+        let l1 = if clip.looping && b > a + 1e-9 { (local + (b - u).max(0.0)).min(end) } else { end };
+        v.push((local, l1, u));
+        if l1 <= local + 1e-12 {
+            // Degenerate loop: stop instead of spinning.
+            break;
+        }
+        local = l1;
+        u = a;
+    }
+    v
+}
+
 /// Min/max waveform, one column per pixel, from the precomputed peak blocks.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_wave(
     p: &egui::Painter,
     body: Rect,
     visible: Rect,
     buf: &SampleBuffer,
-    offset: f64,
-    frames_per_px: f64,
-    len_beats: f64,
-    looping: bool,
+    px_per_beat: f64,
+    frame_of: &dyn Fn(f64) -> Option<f64>,
     ink: Color32,
 ) {
-    if buf.is_empty() || buf.peaks.is_empty() {
+    if buf.is_empty() || buf.peaks.is_empty() || px_per_beat <= 0.0 {
         return;
     }
     let mid = body.center().y;
     let h = body.height() * 0.5;
     let block = daw_engine::PEAK_BLOCK as f64;
     let total = buf.len() as f64;
-    let _ = len_beats;
+    let mut fpp = 1.0;
     let mut x = visible.min.x.floor();
     while x < visible.max.x {
-        let f0 = offset + (x - body.min.x) as f64 * frames_per_px;
-        let f1 = f0 + frames_per_px.max(1.0);
-        let (f0, f1) = if looping { (f0 % total, f0 % total + (f1 - f0)) } else { (f0, f1) };
-        if f0 >= total {
-            break;
+        let l0 = (x - body.min.x) as f64 / px_per_beat;
+        let Some(f0) = frame_of(l0) else { break };
+        // Frames per pixel from the neighbour (keeps the last value across loop wraps).
+        if let Some(f1) = frame_of(l0 + 1.0 / px_per_beat).filter(|f1| *f1 > f0) {
+            fpp = f1 - f0;
         }
+        x += 1.0;
+        if f0 < 0.0 || f0 >= total {
+            continue;
+        }
+        let f1 = (f0 + fpp.max(1.0)).min(total);
         let (mut lo, mut hi) = (0.0f32, 0.0f32);
-        if frames_per_px < block * 2.0 {
+        if fpp < block * 2.0 {
             // Zoomed in: read raw samples (few per pixel).
             let (a, b) = (f0 as usize, (f1.ceil() as usize).min(buf.len()).max(f0 as usize + 1));
             for &v in &buf.left[a.min(buf.len() - 1)..b.min(buf.len())] {
@@ -1368,8 +1403,8 @@ pub fn draw_wave(
                 hi = hi.max(mx);
             }
         }
+        let x = x - 1.0;
         p.line_segment([pos2(x, mid - hi * h), pos2(x, mid - lo * h + 0.5)], Stroke::new(1.0, ink));
-        x += 1.0;
     }
 }
 

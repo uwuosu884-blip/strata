@@ -1394,7 +1394,7 @@ pub fn brace_keys(app: &mut DawApp, ui: &egui::Ui, cref: ClipRef, grid: f64) {
         return;
     }
     use egui::{Key, Modifiers};
-    let (mut shift, mut resize, mut scale) = (0.0, 0.0, 1.0);
+    let (mut resize, mut scale) = (0.0, 1.0);
     ui.input_mut(|i| {
         if i.consume_key(Modifiers::COMMAND, Key::ArrowUp) {
             scale = 2.0;
@@ -1404,20 +1404,16 @@ pub fn brace_keys(app: &mut DawApp, ui: &egui::Ui, cref: ClipRef, grid: f64) {
             resize = grid;
         } else if i.consume_key(Modifiers::COMMAND, Key::ArrowLeft) {
             resize = -grid;
-        } else if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
-            shift = 1.0;
-        } else if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
-            shift = -1.0;
         }
+        // Plain Up/Down (shift by loop length) arrive via key_events → shift_loop.
     });
-    if shift == 0.0 && resize == 0.0 && scale == 1.0 {
+    if resize == 0.0 && scale == 1.0 {
         return;
     }
     app.edit(|p| {
         if let Some(c) = DawApp::clip_mut(p, cref) {
             c.fix_loop();
             let l = c.loop_end - c.loop_start;
-            c.loop_start += shift * l;
             c.loop_end = c.loop_start + ((l * scale) + resize).max(1.0 / 16.0);
             if matches!(cref, ClipRef::Slot { .. }) {
                 c.length = c.loop_end - c.loop_start;

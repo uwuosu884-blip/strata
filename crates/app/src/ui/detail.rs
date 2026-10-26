@@ -557,6 +557,10 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         ui.separator();
         super::widgets::grid_menu(ui, &mut app.pr_grid);
     });
+    // Note-grid press deselects the loop brace (arrows go back to notes).
+    if (resp.drag_started() || resp.clicked()) && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| grid_area.contains(p)) {
+        app.cv.brace_sel = false;
+    }
     if resp.drag_started()
         && let Some(pt) = ui.input(|i| i.pointer.press_origin())
     {

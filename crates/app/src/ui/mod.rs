@@ -1,6 +1,6 @@
 //! GUI root: layout, transport bar, shortcuts, dialogs. Views live in submodules.
 
-mod arrangement;
+pub(crate) mod arrangement;
 mod browser;
 pub mod clip;
 mod detail;
@@ -210,8 +210,25 @@ impl DawApp {
         if cmd(Key::E) {
             self.split_selection();
         }
+        if cmd_shift(Key::J) {
+            // Crop the clip shown in Clip View.
+            if let Some(c) = self.selected_clip {
+                self.crop_clip(c);
+            }
+        }
         if cmd(Key::J) {
             self.consolidate_selection();
+        }
+        if cmd_shift(Key::U) {
+            // Quantize settings = MIDI Tools ▸ Quantize.
+            self.cv.panel = clip::NotesPanel::Transform;
+            self.cv.transform = daw_project::miditools::Transform::Quantize;
+            self.cv.folded = false;
+        }
+        if cmd(Key::U)
+            && let Some(c) = self.selected_clip
+        {
+            self.quantize_clip(c);
         }
         if cmd(Key::R) {
             self.rename_selection();

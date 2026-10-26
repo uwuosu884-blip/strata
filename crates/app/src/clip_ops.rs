@@ -156,6 +156,25 @@ impl DawApp {
         });
     }
 
+    /// Ctrl+U: audio = warp markers to the grid; MIDI = Quantize tool once.
+    pub fn quantize_clip(&mut self, cref: ClipRef) {
+        let Some(clip) = self.clip(cref).cloned() else { return };
+        match clip.content {
+            ClipContent::Audio { .. } => {
+                let g = mt::grid_beats(self.cv.quant_grid);
+                self.quantize_warp(cref, g, self.cv.quant_amount as f64 / 100.0);
+            }
+            ClipContent::Midi { .. } => {
+                let (panel, tool) = (self.cv.panel, self.cv.transform);
+                self.cv.panel = crate::ui::clip::NotesPanel::Transform;
+                self.cv.transform = mt::Transform::Quantize;
+                self.run_tool(cref, &clip, true);
+                self.cv.base = None;
+                (self.cv.panel, self.cv.transform) = (panel, tool);
+            }
+        }
+    }
+
     /// Warp the whole sample as an N-bar loop.
     pub fn warp_as(&mut self, cref: ClipRef, bars: f64, _total: f64) {
         let Some(clip) = self.clip(cref).cloned() else { return };
@@ -391,5 +410,14 @@ mod tests {
         let ClipContent::Audio { warp_bpm, .. } = &cl.content else { panic!() };
         assert!((warp_bpm.unwrap() - bpb * 60.0 * sr / 4800.0).abs() < 1e-9);
         assert_eq!(cl.audio.markers.last().map(|m| (m.beat, m.frame)), Some((bpb, 4800.0)));
+    }
+
+    #[test]
+    fn arrangement_drawing_follows_start_and_loop() {
+        use crate::ui::arrangement::play_segments;
+        let mut c = Clip { length: 10.0, looping: true, start: 1.0, loop_start: 2.0, loop_end: 6.0, ..Default::default() };
+        assert_eq!(play_segments(&c), vec![(0.0, 5.0, 1.0), (5.0, 9.0, 2.0), (9.0, 10.0, 2.0)]);
+        c.looping = false;
+        assert_eq!(play_segments(&c), vec![(0.0, 10.0, 1.0)]);
     }
 }
