@@ -36,25 +36,44 @@ fn big_song(variant: usize) -> Song {
         .map(|i| SongTrack {
             rt: ((i + variant) % MAX_TRACKS) as u16,
             pan: (i as f32 / 6.0) - 1.0,
-            monitor: i == 3,
+            monitor: [Monitor::In, Monitor::Auto, Monitor::Off][i % 3],
+            arm: i % 2 == 0,
+            input: match i % 6 {
+                0 => TrackInput::Ext { ch: 1, stereo: i % 4 == 0 },
+                1 => TrackInput::Midi { port: MIDI_ALL_INS, channel: 0 },
+                2 => TrackInput::Resampling,
+                3 => TrackInput::Track {
+                    rt: ((i + 1 + variant) % MAX_TRACKS) as u16,
+                    tap: [Tap::PreFx, Tap::PostMixer, Tap::Pad(2)][variant % 3],
+                },
+                4 => TrackInput::MidiTrack { rt: ((i + 2 + variant) % MAX_TRACKS) as u16 },
+                _ => TrackInput::None,
+            },
             instrument: instruments[i % 4].clone(),
             slots: vec![Some(if i % 4 == 3 { audio.clone() } else { midi.clone() }), None, Some(midi.clone())],
             arrangement: vec![ArrangementClip { start: 1.0, clip: midi.clone() }],
             // Exercise group routing on the RT path too.
-            output: (i % 3 == 2).then(|| ((i - 1 + variant) % MAX_TRACKS) as u16),
+            output: match i % 5 {
+                0 => TrackOutput::Track(((i + 1 + variant) % MAX_TRACKS) as u16),
+                1 => TrackOutput::Ext { ch: 2, stereo: i % 2 == 0 },
+                2 => TrackOutput::MidiPort { port: 0, channel: 3 },
+                3 => TrackOutput::MidiTrack { rt: ((i + 3 + variant) % MAX_TRACKS) as u16, instrument: variant.is_multiple_of(2) },
+                _ => TrackOutput::Master,
+            },
             ..Default::default()
         })
         .collect();
-    Song { tracks }
+    Song::new(tracks)
 }
 
 #[test]
 fn process_is_allocation_free() {
-    let (mut engine, mut handle) = create(EngineConfig { sample_rate: 44_100.0, max_block_frames: 256 });
+    let (mut engine, mut handle) = create(EngineConfig { sample_rate: 44_100.0, max_block_frames: 256, input_channels: 4 });
     let mut input = handle.take_input().unwrap();
     let mut midi = handle.take_midi_input().unwrap();
     let mut rec = handle.take_recorder().unwrap();
-    let mut buffer = vec![0.0f32; 4096 * 2];
+    let mut midi_out = handle.take_midi_output().unwrap();
+    let mut buffer = vec![0.0f32; 4096 * 4];
     let commands = [
         Command::Play,
         Command::SetTempo(174.0),
@@ -62,7 +81,9 @@ fn process_is_allocation_free() {
         Command::SetLoop { enabled: true, start: 0.0, end: 3.0 },
         Command::SetRecording(true),
         Command::NoteOn { track: 1, pitch: 60, velocity: 100 },
-        Command::SetMidiTargets(1 << 2),
+        Command::SetAutoArm(2),
+        Command::KeyboardNote { pitch: 64, velocity: 80 },
+        Command::KeyboardNote { pitch: 64, velocity: 0 },
         Command::SetMasterPan(0.3),
         Command::SetTrackSolo { track: 2, solo: true },
         Command::SetTrackPan { track: 1, pan: 0.3 },
@@ -85,19 +106,21 @@ fn process_is_allocation_free() {
         if i % 37 == 0 {
             handle.set_song(big_song(i)).unwrap(); // allocation here is fine (control thread)
         }
-        let _ = midi.push(MidiEvent::NoteOn { pitch: (i % 80) as u8 + 20, velocity: 90 });
+        let _ = midi.push(MidiInput { port: 0, channel: 0, event: MidiEvent::NoteOn { pitch: (i % 80) as u8 + 20, velocity: 90 } });
         for _ in 0..512 {
             let _ = input.push(0.1);
         }
         let frames = [64, 256, 300, 1024, 4096][i % 5];
-        let buf = &mut buffer[..frames * 2];
+        let channels = 2 + (i % 3);
+        let buf = &mut buffer[..frames * channels];
         assert_no_alloc(|| {
-            engine.process(buf, 2);
+            engine.process(buf, channels);
             engine.report_cpu_load(0.1);
         });
         assert!(buf.iter().all(|s| s.is_finite()));
         while rec.audio.pop().is_ok() {}
         while rec.events.pop().is_ok() {}
+        while midi_out.pop().is_ok() {}
         handle.collect_garbage();
         let _ = handle.snapshot();
     }

@@ -126,7 +126,8 @@ fn gesture_id() -> egui::Id {
 
 pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let full = ui.available_rect_before_wrap();
-    let lanes_x1 = (full.max.x - HEAD_W).max(full.min.x + 40.0);
+    let head_w = HEAD_W + if app.show_io { super::io::IO_W } else { 0.0 };
+    let lanes_x1 = (full.max.x - head_w).max(full.min.x + 40.0);
     let master_h = if app.project.master_collapsed {
         crate::arr_ops::COLLAPSED_H + 2.0
     } else if app.project.master_height > 0.0 {
@@ -626,7 +627,16 @@ const RIGHT_W: f32 = ACT_W + SOLO_W + ARM_W + 2.0 * GAP + 16.0;
 
 fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let lane = g.lane(k);
-    let head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
+    let mut head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
+    if app.show_io {
+        // In/Out column at the right of the header (Ctrl+Alt+I).
+        let io = Rect::from_min_max(pos2(head.max.x - super::io::IO_W, head.min.y), head.max);
+        head.max.x = io.min.x;
+        let io_clip = io.intersect(g.body);
+        if io_clip.height() > 0.0 {
+            super::io::io_compact(app, ui, t, io, io_clip);
+        }
+    }
     let clip = head.intersect(g.body);
     if clip.height() <= 0.0 {
         return;
@@ -760,11 +770,22 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if collapsed {
         return;
     }
+    // "No Input" hides Arm; a selected track's Arm arms the whole selection, Ctrl = just this one.
     if !is_group
+        && app.project.tracks[t].has_input()
         && clip.contains_rect(arm_r)
-        && rect_toggle(ui, arm_r, ui.scope_id().with(("harm", id)), "REC", arm, REC_RED, "Arm for recording").clicked()
+        && rect_toggle(
+            ui,
+            arm_r,
+            ui.scope_id().with(("harm", id)),
+            "REC",
+            arm,
+            REC_RED,
+            "Arm for recording (all selected tracks; Ctrl: just this one)",
+        )
+        .clicked()
     {
-        app.toggle_track_flag(t, TrackFlag::Arm, false);
+        app.click_arm(t, !excl);
     }
     // Row 2: volume under the activator, pan under solo.
     let row2 = row1 + BOX_H + GAP;
@@ -795,7 +816,12 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
 
 /// Master track row, pinned under the lanes (Live). Collapsed by default; no
 /// activator / solo / arm; volume and pan are always shown.
-fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect) {
+fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, mut head: Rect) {
+    if app.show_io {
+        let io = Rect::from_min_max(pos2(head.max.x - super::io::IO_W, head.min.y + 2.0), head.max);
+        head.max.x = io.min.x;
+        super::io::master_io_compact(app, ui, io);
+    }
     let p = ui.painter();
     p.rect_filled(lanes, CornerRadius::ZERO, Color32::from_gray(22));
     p.line_segment([lanes.left_top(), pos2(head.max.x, lanes.min.y)], Stroke::new(2.0, Color32::from_gray(14)));

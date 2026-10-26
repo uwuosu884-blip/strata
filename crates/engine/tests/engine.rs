@@ -5,7 +5,7 @@ use daw_engine::{Command, Engine, EngineConfig, EngineHandle, create};
 const SR: f64 = 48_000.0;
 
 fn engine() -> (Engine, EngineHandle) {
-    create(EngineConfig { sample_rate: SR, max_block_frames: 512 })
+    create(EngineConfig { sample_rate: SR, max_block_frames: 512, input_channels: 2 })
 }
 
 /// Render `frames` stereo frames using callback buffers of `callback_frames`.

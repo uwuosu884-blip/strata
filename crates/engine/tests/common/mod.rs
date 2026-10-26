@@ -9,7 +9,7 @@ pub const SR: f64 = 48_000.0;
 pub const SPB: usize = 24_000;
 
 pub fn engine() -> (Engine, EngineHandle) {
-    let (e, mut h) = create(EngineConfig { sample_rate: SR, max_block_frames: 512 });
+    let (e, mut h) = create(EngineConfig { sample_rate: SR, max_block_frames: 512, input_channels: 2 });
     h.send(Command::SetMetronome(false)).unwrap();
     (e, h)
 }
@@ -62,6 +62,15 @@ pub fn track(rt: u16, slots: Vec<Option<Clip>>) -> SongTrack {
     SongTrack { rt, instrument: impulse_sampler(), slots, ..Default::default() }
 }
 
+/// MIDI track listening to every port and channel, monitor Auto.
+pub fn midi_track(rt: u16, arm: bool) -> SongTrack {
+    SongTrack { input: TrackInput::Midi { port: MIDI_ALL_INS, channel: 0 }, monitor: Monitor::Auto, arm, ..track(rt, vec![]) }
+}
+
+pub fn note_on(port: u8, channel: u8, pitch: u8) -> MidiInput {
+    MidiInput { port, channel, event: MidiEvent::NoteOn { pitch, velocity: 127 } }
+}
+
 /// Process zero frames so queued commands/songs are applied.
 pub fn apply(e: &mut Engine) {
     e.process(&mut [], 2);
@@ -85,4 +94,13 @@ pub fn freq(v: &[f32], sr: f64) -> f64 {
         return 0.0;
     }
     (ups.len() - 1) as f64 * sr / (ups[ups.len() - 1] - ups[0]) as f64
+}
+
+pub fn dc_clip(level: f32) -> Clip {
+    let s = Arc::new(SampleBuffer::mono("dc", SR as u32, vec![level; SR as usize * 4]));
+    Clip { length: 4.0, looping: true, content: ClipContent::Audio(AudioClip { sample: s, offset_frames: 0.0, warp_bpm: None, gain: 1.0 }) }
+}
+
+pub fn audio_track(rt: u16, clip: Clip) -> SongTrack {
+    SongTrack { rt, slots: vec![Some(clip)], ..Default::default() }
 }

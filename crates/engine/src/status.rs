@@ -1,4 +1,4 @@
-use crate::song::MAX_TRACKS;
+use crate::song::{MAX_IO_CHANNELS, MAX_TRACKS};
 use crate::transport::{MusicalPosition, Transport};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed};
 
@@ -26,6 +26,7 @@ pub(crate) struct SharedStatus {
     peak_right: AtomicU32,
     cpu_load: AtomicU32,
     record_state: AtomicU8,
+    input_peaks: [AtomicU32; MAX_IO_CHANNELS],
     tracks: Box<[TrackStatus; MAX_TRACKS]>,
 }
 
@@ -40,6 +41,7 @@ impl Default for SharedStatus {
             peak_right: AtomicU32::new(0),
             cpu_load: AtomicU32::new(0),
             record_state: AtomicU8::new(0),
+            input_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
             tracks: Box::new(std::array::from_fn(|_| TrackStatus::default())),
         };
         for t in s.tracks.iter() {
@@ -69,6 +71,19 @@ impl SharedStatus {
     pub fn publish_peaks(&self, peaks: [f32; 2]) {
         self.peak_left.fetch_max(clean(peaks[0]), Relaxed);
         self.peak_right.fetch_max(clean(peaks[1]), Relaxed);
+    }
+
+    pub fn publish_input_peaks(&self, peaks: &[f32; MAX_IO_CHANNELS]) {
+        for (a, p) in self.input_peaks.iter().zip(peaks) {
+            if *p > 0.0 {
+                a.fetch_max(clean(*p), Relaxed);
+            }
+        }
+    }
+
+    /// Input peaks since the last read (resets them).
+    pub fn input_peaks(&self) -> [f32; MAX_IO_CHANNELS] {
+        std::array::from_fn(|i| f32::from_bits(self.input_peaks[i].swap(0, Relaxed)))
     }
 
     pub fn publish_cpu_load(&self, load: f32) {

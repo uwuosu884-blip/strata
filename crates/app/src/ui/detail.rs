@@ -309,20 +309,37 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     let mut ppb = if app.pr_zoom > 0.0 { (app.pr_zoom as f64).max(fit) } else { fit };
     if resp.hovered() {
         let (zoom, scroll, alt, hover) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.modifiers.alt, i.pointer.hover_pos()));
+        // Zoom gestures anchor at the point under the cursor when the gesture
+        // STARTED (a gesture ends after 0.35 s without zoom input): that beat /
+        // pitch stays at its screen position however the cursor moves meanwhile.
+        let now = ui.input(|i| i.time);
+        let live = |a: &Option<(f64, f32, f64)>| a.filter(|a| now - a.2 < 0.35);
         if zoom != 1.0
             && let Some(h) = hover
         {
-            let anchor = app.pr_scroll + ((h.x - grid_area.min.x).max(0.0) as f64) / ppb;
+            let (beat, off) = match live(&app.pr_zoom_anchor) {
+                Some((b, o, _)) => (b, o),
+                None => {
+                    let o = (h.x - grid_area.min.x).max(0.0);
+                    (app.pr_scroll + o as f64 / ppb, o)
+                }
+            };
+            app.pr_zoom_anchor = Some((beat, off, now));
             ppb = (ppb * zoom as f64).clamp(fit, 600.0);
             app.pr_zoom = if ppb <= fit * 1.0001 { 0.0 } else { ppb as f32 };
-            app.pr_scroll = anchor - ((h.x - grid_area.min.x).max(0.0) as f64) / ppb;
+            app.pr_scroll = beat - off as f64 / ppb;
         } else if alt && scroll.y != 0.0 {
-            // Keep the pitch under the pointer in place while rows grow/shrink.
             let new_h = (row_h * (1.0 + scroll.y * 0.004)).clamp(5.0, 32.0);
             app.pr_row_h = new_h;
             if let Some(h) = hover {
-                let below = (grid_area.max.y - h.y).max(0.0);
-                let fpitch = app.pr_low_note as f32 + below / row_h;
+                let (fpitch, below) = match live(&app.pr_row_anchor) {
+                    Some((p, b, _)) => (p as f32, b),
+                    None => {
+                        let below = (grid_area.max.y - h.y).max(0.0);
+                        (app.pr_low_note as f32 + below / row_h, below)
+                    }
+                };
+                app.pr_row_anchor = Some((fpitch as f64, below, now));
                 let new_rows = (grid_area.height() / new_h).floor().max(1.0) as i32;
                 app.pr_low_note = (fpitch - below / new_h).round().clamp(0.0, (127 - new_rows + 1).max(0) as f32) as i32;
             }

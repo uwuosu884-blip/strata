@@ -35,6 +35,9 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     }
                     stop_button(app, ui, t);
                     ui.add_space(4.0);
+                    if app.show_io {
+                        super::io::io_section(app, ui, t, COL_W);
+                    }
                     mixer_strip(app, ui, t);
                 });
             }
@@ -87,6 +90,9 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     app.send(Command::StopAllClips);
                 }
                 ui.add_space(4.0);
+                if app.show_io {
+                    super::io::master_io(app, ui, COL_W);
+                }
                 master_strip(app, ui);
             });
         });
@@ -551,8 +557,9 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     });
     // Buttons
     let track = &app.project.tracks[t];
-    let (mute, solo, arm, mon, kind) = (track.mute, track.solo, track.arm, track.monitor, track.kind);
-    let excl = !ui.input(|i| i.modifiers.command);
+    let (mute, solo, arm, kind, has_input) = (track.mute, track.solo, track.arm, track.kind, track.has_input());
+    let ctrl = ui.input(|i| i.modifiers.command);
+    let excl = !ctrl;
     ui.horizontal(|ui| {
         ui.add_space(6.0);
         if toggle_box(ui, &format!("{}", t + 1), !mute, ACCENT, "Track activator (mute)").clicked() {
@@ -561,11 +568,12 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         if toggle_box(ui, "S", solo, Color32::from_rgb(80, 160, 255), "Solo (Ctrl: add)").clicked() {
             app.toggle_track_flag(t, TrackFlag::Solo, excl);
         }
-        if kind != TrackKind::Group && toggle_box(ui, "REC", arm, REC_RED, "Arm for recording (Ctrl: add)").clicked() {
-            app.toggle_track_flag(t, TrackFlag::Arm, excl);
-        }
-        if kind == TrackKind::Audio && toggle_box(ui, "IN", mon, ACCENT, "Monitor input").clicked() {
-            app.toggle_track_flag(t, TrackFlag::Monitor, false);
+        // "No Input" hides Arm.
+        if kind != TrackKind::Group
+            && has_input
+            && toggle_box(ui, "REC", arm, REC_RED, "Arm for recording (all selected tracks; Ctrl: just this one)").clicked()
+        {
+            app.click_arm(t, ctrl);
         }
     });
     let label = app.project.tracks[t].instrument.label();

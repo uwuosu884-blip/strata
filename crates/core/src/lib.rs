@@ -11,8 +11,8 @@ pub mod persist;
 pub mod recorder;
 pub mod samples;
 
-pub use compile::{RtSlots, compile};
-pub use export::{ExportOptions, render_project, write_wav};
+pub use compile::{IoMap, RtSlots, compile, compile_io};
+pub use export::{ExportOptions, render_project, write_wav, write_wav_channels};
 pub use persist::{load_project, save_project};
-pub use recorder::{RecordedNote, Recorder, Take};
+pub use recorder::{RecordedNote, Recorder, Take, TakeLane};
 pub use samples::{SampleCache, decode_file, resample};

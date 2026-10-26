@@ -90,25 +90,47 @@ fn instrument(def: &p::InstrumentDef, cache: &mut SampleCache) -> e::Instrument 
     }
 }
 
+/// Hardware MIDI ports the engine knows, by name; the index is the engine port.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IoMap {
+    pub midi_in: Vec<String>,
+    pub midi_out: Vec<String>,
+}
+
+impl IoMap {
+    fn port(list: &[String], name: &str) -> u8 {
+        list.iter().position(|n| n == name).filter(|&i| i < e::MIDI_NO_PORT as usize).map_or(e::MIDI_NO_PORT, |i| i as u8)
+    }
+}
+
 /// Build the engine song. Missing samples start loading in the background;
 /// recompile when [`SampleCache::poll`] reports arrivals.
 pub fn compile(project: &Project, cache: &mut SampleCache, slots: &mut RtSlots) -> e::Song {
+    compile_io(project, cache, slots, &IoMap::default())
+}
+
+/// [`compile`] with MIDI port names resolved against `io`.
+pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlots, io: &IoMap) -> e::Song {
     slots.retain(project);
+    // Slots first: routing may point at any track.
+    for t in &project.tracks {
+        slots.assign(t.id); // > MAX_TRACKS tracks: extra ones are silent
+    }
     let tracks = project
         .tracks
         .iter()
         .filter_map(|t| {
-            let rt = slots.assign(t.id)?; // > MAX_TRACKS tracks: extra ones are silent
-            // Parents precede children (Project::normalize), so the group's slot already exists.
-            let output = t.group.and_then(|g| slots.get(g));
+            let rt = slots.get(t.id)?;
             Some(e::SongTrack {
-                output,
+                input: input(t, slots, io),
+                output: output(t, slots, io),
                 rt,
                 gain: db_to_gain(t.gain_db),
                 pan: t.pan.clamp(-1.0, 1.0),
                 mute: t.mute,
                 solo: t.solo,
-                monitor: t.monitor,
+                arm: t.arm && t.has_input(),
+                monitor: t.monitor_mode(),
                 instrument: instrument(&t.instrument, cache),
                 slots: t.slots.iter().map(|s| s.as_ref().map(|c| clip(c, cache))).collect(),
                 arrangement: t
@@ -117,10 +139,54 @@ pub fn compile(project: &Project, cache: &mut SampleCache, slots: &mut RtSlots) 
                     .filter(|a| !a.clip.muted)
                     .map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache) })
                     .collect(),
+                ..Default::default()
             })
         })
         .collect();
-    e::Song { tracks }
+    let mut song = e::Song::new(tracks);
+    song.master_out = (project.master_out_ch, project.master_out_stereo);
+    song
+}
+
+fn input(t: &p::Track, slots: &RtSlots, io: &IoMap) -> e::TrackInput {
+    let ch = t.midi_channel;
+    match t.kind {
+        p::TrackKind::Group => e::TrackInput::None,
+        p::TrackKind::Audio => match t.audio_in {
+            p::AudioIn::None => e::TrackInput::None,
+            p::AudioIn::Ext { ch, stereo } => e::TrackInput::Ext { ch, stereo },
+            p::AudioIn::Resampling => e::TrackInput::Resampling,
+            p::AudioIn::Track { id, tap } => slots.get(id).map_or(e::TrackInput::None, |rt| e::TrackInput::Track { rt, tap }),
+        },
+        p::TrackKind::Midi => match &t.midi_in {
+            p::MidiIn::None => e::TrackInput::None,
+            p::MidiIn::AllIns => e::TrackInput::Midi { port: e::MIDI_ALL_INS, channel: ch },
+            p::MidiIn::Keyboard => e::TrackInput::Midi { port: e::MIDI_KEYBOARD, channel: ch },
+            p::MidiIn::Port(name) => e::TrackInput::Midi { port: IoMap::port(&io.midi_in, name), channel: ch },
+            p::MidiIn::Track(id) => slots.get(*id).map_or(e::TrackInput::None, |rt| e::TrackInput::MidiTrack { rt }),
+        },
+    }
+}
+
+fn output(t: &p::Track, slots: &RtSlots, io: &IoMap) -> e::TrackOutput {
+    if t.sends_midi() {
+        return match &t.midi_out {
+            p::MidiOut::None => e::TrackOutput::None,
+            p::MidiOut::Port { name, channel } => match IoMap::port(&io.midi_out, name) {
+                e::MIDI_NO_PORT => e::TrackOutput::None,
+                port => e::TrackOutput::MidiPort { port, channel: *channel },
+            },
+            p::MidiOut::Track { id, instrument } => {
+                slots.get(*id).map_or(e::TrackOutput::None, |rt| e::TrackOutput::MidiTrack { rt, instrument: *instrument })
+            }
+        };
+    }
+    match t.audio_out {
+        p::AudioOut::Default => t.group.and_then(|g| slots.get(g)).map_or(e::TrackOutput::Master, e::TrackOutput::Track),
+        p::AudioOut::Master => e::TrackOutput::Master,
+        p::AudioOut::Ext { ch, stereo } => e::TrackOutput::Ext { ch, stereo },
+        p::AudioOut::Track(id) => slots.get(id).map_or(e::TrackOutput::Master, e::TrackOutput::Track),
+    }
 }
 
 #[cfg(test)]
@@ -136,11 +202,45 @@ mod tests {
         let mut song = compile(&proj, &mut cache, &mut slots);
         song.prepare();
         let grt = song.tracks[g].rt;
-        assert_eq!(song.tracks[g].output, None);
-        assert_eq!(song.tracks[g + 1].output, Some(grt));
-        assert_eq!(song.tracks[g + 2].output, Some(grt));
-        assert_eq!(song.tracks[0].output, None);
-        assert_eq!(song.tracks.last().unwrap().output, None);
+        assert_eq!(song.tracks[g].output, e::TrackOutput::Master);
+        assert_eq!(song.tracks[g + 1].output, e::TrackOutput::Track(grt));
+        assert_eq!(song.tracks[g + 2].output, e::TrackOutput::Track(grt));
+        assert_eq!(song.tracks[0].output, e::TrackOutput::Master);
+        assert_eq!(song.tracks.last().unwrap().output, e::TrackOutput::Master);
+    }
+
+    #[test]
+    fn routing_resolves_ids_ports_and_defaults() {
+        let mut proj = Project::new_default();
+        let a = proj.add_track(p::TrackKind::Audio);
+        let m = proj.add_track(p::TrackKind::Midi);
+        let (id0, ida) = (proj.tracks[0].id, proj.tracks[a].id);
+        proj.tracks[a].audio_in = p::AudioIn::Track { id: id0, tap: p::Tap::Pad(3) };
+        proj.tracks[a].audio_out = p::AudioOut::Ext { ch: 2, stereo: false };
+        proj.tracks[m].midi_in = p::MidiIn::Port("Keys B".into());
+        proj.tracks[m].midi_channel = 10;
+        proj.tracks[m].midi_out = p::MidiOut::Port { name: "Synth".into(), channel: 3 };
+        proj.master_out_ch = 2;
+        let io = IoMap { midi_in: vec!["Keys A".into(), "Keys B".into()], midi_out: vec!["Synth".into()] };
+        let mut cache = SampleCache::new(48_000);
+        let mut slots = RtSlots::default();
+        let song = compile_io(&proj, &mut cache, &mut slots, &io);
+        let rt0 = slots.get(id0).unwrap();
+        assert_eq!(song.tracks[a].input, e::TrackInput::Track { rt: rt0, tap: p::Tap::Pad(3) });
+        assert_eq!(song.tracks[a].output, e::TrackOutput::Ext { ch: 2, stereo: false });
+        assert_eq!(song.tracks[a].monitor, e::Monitor::Off, "audio default Off");
+        assert_eq!(song.tracks[m].input, e::TrackInput::Midi { port: 1, channel: 10 });
+        assert_eq!(song.tracks[m].output, e::TrackOutput::MidiPort { port: 0, channel: 3 }, "no instrument → MIDI To");
+        assert_eq!(song.tracks[m].monitor, e::Monitor::Auto, "MIDI default Auto");
+        assert_eq!(song.master_out, (2, true));
+        // Missing port → never matches; deleted target → normalised away.
+        let song = compile_io(&proj, &mut cache, &mut slots, &IoMap::default());
+        assert_eq!(song.tracks[m].input, e::TrackInput::Midi { port: e::MIDI_NO_PORT, channel: 10 });
+        assert_eq!(song.tracks[m].output, e::TrackOutput::None);
+        proj.tracks[m].audio_in = p::AudioIn::Track { id: ida, tap: p::Tap::PostFx };
+        proj.tracks.remove(0);
+        proj.normalize();
+        assert_eq!(proj.tracks[a - 1].audio_in, p::AudioIn::None);
     }
 
     #[test]

@@ -1,11 +1,14 @@
 //! Application state + non-drawing logic. The UI modules read/modify this;
 //! every project change goes through `edit` (undo) and marks a recompile.
 
-use crate::audio::AudioSystem;
+use crate::audio::{AudioOptions, AudioSystem};
 use crate::midi::MidiSystem;
-use daw_core::{RtSlots, SampleCache, Take};
-use daw_engine::{Command, EngineHandle, RecordState, SampleBuffer, StatusSnapshot, TrackSnapshot};
-use daw_project::{ArrangementClip, Clip, ClipContent, History, InstrumentDef, Note, Project, RECORDING_PREFIX, TrackKind, db_to_gain};
+use crate::settings::Settings;
+use daw_core::{IoMap, RtSlots, SampleCache, Take};
+use daw_engine::{Command, EngineHandle, MAX_IO_CHANNELS, RecordState, SampleBuffer, StatusSnapshot, TrackSnapshot};
+use daw_project::{
+    ArrangementClip, Clip, ClipContent, History, InstrumentDef, Monitor, Note, Project, RECORDING_PREFIX, TrackKind, db_to_gain,
+};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -55,9 +58,21 @@ pub enum DragItem {
 pub enum Dialog {
     Open(String),
     SaveAs(String),
-    Export { path: String, scene: Option<usize>, bits: u16 },
+    Export {
+        path: String,
+        scene: Option<usize>,
+        bits: u16,
+    },
     ConfirmDiscard(PendingAction),
     About,
+    /// Preferences: Audio / MIDI tab.
+    Settings(SettingsTab),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsTab {
+    Audio,
+    Midi,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,8 +154,23 @@ pub struct DawApp {
     pub kb: KeyboardMidi,
     /// Plain key events taken from egui's raw input (see `raw_input_hook`).
     pub key_events: Vec<eframe::egui::Event>,
-    /// Runtime tracks receiving live MIDI (bit mask): every armed MIDI track.
-    pub midi_targets: u64,
+    /// Runtime track auto-armed for MIDI (selected MIDI track while none is armed).
+    pub auto_arm: u16,
+    /// App preferences, base CLI audio options and MIDI on/off (for restarts).
+    pub settings: Settings,
+    pub audio_opts: AudioOptions,
+    pub midi_enabled: bool,
+    /// MIDI port names the engine knows (index = engine port).
+    pub io_map: IoMap,
+    /// Input channel meters (decaying), for the Ext. In chooser.
+    pub input_meters: [f32; MAX_IO_CHANNELS],
+    pub input_clip: [bool; MAX_IO_CHANNELS],
+    /// Mixer In/Out section visible (Ctrl+Alt+I).
+    pub show_io: bool,
+    /// Monitor radio under the pointer (Delete returns it to the default).
+    pub hover_monitor: Option<usize>,
+    /// Device names for the settings dialog (listed when it opens).
+    pub device_lists: Option<(Vec<String>, Vec<String>, Vec<String>)>,
     /// Plain keys pressed while a dialog is open (dialog keyboard navigation).
     pub dialog_keys: Vec<eframe::egui::Key>,
     /// Session recording into (track id, scene).
@@ -163,6 +193,9 @@ pub struct DawApp {
     /// Piano roll: pixels per beat (0 = fit the clip), first visible beat, key row height.
     pub pr_zoom: f32,
     pub pr_scroll: f64,
+    /// Zoom gesture anchors: (beat | pitch, screen offset, last input time).
+    pub pr_zoom_anchor: Option<(f64, f32, f64)>,
+    pub pr_row_anchor: Option<(f64, f32, f64)>,
     pub pr_row_h: f32,
     /// Current arrangement / piano roll grid step (beats), for labels and Quantize.
     pub grid: f64,
@@ -196,8 +229,17 @@ pub struct DawApp {
 const METER_FALL_DB_PER_SEC: f32 = 24.0;
 
 impl DawApp {
-    pub fn new(mut engine: EngineHandle, audio: AudioSystem, project: Project, path: Option<PathBuf>, midi_enabled: bool) -> Self {
-        let midi = MidiSystem::new(engine.take_midi_input().expect("midi producer"), midi_enabled);
+    pub fn new(
+        mut engine: EngineHandle,
+        audio: AudioSystem,
+        project: Project,
+        path: Option<PathBuf>,
+        midi_enabled: bool,
+        settings: Settings,
+        audio_opts: AudioOptions,
+    ) -> Self {
+        let midi = MidiSystem::new(engine.take_midi_input().expect("midi producer"), engine.take_midi_output(), midi_enabled, &settings);
+        let io_map = midi.io_map();
         let recorder = engine.take_recorder().map(daw_core::Recorder::spawn);
         let sr = audio.info.sample_rate;
         let status = engine.snapshot();
@@ -232,7 +274,16 @@ impl DawApp {
             audition: Vec::new(),
             kb: KeyboardMidi { enabled: true, octave: 4, velocity: 100, held: Vec::new() },
             key_events: Vec::new(),
-            midi_targets: 0,
+            auto_arm: u16::MAX - 1, // forces the first SetAutoArm
+            settings,
+            audio_opts,
+            midi_enabled,
+            io_map,
+            input_meters: [0.0; MAX_IO_CHANNELS],
+            input_clip: [false; MAX_IO_CHANNELS],
+            show_io: true,
+            hover_monitor: None,
+            device_lists: None,
             dialog_keys: Vec::new(),
             session_rec: None,
             rec_counter: 0,
@@ -249,6 +300,8 @@ impl DawApp {
             pr_low_note: 48,
             pr_zoom: 0.0,
             pr_scroll: 0.0,
+            pr_zoom_anchor: None,
+            pr_row_anchor: None,
             pr_row_h: 11.0,
             grid: 0.25,
             pr_grid_now: 0.25,
@@ -336,6 +389,10 @@ impl DawApp {
             }
         }
         self.cpu_display += (self.status.cpu_load - self.cpu_display) * (dt * 4.0).min(1.0);
+        for (i, p) in self.engine.input_peaks().iter().enumerate() {
+            self.input_meters[i] = p.max(self.input_meters[i] * fall);
+            self.input_clip[i] |= *p >= 1.0;
+        }
 
         if self.cache.poll() > 0 {
             self.needs_compile = true;
@@ -395,7 +452,7 @@ impl DawApp {
     /// After drawing: push a new song if anything structural changed.
     pub fn end_frame(&mut self) {
         if self.needs_compile {
-            let song = daw_core::compile(&self.project, &mut self.cache, &mut self.slots);
+            let song = daw_core::compile_io(&self.project, &mut self.cache, &mut self.slots, &self.io_map);
             match self.engine.set_song(song) {
                 Ok(()) => self.needs_compile = false,
                 Err(_) => return, // queue full: retry next frame
@@ -407,17 +464,92 @@ impl DawApp {
     }
 
     fn update_midi_target(&mut self) {
-        // Every armed MIDI track, else the selected track (Live's auto-arm).
+        // Live's auto-arm: the selected MIDI track monitors MIDI while no MIDI track is armed.
         let p = &self.project;
-        let mut idx: Vec<usize> = (0..p.tracks.len()).filter(|&i| p.tracks[i].arm && p.tracks[i].kind == TrackKind::Midi).collect();
-        if idx.is_empty() && p.tracks.get(self.selected_track).is_some_and(|t| t.kind == TrackKind::Midi) {
-            idx.push(self.selected_track);
+        let any_armed = p.tracks.iter().any(|t| t.arm && t.kind == TrackKind::Midi);
+        let sel = p.tracks.get(self.selected_track).filter(|t| t.kind == TrackKind::Midi && t.has_input());
+        let rt = if any_armed { None } else { sel.and_then(|_| self.rt(self.selected_track)) }.unwrap_or(u16::MAX);
+        if rt != self.auto_arm {
+            self.auto_arm = rt;
+            self.send_now(Command::SetAutoArm(rt));
         }
-        let mask = idx.into_iter().filter_map(|i| self.rt(i)).fold(0u64, |m, rt| m | (1u64 << (rt as u32 & 63)));
-        if mask != self.midi_targets {
-            self.midi_targets = mask;
-            self.send_now(Command::SetMidiTargets(mask));
+    }
+
+    /// Restart the audio device with new options: rebuilds the engine, MIDI
+    /// and recorder, then recompiles the song.
+    pub fn restart_audio(&mut self, opts: AudioOptions) {
+        // Release the device first (a null engine bridges the gap).
+        self.recorder = None;
+        let (tmp_audio, tmp_engine) = crate::audio::start(&AudioOptions { force_null: true, no_input: true, ..Default::default() });
+        self.audio = tmp_audio;
+        self.engine = tmp_engine;
+        let (audio, mut engine) = crate::audio::start(&opts);
+        self.midi =
+            MidiSystem::new(engine.take_midi_input().expect("midi producer"), engine.take_midi_output(), self.midi_enabled, &self.settings);
+        self.io_map = self.midi.io_map();
+        self.recorder = engine.take_recorder().map(daw_core::Recorder::spawn);
+        self.audio = audio;
+        self.engine = engine;
+        self.audio_opts = opts;
+        self.slots = RtSlots::default();
+        self.needs_compile = true;
+        self.auto_arm = u16::MAX - 1;
+        self.input_meters = [0.0; MAX_IO_CHANNELS];
+        self.input_clip = [false; MAX_IO_CHANNELS];
+        self.sync_globals();
+        let i = &self.audio.info;
+        let msg = match &i.null_reason {
+            Some(_) => "Audio: no output device, running silently".to_string(),
+            None => format!(
+                "Audio: {} · {} Hz · {}",
+                i.device,
+                i.sample_rate,
+                i.buffer_frames.map_or("default buffer".into(), |b| format!("{b} frames"))
+            ),
+        };
+        self.toast(msg);
+    }
+
+    /// Reopen MIDI ports after a Track switch changed.
+    pub fn rescan_midi(&mut self) {
+        let s = self.settings.clone();
+        self.midi.rescan(&s);
+        let io = self.midi.io_map();
+        if io != self.io_map {
+            self.io_map = io;
+            self.needs_compile = true;
         }
+    }
+
+    /// Audio options after a change in Settings (the dialog's choices win over
+    /// the command line; only --null-audio is kept).
+    pub fn options_from_settings(&self) -> AudioOptions {
+        let s = &self.settings;
+        AudioOptions {
+            host: s.host.clone(),
+            buffer_frames: s.buffer_frames,
+            force_null: self.audio_opts.force_null,
+            no_input: s.no_input,
+            output_device: s.output_device.clone(),
+            input_device: s.input_device.clone(),
+        }
+    }
+
+    pub fn open_settings(&mut self, tab: SettingsTab) {
+        self.device_lists = None; // re-list devices
+        self.dialog = Some(Dialog::Settings(tab));
+    }
+
+    pub fn save_settings(&mut self) {
+        if let Err(e) = self.settings.save() {
+            self.toast(format!("Could not save settings: {e}"));
+        }
+    }
+
+    /// Channel configuration of the current input / output device.
+    pub fn channel_config(&self, input: bool) -> crate::settings::ChannelConfig {
+        let dev = if input { self.audio.info.input.as_ref().map(String::as_str).unwrap_or("") } else { self.audio.info.device.as_str() };
+        self.settings.channel_config(input, dev)
     }
 
     // ----- editing ---------------------------------------------------------------
@@ -646,14 +778,11 @@ impl DawApp {
                 let f = match flag {
                     TrackFlag::Mute => &mut t.mute,
                     TrackFlag::Solo => &mut t.solo,
-                    TrackFlag::Arm => &mut t.arm,
-                    TrackFlag::Monitor => &mut t.monitor,
                 };
                 *f = !*f;
                 *f
             };
-            // Plain click on solo is exclusive (Live default); Ctrl adds. Arm is
-            // never exclusive: every armed track records.
+            // Plain click on solo is exclusive (Live default); Ctrl adds.
             if exclusive && v && flag == TrackFlag::Solo {
                 for (i, t) in p.tracks.iter_mut().enumerate() {
                     if i != track {
@@ -661,6 +790,62 @@ impl DawApp {
                     }
                 }
             }
+        });
+    }
+
+    /// Arm button: on a track inside a multi-selection it (dis)arms every
+    /// selected track; Ctrl+click arms just this one.
+    pub fn click_arm(&mut self, track: usize, ctrl: bool) {
+        let sel = self.selected_tracks();
+        let targets: Vec<usize> = if !ctrl && sel.len() > 1 && sel.contains(&track) { sel } else { vec![track] };
+        let Some(on) = self.project.tracks.get(track).map(|t| !t.arm) else { return };
+        self.edit(|p| {
+            for &i in &targets {
+                if let Some(t) = p.tracks.get_mut(i)
+                    && t.kind != TrackKind::Group
+                    && t.has_input()
+                {
+                    t.arm = on;
+                }
+            }
+        });
+    }
+
+    /// Monitor radio (applies to every selected track if `track` is selected).
+    /// `None` = return to the kind's default.
+    pub fn set_monitor(&mut self, track: usize, mode: Option<Monitor>) {
+        let targets = self.io_targets(track);
+        self.edit(|p| {
+            for &i in &targets {
+                if let Some(t) = p.tracks.get_mut(i)
+                    && t.kind != TrackKind::Group
+                {
+                    t.monitoring = mode;
+                }
+            }
+        });
+    }
+
+    /// I/O changes apply to all selected tracks when `track` is one of them.
+    pub fn io_targets(&self, track: usize) -> Vec<usize> {
+        let sel = self.selected_tracks();
+        if sel.contains(&track) { sel } else { vec![track] }
+    }
+
+    /// Change a routing setting on `track` (and the other selected tracks of
+    /// the same kind).
+    pub fn set_routing(&mut self, track: usize, f: impl Fn(&mut daw_project::Track)) {
+        let Some(kind) = self.project.tracks.get(track).map(|t| t.kind) else { return };
+        let targets = self.io_targets(track);
+        self.edit(|p| {
+            for &i in &targets {
+                if let Some(t) = p.tracks.get_mut(i)
+                    && t.kind == kind
+                {
+                    f(t);
+                }
+            }
+            p.normalize();
         });
     }
 
@@ -710,8 +895,16 @@ impl DawApp {
         }
     }
 
-    fn store_recording(&mut self, take: &Take) -> String {
-        self.store_audio("take", &take.audio)
+    /// Keep a recorded lane in the cache (mono lanes as mono samples).
+    fn store_lane(&mut self, lane: &daw_core::TakeLane) -> String {
+        if !lane.mono {
+            return self.store_audio("take", &lane.audio);
+        }
+        self.rec_counter += 1;
+        let key = format!("{RECORDING_PREFIX}take-{}-{}", std::process::id(), self.rec_counter);
+        let l: Vec<f32> = lane.audio.iter().step_by(2).copied().collect();
+        self.cache.insert(&key, SampleBuffer::mono(format!("take {}", self.rec_counter), self.audio.info.sample_rate, l));
+        key
     }
 
     /// Keep interleaved stereo audio in the cache under a `recording:` key
@@ -730,15 +923,39 @@ impl DawApp {
         if len <= 1e-6 {
             return;
         }
-        take.compensate_latency(self.audio.info.round_trip_frames());
-        let has_audio_target = self.project.tracks.iter().any(|t| t.arm && t.kind == TrackKind::Audio);
-        let audio_key = if has_audio_target && self.audio.info.input.is_ok() && !take.audio.is_empty() {
-            Some(self.store_recording(&take))
-        } else {
-            None
-        };
-        let tempo = self.project.tempo_bpm;
         let rts: Vec<Option<u16>> = (0..self.project.tracks.len()).map(|i| self.rt(i)).collect();
+        // One sample per armed audio track (its own input), latency-compensated:
+        // "Keep Monitoring Latency" (In/Auto) keeps the monitoring delay.
+        let mut audio_keys: Vec<Option<String>> = vec![None; self.project.tracks.len()];
+        for (i, t) in self.project.tracks.iter().enumerate() {
+            if !(t.arm && t.kind == TrackKind::Audio) {
+                continue;
+            }
+            let Some(lane) = rts[i].and_then(|rt| take.lanes.iter_mut().find(|l| l.track == rt)) else { continue };
+            let keep = t.keep_monitor_latency && t.monitor_mode() != Monitor::Off;
+            let resampling = t.audio_in == daw_project::AudioIn::Resampling;
+            let latency = if resampling {
+                0 // internal: no device latency
+            } else if keep {
+                self.audio.info.output_latency_frames()
+            } else {
+                self.audio.info.round_trip_frames()
+            };
+            lane.compensate_latency(latency);
+            if !lane.audio.is_empty()
+                && (resampling || self.audio.info.input.is_ok() || !matches!(t.audio_in, daw_project::AudioIn::Ext { .. }))
+            {
+                audio_keys[i] = Some(String::new());
+            }
+        }
+        for i in 0..audio_keys.len() {
+            if audio_keys[i].is_some()
+                && let Some(lane) = rts[i].and_then(|rt| take.lanes.iter().find(|l| l.track == rt)).cloned()
+            {
+                audio_keys[i] = Some(self.store_lane(&lane));
+            }
+        }
+        let tempo = self.project.tempo_bpm;
         let playing: Vec<Option<u32>> = self.track_status.iter().map(|s| s.playing_scene).collect();
         let session = self.session_rec.take();
         let mut launch = None;
@@ -813,7 +1030,7 @@ impl DawApp {
                         }
                         ClipContent::Midi { notes }
                     }
-                    TrackKind::Audio => match &audio_key {
+                    TrackKind::Audio => match &audio_keys[i] {
                         Some(k) => ClipContent::Audio { sample: k.clone(), offset_frames: 0.0, warp_bpm: Some(tempo), gain_db: 0.0 },
                         None => continue,
                     },
@@ -879,21 +1096,19 @@ impl DawApp {
             }
         }
         let Some(&(_, off)) = KEY_NOTES.iter().find(|(k, _)| *k == key) else { return false };
-        let targets: Vec<u16> = (0..64u16).filter(|b| self.midi_targets & (1u64 << b) != 0).collect();
+        // Routed by the engine like a MIDI port ("Computer Keyboard" / "All Ins").
         if pressed {
-            if targets.is_empty() || self.kb.held.iter().any(|(k, _)| *k == key) {
-                return true; // no target / key repeat
+            if self.kb.held.iter().any(|(k, _)| *k == key) {
+                return true; // key repeat
             }
             let pitch = ((self.kb.octave + 1) * 12 + off as i32).clamp(0, 127) as u8;
             self.kb.held.push((key, pitch));
-            for rt in targets {
-                self.send_now(Command::NoteOn { track: rt, pitch, velocity: self.kb.velocity });
-            }
+            self.midi.activity.note_in(usize::MAX, 0);
+            self.send_now(Command::KeyboardNote { pitch, velocity: self.kb.velocity });
         } else if let Some(i) = self.kb.held.iter().position(|(k, _)| *k == key) {
             let (_, pitch) = self.kb.held.remove(i);
-            for rt in targets {
-                self.send_now(Command::NoteOff { track: rt, pitch });
-            }
+            self.midi.activity.note_in(usize::MAX, 0);
+            self.send_now(Command::KeyboardNote { pitch, velocity: 0 });
         }
         true
     }
@@ -1021,8 +1236,6 @@ impl DawApp {
 pub enum TrackFlag {
     Mute,
     Solo,
-    Arm,
-    Monitor,
 }
 
 /// Guess whether a sample is a loop: returns (length in beats, warp bpm).

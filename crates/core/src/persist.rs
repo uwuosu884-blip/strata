@@ -2,7 +2,7 @@
 //! `factory:` / `recording:`); on disk, files inside the project folder are
 //! stored relative so a project folder can be moved or shared.
 
-use crate::export::write_wav;
+use crate::export::write_wav_channels;
 use crate::samples::SampleCache;
 use daw_project::{ClipContent, FACTORY_PREFIX, InstrumentDef, Project, ProjectError, RECORDING_PREFIX};
 use std::path::{Path, PathBuf};
@@ -64,9 +64,19 @@ pub fn save_project(project: &mut Project, path: &Path, cache: &mut SampleCache)
             return;
         }
         let name = s.trim_start_matches(RECORDING_PREFIX).replace(['/', '\\', ':'], "_");
-        let file = sdir.join(format!("{name}.wav"));
-        let data: Vec<f32> = buf.left.iter().zip(&buf.right).flat_map(|(l, r)| [*l, *r]).collect();
-        if let Err(e) = write_wav(&file, &data, buf.sample_rate, 32) {
+        // Live's layout: recordings in <Samples>/Recorded; mono takes stay mono.
+        let rdir = sdir.join("Recorded");
+        if let Err(e) = std::fs::create_dir_all(&rdir) {
+            err = Some(ProjectError::Io(e));
+            return;
+        }
+        let file = rdir.join(format!("{name}.wav"));
+        let (data, channels): (Vec<f32>, u16) = if buf.left == buf.right {
+            (buf.left.clone(), 1)
+        } else {
+            (buf.left.iter().zip(&buf.right).flat_map(|(l, r)| [*l, *r]).collect(), 2)
+        };
+        if let Err(e) = write_wav_channels(&file, &data, buf.sample_rate, 32, channels) {
             err = Some(ProjectError::Io(std::io::Error::other(e)));
             return;
         }
@@ -107,6 +117,7 @@ mod tests {
         let path = dir.join("My Song.dawproj");
         let mut cache = SampleCache::new(48_000);
         cache.insert("recording:take1", SampleBuffer::new("take1", 48_000, vec![0.25; 4800], vec![-0.25; 4800]));
+        cache.insert("recording:mono1", SampleBuffer::mono("mono1", 48_000, vec![0.5; 480]));
         let mut p = Project::new_default();
         let audio = |s: &str| {
             Some(Clip {
@@ -117,10 +128,13 @@ mod tests {
         p.tracks[3].slots[0] = audio("recording:take1");
         p.tracks[3].slots[1] = audio("recording:take1");
         p.tracks[3].slots[2] = audio("/elsewhere/loop.wav");
+        p.tracks[2].slots[0] = audio("recording:mono1");
 
         save_project(&mut p, &path, &mut cache).unwrap();
-        let wav = dir.join("My Song Samples").join("take1.wav");
+        let wav = dir.join("My Song Samples").join("Recorded").join("take1.wav");
         assert!(wav.exists());
+        let mono = hound::WavReader::open(dir.join("My Song Samples/Recorded/mono1.wav")).unwrap();
+        assert_eq!(mono.spec().channels, 1, "mono input → mono file");
         let wav_s = wav.to_string_lossy().into_owned();
         let refs: Vec<String> = p.tracks[3]
             .slots
@@ -135,7 +149,7 @@ mod tests {
         assert!(cache.peek(&wav_s).is_some());
 
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\"My Song Samples/take1.wav\""), "stored relative");
+        assert!(text.contains("\"My Song Samples/Recorded/take1.wav\""), "stored relative");
         assert!(text.contains("factory:Kick"));
 
         // Move the whole folder: still loads.

@@ -10,6 +10,50 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), audio warping, multi-core track processing.
 
+## [0.5.0] - 2026-10-26
+
+### Added
+- **Audio and MIDI inputs / routing (Live's Routing & I/O)**:
+  - In/Out section in the session mixer and the arrangement headers
+    (View menu or Ctrl+Alt+I). Changes apply to every selected track.
+  - Audio From: Ext. In channels (mono or stereo pairs, with signal and
+    overload meters), Resampling (the main output; the recording track is left
+    out), another track at Pre FX / Post FX / Post Mixer, or a drum rack pad
+    (tapped pads leave the internal mix), or No Input (hides Arm).
+  - MIDI From: All Ins, Computer Keyboard, a single port, or another MIDI
+    track; channel filter All / 1–16 with activity meters.
+  - Monitor In / Auto / Off (audio defaults to Off, MIDI to Auto). Right-click:
+    Keep Monitoring Latency in Recorded Audio and Return to Default; Delete
+    over the radio resets it too.
+  - Audio To: Master, the parent group, another track (many-to-one submixes;
+    solo follows Live's rules), or Ext. Out channels (mono = L+R −6 dB).
+    The master output channel can be chosen too.
+  - MIDI To (MIDI tracks without an instrument): an external port + channel,
+    or another MIDI track's Track In or its instrument directly.
+  - The selected MIDI track is auto-armed while no MIDI track is armed.
+  - Transport MIDI Track in/out indicators.
+- **Settings dialog** (Ctrl+, / View menu): driver type, output and input
+  device, buffer size, latency readout; input/output channel configuration
+  (enable mono/stereo channels, rename them — names are stored per device);
+  MIDI input/output ports with Track switches. Saved to `settings.ron`.
+  `--output-device` / `--input-device` command-line options.
+- **Multi-track audio recording**: each armed audio track records its own
+  input. Mono inputs record mono WAVs; recordings are saved to
+  `<project> Samples/Recorded/`.
+
+### Changed
+- `M` toggles the computer MIDI keyboard (was Shift+M).
+- Project format version 4 (old files load; the old monitor switch becomes
+  Monitor In).
+
+### Fixed
+- Ctrl+L with nothing selected re-applies the previous loop after it was
+  turned off.
+- Piano roll zoom (Ctrl+wheel, and Alt+wheel row height) is anchored at the
+  point under the cursor when the zoom gesture started, not the moving cursor.
+- Clicking Arm on one of several selected tracks arms all of them;
+  Ctrl+click arms only that track.
+
 ## [0.4.0] - 2026-10-26
 
 ### Added
@@ -256,7 +300,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...v0.2.0

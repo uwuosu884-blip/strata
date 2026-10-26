@@ -3,6 +3,7 @@
 mod arrangement;
 mod browser;
 mod detail;
+mod io;
 mod session;
 pub mod widgets;
 
@@ -212,6 +213,12 @@ impl DawApp {
         if cmd(Key::B) {
             self.show_browser = !self.show_browser;
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::I)) {
+            self.show_io = !self.show_io;
+        }
+        if cmd(Key::Comma) {
+            self.open_settings(crate::app::SettingsTab::Audio);
+        }
         if typing {
             self.key_events.clear();
             return;
@@ -226,6 +233,7 @@ impl DawApp {
             self.renaming = None;
         }
         let events = std::mem::take(&mut self.key_events);
+        let hover_monitor = self.hover_monitor.take(); // set again by this frame's UI
         for ev in events {
             let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
             if modifiers.command || modifiers.alt {
@@ -261,6 +269,13 @@ impl DawApp {
                         self.toggle_record();
                         continue;
                     }
+                    Key::Delete | Key::Backspace if hover_monitor.is_some() => {
+                        // Monitor radio: Return to Default.
+                        if let Some(t) = hover_monitor {
+                            self.set_monitor(t, None);
+                        }
+                        continue;
+                    }
                     Key::Delete | Key::Backspace => {
                         if self.focus_detail {
                             self.delete_selected_notes(); // piano roll focused: never touch clips/tracks
@@ -282,8 +297,12 @@ impl DawApp {
                         self.transpose_selected_notes(if key == Key::ArrowUp { s } else { -s });
                         continue;
                     }
-                    Key::M if modifiers.shift => {
+                    // Live: M toggles the computer keyboard (with Shift too).
+                    Key::M => {
                         self.kb.enabled = !self.kb.enabled;
+                        for (_, p) in std::mem::take(&mut self.kb.held) {
+                            self.send_now(Command::KeyboardNote { pitch: p, velocity: 0 });
+                        }
                         continue;
                     }
                     Key::Enter => {
@@ -311,6 +330,7 @@ impl DawApp {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
             ui.menu_button("File", |ui| self.file_menu(ui));
+            ui.menu_button("View", |ui| self.view_menu(ui));
 
             self.tempo_box(ui);
             self.signature_box(ui);
@@ -398,11 +418,12 @@ impl DawApp {
                     ui,
                     Icon::Keyboard,
                     self.kb.enabled,
-                    "Computer MIDI keyboard (Shift+M)\nA W S E D F T G Y H U J K = notes, Z/X octave, C/V velocity",
+                    "Computer MIDI keyboard (M)\nA W S E D F T G Y H U J K = notes, Z/X octave, C/V velocity",
                 );
                 if kb.clicked() {
                     self.kb.enabled = !self.kb.enabled;
                 }
+                io::midi_leds(self, ui);
             });
         });
     }
@@ -593,12 +614,8 @@ impl DawApp {
             });
             ui.close();
         }
-        if ui.button("Rescan MIDI devices").clicked() {
-            self.midi.rescan();
-            ui.close();
-        }
-        if ui.button(if self.show_browser { "Hide Browser   Ctrl+B" } else { "Show Browser   Ctrl+B" }).clicked() {
-            self.show_browser = !self.show_browser;
+        if ui.button("Settings…       Ctrl+,").clicked() {
+            self.open_settings(crate::app::SettingsTab::Audio);
             ui.close();
         }
         ui.separator();
@@ -608,6 +625,33 @@ impl DawApp {
         }
         if ui.button("Quit").clicked() {
             self.guarded(PendingAction::Quit);
+            ui.close();
+        }
+    }
+
+    fn view_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.checkbox(&mut self.show_io, "In/Out      Ctrl+Alt+I").clicked() {
+            ui.close();
+        }
+        if ui.checkbox(&mut self.show_browser, "Browser       Ctrl+B").clicked() {
+            ui.close();
+        }
+        let mut kb = self.kb.enabled;
+        if ui.checkbox(&mut kb, "Computer MIDI Keyboard   M").clicked() {
+            self.kb.enabled = kb;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Audio Settings…").clicked() {
+            self.open_settings(crate::app::SettingsTab::Audio);
+            ui.close();
+        }
+        if ui.button("MIDI Settings…").clicked() {
+            self.open_settings(crate::app::SettingsTab::Midi);
+            ui.close();
+        }
+        if ui.button("Rescan MIDI devices").clicked() {
+            self.rescan_midi();
             ui.close();
         }
     }
@@ -624,10 +668,10 @@ impl DawApp {
                 Err(e) => format!("No input ({e})"),
             };
             ui.label(egui::RichText::new(input).small().color(Color32::GRAY));
-            let midi = if self.midi.ports.is_empty() {
-                self.midi.error.clone().unwrap_or_else(|| "No MIDI devices".into())
+            let midi = if self.io_map.midi_in.is_empty() && self.io_map.midi_out.is_empty() {
+                self.midi.error.clone().unwrap_or_else(|| "No MIDI ports".into())
             } else {
-                format!("MIDI: {}", self.midi.ports.join(", "))
+                format!("MIDI: {}", self.io_map.midi_in.iter().chain(&self.io_map.midi_out).cloned().collect::<Vec<_>>().join(", "))
             };
             ui.label(egui::RichText::new(midi).small().color(Color32::GRAY));
             if self.kb.enabled {
@@ -671,6 +715,7 @@ impl DawApp {
             Dialog::Export { .. } => "Export Audio",
             Dialog::ConfirmDiscard(_) => "Unsaved Changes",
             Dialog::About => "About daw",
+            Dialog::Settings(_) => "Settings",
         };
         let scenes = self.project.scenes.len();
         let keys = std::mem::take(&mut self.dialog_keys);
@@ -793,6 +838,11 @@ impl DawApp {
                         };
                         close = true;
                         ui.data_mut(|d| d.remove::<usize>(focus_id));
+                    }
+                }
+                Dialog::Settings(tab) => {
+                    if io::settings_dialog(self, ui, tab) {
+                        close = true;
                     }
                 }
                 Dialog::About => {

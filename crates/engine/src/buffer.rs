@@ -13,6 +13,14 @@ impl StereoBuffer {
         Self { left: vec![0.0; max_frames], right: vec![0.0; max_frames] }
     }
 
+    pub fn left(&self) -> &[f32] {
+        &self.left
+    }
+
+    pub fn right(&self) -> &[f32] {
+        &self.right
+    }
+
     pub fn capacity(&self) -> usize {
         self.left.len()
     }

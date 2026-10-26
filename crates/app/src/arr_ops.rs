@@ -344,7 +344,8 @@ impl DawApp {
             self.send_loop();
             return;
         }
-        let Some((s, e)) = range else {
+        // Nothing selected: re-apply the previous loop.
+        let Some((s, e)) = range.or((p.loop_end - p.loop_start > EPS).then_some((p.loop_start, p.loop_end))) else {
             self.toast("Select a region or clip to loop");
             return;
         };
@@ -1025,7 +1026,7 @@ mod app_tests {
 
     fn app() -> DawApp {
         let (audio, engine) = crate::audio::start(&crate::audio::AudioOptions { force_null: true, no_input: true, ..Default::default() });
-        DawApp::new(engine, audio, Project::default(), None, false)
+        DawApp::new(engine, audio, Project::default(), None, false, Default::default(), Default::default())
     }
 
     fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
@@ -1092,9 +1093,58 @@ mod app_tests {
     #[test]
     fn arming_several_tracks_keeps_all_armed() {
         let mut a = tracks(3);
-        a.toggle_track_flag(0, crate::app::TrackFlag::Arm, false);
-        a.toggle_track_flag(2, crate::app::TrackFlag::Arm, false);
+        a.click_arm(0, true);
+        a.click_arm(2, true);
         assert!(a.project.tracks[0].arm && a.project.tracks[2].arm && !a.project.tracks[1].arm);
+    }
+
+    #[test]
+    fn ctrl_l_without_selection_reapplies_the_old_loop() {
+        let mut a = tracks(1);
+        a.time_sel = Some(crate::arr_ops::TimeSel::new(4.0, 12.0, 0, 0));
+        a.loop_selection();
+        assert!(a.project.loop_enabled && a.project.loop_start == 4.0 && a.project.loop_end == 12.0);
+        a.loop_selection(); // same region: off
+        assert!(!a.project.loop_enabled);
+        a.time_sel = None;
+        a.loop_selection();
+        assert!(a.project.loop_enabled && a.project.loop_start == 4.0 && a.project.loop_end == 12.0, "old loop back");
+        a.loop_selection();
+        assert!(!a.project.loop_enabled);
+    }
+
+    #[test]
+    fn arm_click_applies_to_the_selection_and_ctrl_is_independent() {
+        let mut a = tracks(4);
+        a.select_track_header(0, crate::arr_ops::SelMode::Single);
+        a.select_track_header(2, crate::arr_ops::SelMode::Range);
+        a.click_arm(1, false);
+        assert_eq!(a.project.tracks.iter().map(|t| t.arm).collect::<Vec<_>>(), vec![true, true, true, false], "all selected");
+        a.click_arm(0, false);
+        assert!(a.project.tracks[..3].iter().all(|t| !t.arm), "toggles all off");
+        a.click_arm(1, true);
+        assert_eq!(a.project.tracks.iter().map(|t| t.arm).collect::<Vec<_>>(), vec![false, true, false, false], "Ctrl: just one");
+        a.click_arm(3, false);
+        assert!(a.project.tracks[3].arm && !a.project.tracks[0].arm, "unselected track: just itself");
+        // No Input: can't be armed.
+        a.project.tracks[3].midi_in = daw_project::MidiIn::None;
+        a.project.tracks[3].arm = false;
+        a.click_arm(3, false);
+        assert!(!a.project.tracks[3].arm);
+    }
+
+    #[test]
+    fn monitor_and_routing_apply_to_selected_tracks() {
+        let mut a = tracks(3);
+        a.select_track_header(0, crate::arr_ops::SelMode::Single);
+        a.select_track_header(1, crate::arr_ops::SelMode::Range);
+        a.set_monitor(0, Some(daw_project::Monitor::In));
+        assert_eq!(a.project.tracks[1].monitor_mode(), daw_project::Monitor::In);
+        assert_eq!(a.project.tracks[2].monitor_mode(), daw_project::Monitor::Auto, "unselected keeps the MIDI default");
+        a.set_monitor(1, None);
+        assert_eq!(a.project.tracks[0].monitor_mode(), daw_project::Monitor::Auto, "return to default");
+        a.set_routing(0, |t| t.midi_channel = 5);
+        assert!(a.project.tracks[0].midi_channel == 5 && a.project.tracks[1].midi_channel == 5 && a.project.tracks[2].midi_channel == 0);
     }
 
     fn note_app() -> (DawApp, ClipRef) {

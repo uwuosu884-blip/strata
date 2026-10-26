@@ -21,13 +21,16 @@ mod track;
 mod transport;
 
 pub use buffer::StereoBuffer;
-pub use command::{Command, MidiEvent, RecordEvent};
+pub use command::{Command, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
 pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
 pub use sample::{PEAK_BLOCK, SampleBuffer};
-pub use song::{ArrangementClip, AudioClip, Clip, ClipContent, MAX_TRACKS, Note, Song, SongTrack};
+pub use song::{
+    ArrangementClip, AudioClip, Clip, ClipContent, MAX_IO_CHANNELS, MAX_TRACKS, MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note,
+    Song, SongTrack, Tap, TrackInput, TrackOutput,
+};
 pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};
 
@@ -36,13 +39,16 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use smoother::Smoothed;
 use status::{NO_PENDING, PENDING_STOP, SharedStatus};
 use std::sync::Arc;
-use track::{Action, EPS, Pending, SegCtx, TrackRt};
+use track::{Action, EPS, MAX_OUT_NOTES, NoteEvent, Pending, SegCtx, TrackRt};
 
 const COMMAND_QUEUE: usize = 1024;
 const SONG_QUEUE: usize = 16;
 const GARBAGE_QUEUE: usize = 64;
 const MIDI_QUEUE: usize = 1024;
 const RECORD_EVENT_QUEUE: usize = 8192;
+const MIDI_OUT_QUEUE: usize = 2048;
+/// Depth limit for live MIDI forwarded between tracks.
+const MAX_MIDI_HOPS: u8 = 8;
 const NONE: u16 = u16::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,11 +57,13 @@ pub struct EngineConfig {
     /// Largest internal block; bigger callbacks are split, so any device
     /// buffer size works without allocating.
     pub max_block_frames: usize,
+    /// Interleaved channels per frame pushed to [`EngineHandle::take_input`].
+    pub input_channels: usize,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { sample_rate: 48_000.0, max_block_frames: 512 }
+        Self { sample_rate: 48_000.0, max_block_frames: 512, input_channels: 2 }
     }
 }
 
@@ -69,19 +77,23 @@ struct Recorder {
 /// Create a connected engine (audio thread) and handle (control thread).
 pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
     assert!(config.sample_rate > 0.0 && config.max_block_frames > 0);
+    let config = EngineConfig { input_channels: config.input_channels.clamp(1, MAX_IO_CHANNELS), ..config };
     let sr = config.sample_rate;
+    let ich = config.input_channels;
     let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_QUEUE);
     let (song_tx, song_rx) = RingBuffer::new(SONG_QUEUE);
     let (gc_tx, gc_rx) = RingBuffer::new(GARBAGE_QUEUE);
     let (midi_tx, midi_rx) = RingBuffer::new(MIDI_QUEUE);
-    // ~0.7 s of stereo input buffering, ~10 s of recording buffering.
-    let (in_tx, in_rx) = RingBuffer::new((sr as usize).max(8192) * 2 * 7 / 10);
+    let (mout_tx, mout_rx) = RingBuffer::new(MIDI_OUT_QUEUE);
+    // ~0.7 s of input buffering, ~10 s of (stereo) recording buffering.
+    let (in_tx, in_rx) = RingBuffer::new((sr as usize).max(8192) * ich * 7 / 10);
     let (rec_ev_tx, rec_ev_rx) = RingBuffer::new(RECORD_EVENT_QUEUE);
     let (rec_au_tx, rec_au_rx) = RingBuffer::new(sr as usize * 2 * 10);
     let status = Arc::new(SharedStatus::default());
     let transport = Transport::default();
     status.publish_transport(&transport);
     let mb = config.max_block_frames;
+    let bufs = |k: usize| (0..k).map(|_| vec![0.0f32; mb]).collect::<Vec<_>>();
 
     let engine = Engine {
         config,
@@ -90,6 +102,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         songs: song_rx,
         garbage: gc_tx,
         midi: midi_rx,
+        midi_out: mout_tx,
         input: in_rx,
         rec_events: rec_ev_tx,
         rec_audio: rec_au_tx,
@@ -99,16 +112,23 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         master_gain: Smoothed::new(1.0, sr, 0.02),
         master_pan: [Smoothed::new(1.0, sr, 0.02), Smoothed::new(1.0, sr, 0.02)],
         master: StereoBuffer::new(mb),
-        input_l: vec![0.0; mb],
-        input_r: vec![0.0; mb],
+        in_ch: bufs(MAX_IO_CHANNELS),
+        in_peaks: [0.0; MAX_IO_CHANNELS],
+        out_ch: bufs(MAX_IO_CHANNELS),
+        out_used: 0,
+        res_l: vec![0.0; 2 * mb],
+        res_r: vec![0.0; 2 * mb],
+        res_pos: 0,
         song: Box::default(),
         tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr)).collect(),
         rt_to_song: [NONE; MAX_TRACKS],
         quantum: 4.0,
-        midi_targets: 0,
+        auto_arm: NONE,
         rec: Recorder { state: RecordState::Idle, beat: 0.0 },
+        rec_lanes: [NONE; MAX_REC_LANES],
+        n_lanes: 0,
         dropped_record_samples: 0,
-        rec_frames: 0,
+        rec_pos: 0,
     };
     let handle = EngineHandle {
         commands: cmd_tx,
@@ -118,6 +138,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         config,
         input: Some(in_tx),
         midi: Some(midi_tx),
+        midi_out: Some(mout_rx),
         recorder: Some(RecorderPorts { events: rec_ev_rx, audio: rec_au_rx }),
     };
     (engine, handle)
@@ -130,7 +151,8 @@ pub struct Engine {
     commands: Consumer<Command>,
     songs: Consumer<Box<Song>>,
     garbage: Producer<Box<Song>>,
-    midi: Consumer<MidiEvent>,
+    midi: Consumer<MidiInput>,
+    midi_out: Producer<MidiOutput>,
     input: Consumer<f32>,
     rec_events: Producer<RecordEvent>,
     rec_audio: Producer<f32>,
@@ -141,17 +163,40 @@ pub struct Engine {
     /// Left/right pan gains of the master bus.
     master_pan: [Smoothed; 2],
     master: StereoBuffer,
-    input_l: Vec<f32>,
-    input_r: Vec<f32>,
+    /// Device input channels of the current callback chunk.
+    in_ch: Vec<Vec<f32>>,
+    in_peaks: [f32; MAX_IO_CHANNELS],
+    /// Device output channels fed by tracks routed to "Ext. Out".
+    out_ch: Vec<Vec<f32>>,
+    out_used: u64,
+    /// Main output delay line for Resampling (read one block behind).
+    res_l: Vec<f32>,
+    res_r: Vec<f32>,
+    res_pos: usize,
     song: Box<Song>,
     tracks: Vec<TrackRt>,
     rt_to_song: [u16; MAX_TRACKS],
     quantum: f64,
-    midi_targets: u64,
+    auto_arm: u16,
     rec: Recorder,
+    /// Runtime tracks whose input the current take records.
+    rec_lanes: [u16; MAX_REC_LANES],
+    n_lanes: usize,
     dropped_record_samples: u64,
-    /// Frames pushed to the recorded-audio ring so far.
-    rec_frames: u64,
+    /// Samples pushed to the recorded-audio ring so far.
+    rec_pos: u64,
+}
+
+/// Mutable references to two different tracks.
+fn two_mut(v: &mut [TrackRt], a: usize, b: usize) -> (&mut TrackRt, &mut TrackRt) {
+    debug_assert_ne!(a, b);
+    if a < b {
+        let (x, y) = v.split_at_mut(b);
+        (&mut x[a], &mut y[0])
+    } else {
+        let (x, y) = v.split_at_mut(a);
+        (&mut y[0], &mut x[b])
+    }
 }
 
 impl Engine {
@@ -176,12 +221,53 @@ impl Engine {
         for chunk in out.chunks_mut(self.config.max_block_frames * channels) {
             let frames = chunk.len() / channels;
             self.read_input(frames);
+            for c in 0..MAX_IO_CHANNELS {
+                if self.out_used & (1 << c) != 0 {
+                    self.out_ch[c][..frames].fill(0.0);
+                }
+            }
+            self.out_used = 0;
             self.render(frames);
             let p = self.master.peak(frames);
             block_peak = [block_peak[0].max(p[0]), block_peak[1].max(p[1])];
-            self.master.write_interleaved(chunk, channels, frames);
+            self.write_output(chunk, channels, frames);
         }
         self.publish(block_peak);
+    }
+
+    /// Main bus into its output channel(s), plus tracks routed to Ext. Out.
+    fn write_output(&self, chunk: &mut [f32], channels: usize, frames: usize) {
+        let (ch, stereo) = self.song.master_out;
+        let ch = ch as usize;
+        if channels == 1 || (!stereo && ch >= channels) {
+            self.master.write_interleaved(chunk, channels, frames);
+        } else if stereo {
+            // Fall back to 1/2 if the configured pair isn't there.
+            let c0 = if ch + 1 < channels { ch } else { 0 };
+            chunk.fill(0.0);
+            let (l, r) = (&self.master.left()[..frames], &self.master.right()[..frames]);
+            for (f, frame) in chunk.chunks_exact_mut(channels).enumerate() {
+                frame[c0] = l[f];
+                frame[c0 + 1] = r[f];
+            }
+        } else {
+            chunk.fill(0.0);
+            let (l, r) = (&self.master.left()[..frames], &self.master.right()[..frames]);
+            for (f, frame) in chunk.chunks_exact_mut(channels).enumerate() {
+                frame[ch] = 0.5 * (l[f] + r[f]);
+            }
+        }
+        let mut used = self.out_used;
+        while used != 0 {
+            let c = used.trailing_zeros() as usize;
+            used &= used - 1;
+            if c < channels {
+                let src = &self.out_ch[c][..frames];
+                for (f, frame) in chunk.chunks_exact_mut(channels).enumerate() {
+                    frame[c] += src[f];
+                }
+            }
+        }
     }
 
     pub fn report_cpu_load(&self, load: f32) {
@@ -191,6 +277,8 @@ impl Engine {
     fn publish(&mut self, peak: [f32; 2]) {
         self.status.publish_transport(&self.transport);
         self.status.publish_peaks(peak);
+        self.status.publish_input_peaks(&self.in_peaks);
+        self.in_peaks = [0.0; MAX_IO_CHANNELS];
         self.status.publish_record_state(self.rec.state);
         let beat = self.transport.beat_position;
         for st in &self.song.tracks {
@@ -216,6 +304,15 @@ impl Engine {
 
     fn receive_songs(&mut self) {
         while let Ok(new) = self.songs.pop() {
+            // Hanging notes on a MIDI port the track no longer sends to.
+            for ot in &self.song.tracks {
+                if let TrackOutput::MidiPort { port, channel } = ot.output {
+                    let still = new.tracks.iter().any(|t| t.rt == ot.rt && t.output == ot.output);
+                    if !still {
+                        Self::flush_out_notes(&mut self.tracks[ot.rt as usize], &mut self.midi_out, port, channel);
+                    }
+                }
+            }
             let old = std::mem::replace(&mut self.song, new);
             if let Err(rtrb::PushError::Full(old)) = self.garbage.push(old) {
                 // Never free on the audio thread: leak instead (GUI not draining).
@@ -312,11 +409,6 @@ impl Engine {
                         t.solo = solo;
                     }
                 }
-                Command::SetTrackMonitor { track, monitor } => {
-                    if let Some(t) = self.tracks.get_mut(track as usize) {
-                        t.monitor = monitor;
-                    }
-                }
                 Command::LaunchClip { track, scene } => {
                     let has_clip = self.song_track(track).is_some_and(|t| t.slots.get(scene as usize).is_some_and(Option::is_some));
                     self.launch(track, if has_clip { Action::Launch(scene) } else { Action::Stop });
@@ -346,8 +438,8 @@ impl Engine {
                         t.session_override = false;
                     }
                 }
-                Command::NoteOn { track, pitch, velocity } => self.live_note(track, pitch, velocity),
-                Command::NoteOff { track, pitch } => self.live_note(track, pitch, 0),
+                Command::NoteOn { track, pitch, velocity } => self.direct_note(track, pitch, velocity),
+                Command::NoteOff { track, pitch } => self.direct_note(track, pitch, 0),
                 Command::AllNotesOff { track } => {
                     if let Some(t) = self.tracks.get_mut(track as usize) {
                         for p in 0..128 {
@@ -356,7 +448,11 @@ impl Engine {
                         t.voices.release_clip_notes();
                     }
                 }
-                Command::SetMidiTargets(mask) => self.midi_targets = mask,
+                Command::SetAutoArm(rt) => self.auto_arm = rt,
+                Command::KeyboardNote { pitch, velocity } => {
+                    let ev = if velocity > 0 { MidiEvent::NoteOn { pitch, velocity } } else { MidiEvent::NoteOff { pitch } };
+                    self.dispatch_midi(MidiInput { port: MIDI_KEYBOARD, channel: 0, event: ev });
+                }
                 Command::SetRecording(on) => self.set_recording(on),
             }
         }
@@ -364,38 +460,64 @@ impl Engine {
 
     fn drain_midi(&mut self) {
         while let Ok(ev) = self.midi.pop() {
-            // Every armed MIDI track plays (and records) the input.
-            let mut mask = self.midi_targets;
-            while mask != 0 {
-                let track = mask.trailing_zeros() as u16;
-                mask &= mask - 1;
-                match ev {
-                    MidiEvent::NoteOn { pitch, velocity } => self.live_note(track, pitch, velocity),
-                    MidiEvent::NoteOff { pitch } => self.live_note(track, pitch, 0),
-                    MidiEvent::AllNotesOff => {
-                        for p in 0..128 {
-                            self.tracks[track as usize].voices.note_off(p);
-                        }
+            self.dispatch_midi(ev);
+        }
+    }
+
+    /// Hardware / keyboard MIDI to every track whose input matches port + channel.
+    fn dispatch_midi(&mut self, m: MidiInput) {
+        for i in 0..self.song.tracks.len() {
+            let st = &self.song.tracks[i];
+            let TrackInput::Midi { port, channel } = st.input else { continue };
+            let port_ok = port == MIDI_ALL_INS || port == m.port;
+            let chan_ok = channel == 0 || channel == m.channel + 1;
+            if !(port_ok && chan_ok) {
+                continue;
+            }
+            let rt = st.rt;
+            match m.event {
+                MidiEvent::NoteOn { pitch, velocity } => self.live_input(rt, pitch, velocity, 0),
+                MidiEvent::NoteOff { pitch } => self.live_input(rt, pitch, 0, 0),
+                MidiEvent::AllNotesOff => {
+                    for p in 0..128 {
+                        self.tracks[rt as usize].voices.note_off(p);
                     }
                 }
             }
         }
     }
 
-    /// Live note (velocity 0 = note off). Recorded while recording.
-    fn live_note(&mut self, rt: u16, pitch: u8, velocity: u8) {
-        let Some(i) = self.rt_to_song.get(rt as usize).copied().filter(|&i| i != NONE) else { return };
-        let st = &self.song.tracks[i as usize];
+    fn song_index(&self, rt: u16) -> Option<usize> {
+        self.rt_to_song.get(rt as usize).copied().filter(|&i| i != NONE).map(|i| i as usize)
+    }
+
+    /// Straight to the track's instrument (auditioning): no routing, not recorded.
+    fn direct_note(&mut self, rt: u16, pitch: u8, velocity: u8) {
+        let Some(i) = self.song_index(rt) else { return };
         let t = &mut self.tracks[rt as usize];
-        let pitch = pitch.min(127);
         if velocity > 0 {
-            t.voices.note_on(&st.instrument, pitch, velocity.min(127), u32::MAX, false, self.sr);
+            t.voices.note_on(&self.song.tracks[i].instrument, pitch.min(127), velocity.min(127), u32::MAX, false, self.sr);
         } else {
-            t.voices.note_off(pitch);
+            t.voices.note_off(pitch.min(127));
         }
-        if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
+    }
+
+    /// A live note arriving at a track's input (velocity 0 = note off):
+    /// recorded when armed, played when monitored.
+    fn live_input(&mut self, rt: u16, pitch: u8, velocity: u8, hops: u8) {
+        let Some(i) = self.song_index(rt) else { return };
+        let st = &self.song.tracks[i];
+        let armed = st.arm || self.auto_arm == rt;
+        let monitored = match st.monitor {
+            Monitor::In => true,
+            Monitor::Auto => armed,
+            Monitor::Off => false,
+        };
+        let pitch = pitch.min(127);
+        let velocity = velocity.min(127);
+        if armed && matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
             let beat = self.transport.beat_position;
-            let clip_pos = t.clip_pos(st, beat);
+            let clip_pos = self.tracks[rt as usize].clip_pos(st, beat);
             let ev = if velocity > 0 {
                 RecordEvent::NoteOn { track: rt, pitch, velocity, beat, clip_pos }
             } else {
@@ -403,6 +525,48 @@ impl Engine {
             };
             let _ = self.rec_events.push(ev);
         }
+        if monitored {
+            self.play_live(rt, pitch, velocity, hops);
+        }
+    }
+
+    /// A live note played by a track: its instrument, MIDI listeners and MIDI output.
+    fn play_live(&mut self, rt: u16, pitch: u8, velocity: u8, hops: u8) {
+        let Some(i) = self.song_index(rt) else { return };
+        if hops > MAX_MIDI_HOPS {
+            return;
+        }
+        let st = &self.song.tracks[i];
+        let t = &mut self.tracks[rt as usize];
+        if velocity > 0 {
+            t.voices.note_on(&st.instrument, pitch, velocity, u32::MAX, false, self.sr);
+        } else {
+            t.voices.note_off(pitch);
+        }
+        let (listeners, output) = (st.midi_listeners, st.output);
+        let mut m = listeners;
+        while m != 0 {
+            let l = m.trailing_zeros() as u16;
+            m &= m - 1;
+            self.live_input(l, pitch, velocity, hops + 1);
+        }
+        match output {
+            TrackOutput::MidiPort { port, channel } => {
+                let s = if velocity > 0 { 0x90 } else { 0x80 } | (channel.saturating_sub(1) & 0x0F);
+                let _ = self.midi_out.push(MidiOutput { port, bytes: [s, pitch, velocity] });
+            }
+            TrackOutput::MidiTrack { rt: d, instrument: true } => self.play_live(d, pitch, velocity, hops + 1),
+            TrackOutput::MidiTrack { rt: d, instrument: false } => self.live_input(d, pitch, velocity, hops + 1),
+            _ => {}
+        }
+    }
+
+    /// Note-offs for every clip note still sounding on a MIDI output.
+    fn flush_out_notes(t: &mut TrackRt, out: &mut Producer<MidiOutput>, port: u8, channel: u8) {
+        for &(pitch, _) in &t.out_notes[..t.n_out_notes] {
+            let _ = out.push(MidiOutput { port, bytes: [0x80 | (channel.saturating_sub(1) & 0x0F), pitch, 0] });
+        }
+        t.n_out_notes = 0;
     }
 
     fn set_recording(&mut self, on: bool) {
@@ -428,9 +592,14 @@ impl Engine {
     fn stop(&mut self) {
         self.transport.playing = false;
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
-            let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position, frame: self.rec_frames });
+            let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position, pos: self.rec_pos });
         }
         self.rec.state = RecordState::Idle;
+        for st in &self.song.tracks {
+            if let TrackOutput::MidiPort { port, channel } = st.output {
+                Self::flush_out_notes(&mut self.tracks[st.rt as usize], &mut self.midi_out, port, channel);
+            }
+        }
         for t in &mut self.tracks {
             t.playing = None;
             t.pending = None;
@@ -455,30 +624,31 @@ impl Engine {
         }
     }
 
+    /// Deinterleave the next `frames` input frames into `in_ch` (silence on underrun).
     fn read_input(&mut self, frames: usize) {
-        let need = frames * 2;
+        let ch = self.config.input_channels;
+        let need = frames * ch;
         let avail = self.input.slots();
         // Keep input latency bounded if the input clock runs ahead.
-        let max_backlog = need + self.config.max_block_frames * 8 * 2; // samples (stereo)
-        if avail > max_backlog
-            && let Ok(c) = self.input.read_chunk((avail - need) & !1)
-        {
-            c.commit_all();
+        let max_backlog = need + self.config.max_block_frames * 8 * ch;
+        if avail > max_backlog {
+            let drop = (avail - need) / ch * ch;
+            if let Ok(c) = self.input.read_chunk(drop) {
+                c.commit_all();
+            }
         }
-        let take = need.min(self.input.slots()) & !1;
-        let (il, ir) = (&mut self.input_l[..frames], &mut self.input_r[..frames]);
-        il.fill(0.0);
-        ir.fill(0.0);
+        let take = need.min(self.input.slots()) / ch * ch;
+        for c in &mut self.in_ch[..ch] {
+            c[..frames].fill(0.0);
+        }
         if take > 0
             && let Ok(chunk) = self.input.read_chunk(take)
         {
             let (a, b) = chunk.as_slices();
             for (k, s) in a.iter().chain(b.iter()).enumerate() {
-                if k % 2 == 0 {
-                    il[k / 2] = *s;
-                } else {
-                    ir[k / 2] = *s;
-                }
+                let (f, c) = (k / ch, k % ch);
+                self.in_ch[c][f] = *s;
+                self.in_peaks[c] = self.in_peaks[c].max(if s.is_finite() { s.abs() } else { 0.0 });
             }
             chunk.commit_all();
         }
@@ -504,11 +674,23 @@ impl Engine {
         match self.rec.state {
             RecordState::StartPending if self.rec.beat <= limit => {
                 self.rec.state = RecordState::Recording;
-                let _ = self.rec_events.push(RecordEvent::Started { beat: self.rec.beat, frame: self.rec_frames });
+                // Every armed track with an audio input records its own lane.
+                let (mut lanes, mut n, mut mono) = ([NONE; MAX_REC_LANES], 0usize, 0u16);
+                for st in self.song.tracks.iter().filter(|t| t.arm && t.input.is_audio()).take(MAX_REC_LANES) {
+                    lanes[n] = st.rt;
+                    if matches!(st.input, TrackInput::Ext { stereo: false, .. }) {
+                        mono |= 1 << n;
+                    }
+                    n += 1;
+                }
+                self.rec_lanes = lanes;
+                self.n_lanes = n;
+                let ev = RecordEvent::Started { beat: self.rec.beat, pos: self.rec_pos, lanes, n_lanes: n as u8, mono };
+                let _ = self.rec_events.push(ev);
             }
             RecordState::StopPending if self.rec.beat <= limit => {
                 self.rec.state = RecordState::Idle;
-                let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.rec.beat, frame: self.rec_frames });
+                let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.rec.beat, pos: self.rec_pos });
             }
             _ => {}
         }
@@ -583,7 +765,8 @@ impl Engine {
             sr: self.sr,
             tempo: self.transport.tempo(),
         };
-        let Self { master, metronome, tracks, song, transport, input_l, input_r, .. } = self;
+        let Self { master, metronome, tracks, song, transport, in_ch, out_ch, out_used, res_l, res_r, res_pos, midi_out, auto_arm, .. } =
+            self;
         let (ml, mr) = master.range_mut(offset, n);
 
         if ctx.playing {
@@ -600,48 +783,176 @@ impl Engine {
             }
         }
 
-        let input = (&input_l[offset..offset + n], &input_r[offset..offset + n]);
-        // Solo with groups: a track is audible if nothing is soloed, or it,
-        // an ancestor group or a descendant is soloed. Tracks are in pre-order
-        // (groups before children), see `Song::prepare`.
-        let mut solo_up = [false; MAX_TRACKS];
-        let mut solo_down = [false; MAX_TRACKS];
+        // Solo through the routing graph: a track is audible if nothing is
+        // soloed, it is soloed, it feeds a soloed track (upstream) or a
+        // soloed track feeds it (downstream). `order` is topological.
+        let mut up = [false; MAX_TRACKS];
+        let mut down = [false; MAX_TRACKS];
         let mut any_solo = false;
-        for st in &song.tracks {
+        for &i in &song.order {
+            let st = &song.tracks[i as usize];
             let rt = st.rt as usize;
-            let s = tracks[rt].solo;
-            any_solo |= s;
-            solo_up[rt] = s || st.output.is_some_and(|o| solo_up[o as usize]);
-        }
-        for st in song.tracks.iter().rev() {
-            let rt = st.rt as usize;
-            solo_down[rt] |= tracks[rt].solo;
-            if let Some(o) = st.output {
-                solo_down[o as usize] |= solo_down[rt];
+            any_solo |= tracks[rt].solo;
+            down[rt] |= tracks[rt].solo;
+            if let TrackOutput::Track(d) = st.output {
+                down[d as usize] |= down[rt];
             }
         }
-        for st in &song.tracks {
-            let t = &mut tracks[st.rt as usize];
-            let monitor = t.monitor.then_some(input);
-            t.render(st, &ctx, monitor);
-        }
-        // Children first (reverse pre-order) so groups have their full sum when mixed.
-        for st in song.tracks.iter().rev() {
+        for &i in song.order.iter().rev() {
+            let st = &song.tracks[i as usize];
             let rt = st.rt as usize;
-            let audible = !any_solo || solo_up[rt] || solo_down[rt];
-            match st.output {
-                Some(o) if (o as usize) != rt => {
-                    let o = o as usize;
-                    let (child, group) = if rt < o {
-                        let (a, b) = tracks.split_at_mut(o);
-                        (&mut a[rt], &mut b[0])
-                    } else {
-                        let (a, b) = tracks.split_at_mut(rt);
-                        (&mut b[0], &mut a[o])
-                    };
-                    child.mix_into_group(group, n, audible);
+            up[rt] = tracks[rt].solo || matches!(st.output, TrackOutput::Track(d) if up[d as usize]);
+        }
+
+        // Resampling reads the main output one internal block back.
+        let rlen = res_l.len();
+        let delay = rlen / 2;
+
+        for &i in &song.order {
+            let st = &song.tracks[i as usize];
+            let rt = st.rt as usize;
+            let armed = st.arm || *auto_arm == st.rt;
+            let midi_mon = match st.monitor {
+                Monitor::In => true,
+                Monitor::Auto => armed,
+                Monitor::Off => false,
+            };
+            let covered = tracks[rt].render(st, &ctx, st.monitor != Monitor::In, midi_mon);
+
+            // Clip notes → MIDI port / other tracks.
+            {
+                let t = &mut tracks[rt];
+                if let TrackOutput::MidiPort { port, channel } = st.output {
+                    let c = channel.saturating_sub(1) & 0x0F;
+                    // Timed note-offs of notes started earlier.
+                    let mut k = 0;
+                    while k < t.n_out_notes {
+                        let (pitch, left) = t.out_notes[k];
+                        if left as usize <= n {
+                            let _ = midi_out.push(MidiOutput { port, bytes: [0x80 | c, pitch, 0] });
+                            t.n_out_notes -= 1;
+                            t.out_notes[k] = t.out_notes[t.n_out_notes];
+                        } else {
+                            t.out_notes[k].1 = left - n as u32;
+                            k += 1;
+                        }
+                    }
+                    for e in &t.events[..t.n_events] {
+                        let _ = midi_out.push(MidiOutput { port, bytes: [0x90 | c, e.pitch, e.vel] });
+                        if t.n_out_notes < MAX_OUT_NOTES {
+                            t.out_notes[t.n_out_notes] = (e.pitch, e.offset.saturating_add(e.len));
+                            t.n_out_notes += 1;
+                        }
+                    }
                 }
-                _ => tracks[rt].mix_into(ml, mr, audible),
+            }
+            let mut fwd_mask = st.midi_listeners;
+            let direct = match st.output {
+                TrackOutput::MidiTrack { rt: d, instrument } => {
+                    fwd_mask |= 1 << d;
+                    instrument.then_some(d)
+                }
+                _ => None,
+            };
+            while fwd_mask != 0 {
+                let d = fwd_mask.trailing_zeros() as usize;
+                fwd_mask &= fwd_mask - 1;
+                if d == rt {
+                    continue;
+                }
+                let (src, dst) = two_mut(tracks, rt, d);
+                let is_direct = direct == Some(d as u16);
+                for e in &src.events[..src.n_events] {
+                    let e: NoteEvent = *e;
+                    dst.push_fwd(e, is_direct);
+                }
+            }
+
+            // Audio input stage.
+            if st.input.is_audio() {
+                match st.input {
+                    TrackInput::Ext { ch, stereo } => {
+                        let t = &mut tracks[rt];
+                        let c = ch as usize;
+                        let c2 = if stereo { (c + 1).min(MAX_IO_CHANNELS - 1) } else { c };
+                        t.in_l[..n].copy_from_slice(&in_ch[c][offset..offset + n]);
+                        t.in_r[..n].copy_from_slice(&in_ch[c2][offset..offset + n]);
+                    }
+                    TrackInput::Resampling => {
+                        let t = &mut tracks[rt];
+                        for k in 0..n {
+                            let p = (*res_pos + rlen - delay + k) % rlen;
+                            t.in_l[k] = res_l[p];
+                            t.in_r[k] = res_r[p];
+                        }
+                    }
+                    TrackInput::Track { rt: src, tap } => {
+                        let (t, s) = two_mut(tracks, rt, src as usize);
+                        let (sl, sr) = match tap {
+                            Tap::PreFx | Tap::PostFx => (&s.l, &s.r),
+                            Tap::PostMixer => (&s.post_l, &s.post_r),
+                            Tap::Pad(p) => match s.pads.get(p as usize) {
+                                Some(pb) => (&pb.l, &pb.r),
+                                None => (&s.l, &s.r),
+                            },
+                        };
+                        t.in_l[..n].copy_from_slice(&sl[..n]);
+                        t.in_r[..n].copy_from_slice(&sr[..n]);
+                    }
+                    _ => {}
+                }
+                let resampling = st.input == TrackInput::Resampling;
+                let pass = !resampling
+                    && match st.monitor {
+                        Monitor::In => true,
+                        Monitor::Auto => armed && !covered,
+                        Monitor::Off => false,
+                    };
+                if pass {
+                    tracks[rt].add_input(n);
+                }
+            }
+            tracks[rt].add_bus(n);
+
+            // Armed resampling tracks stay out of the mix (no feedback).
+            let audible = (!any_solo || up[rt] || down[rt]) && !(st.input == TrackInput::Resampling && st.arm);
+            if !tracks[rt].mix(n, audible) {
+                continue;
+            }
+            match st.output {
+                TrackOutput::Master => {
+                    let t = &tracks[rt];
+                    for k in 0..n {
+                        ml[k] += t.post_l[k];
+                        mr[k] += t.post_r[k];
+                    }
+                }
+                TrackOutput::Track(d) => {
+                    let (t, g) = two_mut(tracks, rt, d as usize);
+                    for k in 0..n {
+                        g.bus_l[k] += t.post_l[k];
+                        g.bus_r[k] += t.post_r[k];
+                    }
+                    g.bus_active = true;
+                }
+                TrackOutput::Ext { ch, stereo } => {
+                    let t = &tracks[rt];
+                    let c = ch as usize;
+                    if stereo && c + 1 < MAX_IO_CHANNELS {
+                        for k in 0..n {
+                            out_ch[c][offset + k] += t.post_l[k];
+                            out_ch[c + 1][offset + k] += t.post_r[k];
+                        }
+                        *out_used |= 3 << c;
+                    } else {
+                        // Mono out: (L + R) / 2 (−6 dB).
+                        for k in 0..n {
+                            out_ch[c][offset + k] += 0.5 * (t.post_l[k] + t.post_r[k]);
+                        }
+                        *out_used |= 1 << c;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -650,14 +961,22 @@ impl Engine {
             ml[i] *= g * self.master_pan[0].next();
             mr[i] *= g * self.master_pan[1].next();
         }
+        for k in 0..n {
+            res_l[*res_pos] = ml[k];
+            res_r[*res_pos] = mr[k];
+            *res_pos = (*res_pos + 1) % rlen;
+        }
 
-        if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
-            let samples = n * 2;
+        if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) && self.n_lanes > 0 {
+            let samples = n * self.n_lanes * 2;
+            let lanes = &self.rec_lanes[..self.n_lanes];
             match self.rec_audio.write_chunk_uninit(samples) {
                 Ok(chunk) => {
-                    let (il, ir) = input;
-                    chunk.fill_from_iter(il.iter().zip(ir).flat_map(|(a, b)| [*a, *b]));
-                    self.rec_frames += n as u64;
+                    let tracks = &self.tracks;
+                    chunk.fill_from_iter(
+                        (0..n).flat_map(|f| lanes.iter().flat_map(move |&rt| [tracks[rt as usize].in_l[f], tracks[rt as usize].in_r[f]])),
+                    );
+                    self.rec_pos += samples as u64;
                 }
                 Err(_) => self.dropped_record_samples += samples as u64,
             }
@@ -672,7 +991,7 @@ fn clamp_gain(g: f32) -> f32 {
 /// Consumer ends of the recording queues (for the recorder thread).
 pub struct RecorderPorts {
     pub events: Consumer<RecordEvent>,
-    /// Interleaved stereo input frames, captured while recording.
+    /// Recorded input: per frame, interleaved (L, R) of each lane of the take.
     pub audio: Consumer<f32>,
 }
 
@@ -684,7 +1003,8 @@ pub struct EngineHandle {
     status: Arc<SharedStatus>,
     config: EngineConfig,
     input: Option<Producer<f32>>,
-    midi: Option<Producer<MidiEvent>>,
+    midi: Option<Producer<MidiInput>>,
+    midi_out: Option<Consumer<MidiOutput>>,
     recorder: Option<RecorderPorts>,
 }
 
@@ -725,14 +1045,24 @@ impl EngineHandle {
         self.config
     }
 
-    /// Producer for interleaved stereo input samples (audio input callback).
+    /// Peak per device input channel since the last call (input meters).
+    pub fn input_peaks(&self) -> [f32; MAX_IO_CHANNELS] {
+        self.status.input_peaks()
+    }
+
+    /// Producer for interleaved input samples, `config.input_channels` per frame.
     pub fn take_input(&mut self) -> Option<Producer<f32>> {
         self.input.take()
     }
 
     /// Producer for hardware MIDI events (MIDI input thread).
-    pub fn take_midi_input(&mut self) -> Option<Producer<MidiEvent>> {
+    pub fn take_midi_input(&mut self) -> Option<Producer<MidiInput>> {
         self.midi.take()
+    }
+
+    /// Consumer of messages for hardware MIDI outputs (MIDI output thread).
+    pub fn take_midi_output(&mut self) -> Option<Consumer<MidiOutput>> {
+        self.midi_out.take()
     }
 
     pub fn take_recorder(&mut self) -> Option<RecorderPorts> {

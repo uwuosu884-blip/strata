@@ -5,9 +5,11 @@
 
 mod arrange;
 mod history;
+mod routing;
 mod tracks;
 pub use arrange::{trim_left, trim_right};
 pub use history::History;
+pub use routing::{AudioIn, AudioOut, MidiIn, MidiOut, Monitor, Tap};
 pub use tracks::TrackDrop;
 
 pub use daw_engine::{AdsrParams, Note, SamplerParams, SynthParams, Wave};
@@ -15,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// 3: default track names use the `#` index placeholder; clip disable/extent, track height.
-pub const FORMAT_VERSION: u32 = 3;
+/// 4: per-track routing (inputs/outputs/monitoring), main output channels.
+pub const FORMAT_VERSION: u32 = 4;
 pub const FILE_EXTENSION: &str = "dawproj";
 /// Prefix for built-in (synthesised) sounds, e.g. `factory:Kick`.
 pub const FACTORY_PREFIX: &str = "factory:";
@@ -53,6 +56,9 @@ pub struct Project {
     pub master_height: f32,
     /// Launch quantization in beats (0 = none).
     pub launch_quantize: f64,
+    /// Main output: first device channel, stereo pair or mono.
+    pub master_out_ch: u16,
+    pub master_out_stereo: bool,
     pub loop_enabled: bool,
     pub loop_start: f64,
     pub loop_end: f64,
@@ -74,6 +80,8 @@ impl Default for Project {
             master_collapsed: true,
             master_height: 0.0,
             launch_quantize: 4.0,
+            master_out_ch: 0,
+            master_out_stereo: true,
             loop_enabled: false,
             loop_start: 0.0,
             loop_end: 16.0,
@@ -111,7 +119,19 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub arm: bool,
+    /// Legacy (format ≤ 3) monitor switch; migrated to `monitoring` on load.
+    #[serde(skip_serializing)]
     pub monitor: bool,
+    /// None = the kind's default (audio Off, MIDI Auto).
+    pub monitoring: Option<Monitor>,
+    /// "Keep Monitoring Latency in Recorded Audio" (on by default).
+    pub keep_monitor_latency: bool,
+    pub audio_in: AudioIn,
+    pub midi_in: MidiIn,
+    /// 0 = all channels, 1..=16.
+    pub midi_channel: u8,
+    pub audio_out: AudioOut,
+    pub midi_out: MidiOut,
     pub instrument: InstrumentDef,
     /// Session slots; always `scenes.len()` long (see [`Project::normalize`]).
     pub slots: Vec<Option<Clip>>,
@@ -139,6 +159,13 @@ impl Default for Track {
             solo: false,
             arm: false,
             monitor: false,
+            monitoring: None,
+            keep_monitor_latency: true,
+            audio_in: AudioIn::default(),
+            midi_in: MidiIn::default(),
+            midi_channel: 0,
+            audio_out: AudioOut::default(),
+            midi_out: MidiOut::default(),
             instrument: InstrumentDef::None,
             slots: Vec::new(),
             arrangement: Vec::new(),
@@ -147,6 +174,27 @@ impl Default for Track {
             height: 0.0,
             collapsed: false,
         }
+    }
+}
+
+impl Track {
+    /// Effective monitoring (Live defaults: audio Off, MIDI Auto).
+    pub fn monitor_mode(&self) -> Monitor {
+        self.monitoring.unwrap_or(if self.kind == TrackKind::Midi { Monitor::Auto } else { Monitor::Off })
+    }
+
+    /// Whether the track has an input at all ("No Input" hides the Arm button).
+    pub fn has_input(&self) -> bool {
+        match self.kind {
+            TrackKind::Audio => self.audio_in != AudioIn::None,
+            TrackKind::Midi => self.midi_in != MidiIn::None,
+            TrackKind::Group => false,
+        }
+    }
+
+    /// MIDI track without an instrument: shows "MIDI To" instead of "Audio To".
+    pub fn sends_midi(&self) -> bool {
+        self.kind == TrackKind::Midi && matches!(self.instrument, InstrumentDef::None)
     }
 }
 
@@ -595,6 +643,48 @@ impl Project {
         }
         self.next_id = next;
         self.normalize_groups();
+        self.normalize_routing();
+    }
+
+    /// Migrate legacy monitoring; reset routing to tracks that no longer
+    /// exist or can't receive it.
+    fn normalize_routing(&mut self) {
+        let kinds: std::collections::HashMap<u64, TrackKind> = self.tracks.iter().map(|t| (t.id, t.kind)).collect();
+        for t in &mut self.tracks {
+            if std::mem::take(&mut t.monitor) && t.monitoring.is_none() {
+                t.monitoring = Some(Monitor::In);
+            }
+            let me = t.id;
+            let ok = |id: u64, want: &[TrackKind]| id != me && kinds.get(&id).is_some_and(|k| want.contains(k));
+            if let AudioIn::Track { id, .. } = t.audio_in
+                && !ok(id, &[TrackKind::Audio, TrackKind::Midi, TrackKind::Group])
+            {
+                t.audio_in = AudioIn::None;
+            }
+            if let MidiIn::Track(id) = t.midi_in
+                && !ok(id, &[TrackKind::Midi])
+            {
+                t.midi_in = MidiIn::None;
+            }
+            if let AudioOut::Track(id) = t.audio_out
+                && !ok(id, &[TrackKind::Audio, TrackKind::Group])
+            {
+                t.audio_out = AudioOut::Default;
+            }
+            if let MidiOut::Track { id, .. } = t.midi_out
+                && !ok(id, &[TrackKind::Midi])
+            {
+                t.midi_out = MidiOut::None;
+            }
+            t.midi_channel = t.midi_channel.min(16);
+            if let MidiOut::Port { channel, .. } = &mut t.midi_out {
+                *channel = (*channel).clamp(1, 16);
+            }
+            if t.kind == TrackKind::Group {
+                t.audio_in = AudioIn::None;
+                t.midi_in = MidiIn::None;
+            }
+        }
     }
 
     /// Groups carry no clips/instrument; parents must be existing groups without

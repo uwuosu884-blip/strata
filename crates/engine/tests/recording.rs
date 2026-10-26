@@ -4,12 +4,22 @@ mod common;
 use common::*;
 use daw_engine::*;
 
+fn ext_track(rt: u16) -> SongTrack {
+    SongTrack { rt, arm: true, input: TrackInput::Ext { ch: 0, stereo: true }, ..Default::default() }
+}
+
+fn started(beat: f64, pos: u64, lanes: &[u16], mono: u16) -> RecordEvent {
+    let mut l = [u16::MAX; MAX_REC_LANES];
+    l[..lanes.len()].copy_from_slice(lanes);
+    RecordEvent::Started { beat, pos, lanes: l, n_lanes: lanes.len() as u8, mono }
+}
+
 #[test]
 fn audio_recording_starts_and_stops_on_bar_boundaries() {
     let (mut e, mut h) = engine();
     let mut input = h.take_input().unwrap();
     let mut rec = h.take_recorder().unwrap();
-    h.set_song(Song { tracks: vec![track(0, vec![])] }).unwrap();
+    h.set_song(Song::new(vec![ext_track(0)])).unwrap();
     h.send(Command::Play).unwrap();
     render(&mut e, SPB, 512); // beat 1
     h.send(Command::SetRecording(true)).unwrap();
@@ -42,7 +52,7 @@ fn audio_recording_starts_and_stops_on_bar_boundaries() {
     assert_eq!(h.snapshot().record_state, RecordState::Idle);
 
     let events: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
-    assert_eq!(events, vec![RecordEvent::Started { beat: 4.0, frame: 0 }, RecordEvent::Stopped { beat: 8.0, frame: 4 * SPB as u64 }]);
+    assert_eq!(events, vec![started(4.0, 0, &[0], 0), RecordEvent::Stopped { beat: 8.0, pos: 8 * SPB as u64 }]);
     // Exactly 4 beats of stereo audio, starting with the input frame at beat 4.
     assert_eq!(got_audio.len(), 4 * SPB * 2);
     assert_eq!(got_audio[0], (3 * SPB) as f32, "first recorded frame = input at beat 4");
@@ -53,15 +63,15 @@ fn audio_recording_starts_and_stops_on_bar_boundaries() {
 fn record_while_stopped_starts_immediately_and_transport_stop_ends_it() {
     let (mut e, mut h) = engine();
     let mut rec = h.take_recorder().unwrap();
-    h.set_song(Song { tracks: vec![track(0, vec![])] }).unwrap();
+    h.set_song(Song::new(vec![ext_track(0)])).unwrap();
     h.send(Command::SetRecording(true)).unwrap();
     render(&mut e, 1000, 500);
     h.send(Command::Stop).unwrap();
     apply(&mut e);
     let events: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0], RecordEvent::Started { beat: 0.0, frame: 0 });
-    assert!(matches!(events[1], RecordEvent::Stopped { beat, frame: 1000 } if (beat - 1000.0 / SPB as f64).abs() < 1e-9));
+    assert_eq!(events[0], started(0.0, 0, &[0], 0));
+    assert!(matches!(events[1], RecordEvent::Stopped { beat, pos: 2000 } if (beat - 1000.0 / SPB as f64).abs() < 1e-9));
     assert_eq!(std::iter::from_fn(|| rec.audio.pop().ok()).count(), 2000);
 }
 
@@ -69,12 +79,12 @@ fn record_while_stopped_starts_immediately_and_transport_stop_ends_it() {
 fn live_notes_are_recorded_with_clip_position() {
     let (mut e, mut h) = engine();
     let mut rec = h.take_recorder().unwrap();
-    h.set_song(Song { tracks: vec![track(0, vec![Some(midi_clip(2.0, &[]))])] }).unwrap();
+    h.set_song(Song::new(vec![SongTrack { slots: vec![Some(midi_clip(2.0, &[]))], ..midi_track(0, true) }])).unwrap();
     send_all(&mut h, &[Command::LaunchClip { track: 0, scene: 0 }, Command::SetRecording(true)]);
     render(&mut e, SPB * 3, 480); // beat 3 → clip pos 1.0
-    h.send(Command::NoteOn { track: 0, pitch: 64, velocity: 90 }).unwrap();
+    h.send(Command::KeyboardNote { pitch: 64, velocity: 90 }).unwrap();
     render(&mut e, SPB / 2, 480);
-    h.send(Command::NoteOff { track: 0, pitch: 64 }).unwrap();
+    h.send(Command::KeyboardNote { pitch: 64, velocity: 0 }).unwrap();
     apply(&mut e);
     let ev: Vec<RecordEvent> = std::iter::from_fn(|| rec.events.pop().ok()).collect();
     assert!(matches!(ev[0], RecordEvent::Started { beat, .. } if beat == 0.0));
@@ -91,7 +101,7 @@ fn live_notes_are_recorded_with_clip_position() {
 fn input_monitoring_passes_audio_through() {
     let (mut e, mut h) = engine();
     let mut input = h.take_input().unwrap();
-    h.set_song(Song { tracks: vec![SongTrack { rt: 0, monitor: true, ..Default::default() }] }).unwrap();
+    h.set_song(Song::new(vec![SongTrack { monitor: Monitor::In, ..ext_track(0) }])).unwrap();
     let mut out = Vec::new();
     for _ in 0..10 {
         for _ in 0..480 {

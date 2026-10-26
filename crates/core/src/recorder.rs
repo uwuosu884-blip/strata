@@ -19,17 +19,19 @@ pub struct RecordedNote {
     pub clip_pos: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Take {
-    pub start_beat: f64,
-    pub end_beat: f64,
-    /// Interleaved stereo input audio for the whole take.
+/// One armed audio track's recording.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TakeLane {
+    /// Runtime track (engine slot).
+    pub track: u16,
+    /// Recorded from a mono input (L == R): store as a mono sample.
+    pub mono: bool,
+    /// Interleaved stereo.
     pub audio: Vec<f32>,
-    pub notes: Vec<RecordedNote>,
 }
 
-impl Take {
-    /// Drop the first `frames` (input + output latency) so audio lines up with the grid.
+impl TakeLane {
+    /// Drop the first `frames` (latency) so audio lines up with the grid.
     pub fn compensate_latency(&mut self, frames: usize) {
         let n = (frames * 2).min(self.audio.len());
         self.audio.drain(..n);
@@ -41,41 +43,65 @@ impl Take {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Take {
+    pub start_beat: f64,
+    pub end_beat: f64,
+    /// Audio per armed audio track.
+    pub lanes: Vec<TakeLane>,
+    pub notes: Vec<RecordedNote>,
+}
+
+impl Take {
+    pub fn lane(&self, track: u16) -> Option<&TakeLane> {
+        self.lanes.iter().find(|l| l.track == track)
+    }
+}
+
+/// A take in progress: start beat/position and lane layout.
+#[derive(Clone)]
+struct Open {
+    beat: f64,
+    pos: u64,
+    lanes: Vec<u16>,
+    mono: u16,
+}
+
 #[derive(Default)]
 struct State {
-    /// Frame index of `audio[0]` in the engine's record stream.
+    /// Sample index of `audio[0]` in the engine's record stream.
     base: u64,
     audio: Vec<f32>,
-    current: Option<(f64, u64)>,
+    current: Option<Open>,
     open: HashMap<(u16, u8), (u8, f64, Option<f64>)>,
     notes: Vec<RecordedNote>,
-    /// Stopped but still waiting for audio up to `frame`.
-    finishing: Vec<(f64, f64, u64, u64, Vec<RecordedNote>)>,
+    /// Stopped but still waiting for audio up to the end position.
+    finishing: Vec<(Open, f64, u64, Vec<RecordedNote>)>,
     done: Vec<Take>,
     recording: bool,
-    /// End frame of the last take; audio after it belongs to the next take.
+    /// End position of the last take; audio after it belongs to the next take.
     last_stop: u64,
 }
 
 impl State {
     fn on_event(&mut self, ev: RecordEvent) {
         match ev {
-            RecordEvent::Started { beat, frame } => {
-                self.current = Some((beat, frame));
+            RecordEvent::Started { beat, pos, lanes, n_lanes, mono } => {
+                self.current = Some(Open { beat, pos, lanes: lanes[..n_lanes as usize].to_vec(), mono });
                 self.notes.clear();
                 self.open.clear();
                 self.recording = true;
             }
-            RecordEvent::Stopped { beat, frame } => {
-                if let Some((start, sframe)) = self.current.take() {
+            RecordEvent::Stopped { beat, pos } => {
+                if let Some(open) = self.current.take() {
                     // Close hanging notes at the stop position.
-                    for ((track, pitch), (velocity, s, pos)) in self.open.drain() {
-                        self.notes.push(RecordedNote { track, pitch, velocity, start_beat: s, end_beat: beat, clip_pos: pos });
+                    for ((track, pitch), (velocity, s, p)) in self.open.drain() {
+                        self.notes.push(RecordedNote { track, pitch, velocity, start_beat: s, end_beat: beat, clip_pos: p });
                     }
                     let mut notes = std::mem::take(&mut self.notes);
                     notes.sort_by(|a, b| a.start_beat.total_cmp(&b.start_beat));
-                    self.finishing.push((start, beat, sframe, frame, notes));
-                    self.last_stop = self.last_stop.max(frame);
+                    self.finishing.push((open, beat, pos, notes));
+                    self.last_stop = self.last_stop.max(pos);
                 }
                 self.recording = false;
             }
@@ -96,25 +122,38 @@ impl State {
     }
 
     fn finish_ready(&mut self) {
-        let have = self.base + (self.audio.len() / 2) as u64;
+        let have = self.base + self.audio.len() as u64;
         let mut i = 0;
         while i < self.finishing.len() {
-            if self.finishing[i].3 <= have {
-                let (start_beat, end_beat, f0, f1, notes) = self.finishing.remove(i);
-                let a = ((f0.saturating_sub(self.base)) * 2) as usize;
-                let b = ((f1.saturating_sub(self.base)) * 2) as usize;
-                let audio = self.audio[a.min(self.audio.len())..b.min(self.audio.len())].to_vec();
-                self.done.push(Take { start_beat, end_beat, audio, notes });
+            if self.finishing[i].2 <= have {
+                let (open, end_beat, p1, notes) = self.finishing.remove(i);
+                let a = (open.pos.saturating_sub(self.base) as usize).min(self.audio.len());
+                let b = (p1.saturating_sub(self.base) as usize).min(self.audio.len());
+                let raw = &self.audio[a..b.max(a)];
+                // Per frame: (L, R) of each lane.
+                let width = open.lanes.len() * 2;
+                let lanes = open
+                    .lanes
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &track)| TakeLane {
+                        track,
+                        mono: open.mono & (1 << k) != 0,
+                        audio: raw.chunks_exact(width).flat_map(|f| [f[2 * k], f[2 * k + 1]]).collect(),
+                    })
+                    .collect();
+                self.done.push(Take { start_beat: open.beat, end_beat, lanes, notes });
             } else {
                 i += 1;
             }
         }
         // Drop audio nobody needs any more.
-        let keep_from = self.finishing.iter().map(|f| f.2).chain(self.current.map(|c| c.1)).min().unwrap_or(self.last_stop).min(have);
+        let keep_from =
+            self.finishing.iter().map(|f| f.0.pos).chain(self.current.as_ref().map(|c| c.pos)).min().unwrap_or(self.last_stop).min(have);
         if keep_from > self.base {
-            let n = (((keep_from - self.base) * 2) as usize).min(self.audio.len());
+            let n = ((keep_from - self.base) as usize).min(self.audio.len());
             self.audio.drain(..n);
-            self.base += (n / 2) as u64;
+            self.base += n as u64;
         }
     }
 }
@@ -196,16 +235,24 @@ impl Drop for Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daw_engine::{Command, EngineConfig, create};
+    use daw_engine::{Command, EngineConfig, MIDI_ALL_INS, Monitor, Song, SongTrack, TrackInput, create};
 
     #[test]
     fn records_audio_and_notes_into_a_take() {
-        let (mut engine, mut h) = create(EngineConfig { sample_rate: 48_000.0, max_block_frames: 512 });
+        let (mut engine, mut h) = create(EngineConfig { sample_rate: 48_000.0, max_block_frames: 512, input_channels: 2 });
         let mut input = h.take_input().unwrap();
         let rec = Recorder::spawn(h.take_recorder().unwrap());
-        let song = daw_engine::Song { tracks: vec![daw_engine::SongTrack { rt: 0, ..Default::default() }] };
-        h.set_song(song).unwrap();
-        for c in [Command::SetLaunchQuantize(0.0), Command::SetMidiTargets(1), Command::SetRecording(true), Command::Play] {
+        let midi = SongTrack {
+            rt: 0,
+            arm: true,
+            monitor: Monitor::Auto,
+            input: TrackInput::Midi { port: MIDI_ALL_INS, channel: 0 },
+            ..Default::default()
+        };
+        let audio = SongTrack { rt: 1, arm: true, input: TrackInput::Ext { ch: 0, stereo: true }, ..Default::default() };
+        let mono = SongTrack { rt: 2, arm: true, input: TrackInput::Ext { ch: 1, stereo: false }, ..Default::default() };
+        h.set_song(Song::new(vec![midi, audio, mono])).unwrap();
+        for c in [Command::SetLaunchQuantize(0.0), Command::SetRecording(true), Command::Play] {
             h.send(c).unwrap();
         }
         let mut out = vec![0.0f32; 1024];
@@ -221,17 +268,13 @@ mod tests {
             if let Ok(chunk) = input.write_chunk_uninit(1024) {
                 chunk.fill_from_iter(buf);
             }
-            if i == 10 {
-                h.send(Command::NoteOn { track: 0, pitch: 60, velocity: 90 }).unwrap();
-            }
-            if i == 20 {
-                h.send(Command::NoteOff { track: 0, pitch: 60 }).unwrap();
-            }
-            if i == 30 {
-                h.send(Command::NoteOn { track: 0, pitch: 64, velocity: 80 }).unwrap();
-            }
-            if i == 150 {
-                h.send(Command::SetRecording(false)).unwrap();
+            let kb = |pitch, velocity| Command::KeyboardNote { pitch, velocity };
+            match i {
+                10 => h.send(kb(60, 90)).unwrap(),
+                20 => h.send(kb(60, 0)).unwrap(),
+                30 => h.send(kb(64, 80)).unwrap(),
+                150 => h.send(Command::SetRecording(false)).unwrap(),
+                _ => {}
             }
             engine.process(&mut out, 2);
             if i % 7 == 0 {
@@ -243,11 +286,15 @@ mod tests {
         assert_eq!(takes.len(), 1);
         let t = &takes[0];
         assert_eq!(t.start_beat, 0.0);
-        assert_eq!(t.frames(), 150 * 512);
+        assert_eq!(t.lanes.len(), 2, "one lane per armed audio track");
+        let (st, mo) = (t.lane(1).unwrap(), t.lane(2).unwrap());
+        assert!(!st.mono && mo.mono);
+        assert_eq!(st.frames(), 150 * 512);
         assert!((t.end_beat - 150.0 * 512.0 / 24_000.0).abs() < 1e-9);
         // Continuous ramp: no dropped or duplicated frames.
-        let first = t.audio[0];
-        assert!(t.audio.as_chunks::<2>().0.iter().enumerate().all(|(i, f)| f[0] == first + i as f32 && f[1] == -f[0]));
+        let first = st.audio[0];
+        assert!(st.audio.as_chunks::<2>().0.iter().enumerate().all(|(i, f)| f[0] == first + i as f32 && f[1] == -f[0]));
+        assert!(mo.audio.as_chunks::<2>().0.iter().all(|f| f[0] == f[1] && f[0] <= 0.0), "mono lane = input 2 on both sides");
         assert_eq!(t.notes.len(), 2);
         assert_eq!((t.notes[0].pitch, t.notes[0].velocity), (60, 90));
         assert!((t.notes[0].start_beat - 10.0 * 512.0 / 24_000.0).abs() < 1e-9);
@@ -258,7 +305,7 @@ mod tests {
 
     #[test]
     fn latency_compensation_shifts_audio() {
-        let mut t = Take { audio: (0..20).map(|v| v as f32).collect(), ..Default::default() };
+        let mut t = TakeLane { audio: (0..20).map(|v| v as f32).collect(), ..Default::default() };
         t.compensate_latency(3);
         assert_eq!(t.frames(), 10);
         assert_eq!(&t.audio[..2], &[6.0, 7.0]);

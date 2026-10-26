@@ -151,7 +151,18 @@ impl<const N: usize> SampleVoices<N> {
 
     /// Render. `sample_for(voice_pad)` resolves the buffer for each voice.
     pub fn render<'a>(&mut self, l: &mut [f32], r: &mut [f32], sample_for: impl Fn(u8) -> Option<&'a SampleBuffer>) {
-        for v in self.voices.iter_mut().filter(|v| v.active) {
+        self.render_pads(l, r, sample_for, |_| true);
+    }
+
+    /// Render only voices whose pad passes `keep` (individual drum outputs).
+    pub fn render_pads<'a>(
+        &mut self,
+        l: &mut [f32],
+        r: &mut [f32],
+        sample_for: impl Fn(u8) -> Option<&'a SampleBuffer>,
+        keep: impl Fn(u8) -> bool,
+    ) {
+        for v in self.voices.iter_mut().filter(|v| v.active && keep(v.pad)) {
             let Some(s) = sample_for(v.pad) else {
                 v.active = false;
                 continue;

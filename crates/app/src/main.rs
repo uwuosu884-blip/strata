@@ -4,6 +4,7 @@ mod app;
 mod arr_ops;
 mod audio;
 mod midi;
+mod settings;
 mod ui;
 
 use std::process::ExitCode;
@@ -24,9 +25,12 @@ OPTIONS:
         --host <NAME>     Audio backend: ALSA, JACK, PipeWire, PulseAudio (Linux),
                           WASAPI, ASIO (Windows), CoreAudio (macOS)
         --buffer <FRAMES> Request an audio buffer size, e.g. 128 or 256
+        --output-device <NAME>  Audio output device (see --list-devices)
+        --input-device <NAME>   Audio input device
         --null-audio      Run without a sound card (silent, for testing)
         --no-input        Don't open an audio input (no audio recording)
-        --no-midi         Don't open MIDI input ports
+        --no-midi         Don't open MIDI ports
+Device / buffer choices made in Settings (Ctrl+,) are saved; options here override them.
         --list-devices    Show available audio hosts and output devices
     -h, --help            Show this help";
 
@@ -53,6 +57,8 @@ fn parse_args() -> Result<Option<Args>, String> {
             }
             "--null-audio" => opts.force_null = true,
             "--no-input" => opts.no_input = true,
+            "--output-device" => opts.output_device = Some(args.next().ok_or("--output-device needs a name")?),
+            "--input-device" => opts.input_device = Some(args.next().ok_or("--input-device needs a name")?),
             "--no-midi" => midi = false,
             "--list-devices" => {
                 audio::list_devices();
@@ -90,7 +96,18 @@ fn main() -> ExitCode {
         },
         None => (daw_project::Project::new_default(), None),
     };
-    let (audio, engine) = audio::start(&args.audio);
+    // Saved preferences fill in what the command line leaves open.
+    let settings = settings::Settings::load();
+    let base = args.audio.clone();
+    let opts = audio::AudioOptions {
+        host: args.audio.host.clone().or(settings.host.clone()),
+        buffer_frames: args.audio.buffer_frames.or(settings.buffer_frames),
+        no_input: args.audio.no_input || settings.no_input,
+        output_device: args.audio.output_device.clone().or(settings.output_device.clone()),
+        input_device: args.audio.input_device.clone().or(settings.input_device.clone()),
+        ..args.audio.clone()
+    };
+    let (audio, engine) = audio::start(&opts);
     println!("audio: {}", audio.info.summary());
 
     let native_options = eframe::NativeOptions {
@@ -107,7 +124,7 @@ fn main() -> ExitCode {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
-            Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi)))
+            Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi, settings, base)))
         }),
     );
     match result {

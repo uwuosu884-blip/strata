@@ -25,7 +25,18 @@ from source (see below).
 - **Piano roll**: add, move and resize notes, edit velocity, quantize and
   transpose.
 - **Recording**: audio and MIDI, from a MIDI controller or the computer
-  keyboard, with latency compensation.
+  keyboard, with latency compensation. Several armed audio tracks record
+  their own inputs at once (mono inputs make mono WAVs, stored in
+  `<project> Samples/Recorded/`).
+- **Routing & I/O** (Live style, Ctrl+Alt+I): per-track Audio/MIDI From
+  (interface channels with meters, Resampling, other tracks with Pre FX /
+  Post FX / Post Mixer / drum pad taps, MIDI ports or All Ins with channel
+  filter, computer keyboard), Monitor In/Auto/Off, Audio/MIDI To (master,
+  group, other tracks, interface outputs, external MIDI ports/channels or
+  another MIDI track's input or instrument). Settings (Ctrl+,) choose the
+  driver, devices and buffer, configure/rename mono and stereo channels and
+  switch MIDI ports on; they are saved to `settings.ron` in the user config
+  folder (`$DAW_CONFIG_DIR` overrides it).
 - **Files**: WAV/FLAC/MP3/AAC import, human-readable `.dawproj` projects, and
   WAV export at 16-bit, 24-bit or 32-bit float.
 - **Efficient**: the audio thread never locks or allocates (enforced by the
@@ -91,6 +102,7 @@ cargo build --profile dist -p daw-app -p daw-render   # fat LTO, output in targe
 
 ```
 daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
+    [--output-device NAME] [--input-device NAME]
     [--null-audio] [--no-input] [--no-midi]
 ```
 `examples/demo.dawproj` is a small demo song.
@@ -103,7 +115,9 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Enter | Launch the selected scene |
 | F9 | Record |
 | A … ' | Play notes (computer keyboard MIDI); Z/X octave, C/V velocity |
-| Shift+M | Toggle computer keyboard MIDI |
+| M | Toggle computer keyboard MIDI |
+| Ctrl+Alt+I | Show / hide the In/Out section |
+| Ctrl+, | Settings (audio / MIDI) |
 | Del | Delete selection (notes, time selection, clips or tracks) |
 | 0 | Deactivate / activate the selected clips or notes |
 | Esc | Clear the selection (and the last-touched track) |
@@ -112,7 +126,7 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Ctrl+Shift+R | Export audio |
 | Ctrl+T / Ctrl+Shift+T | Add audio / MIDI track |
 | Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
-| Ctrl+L | Loop the selected region (or clips); again: loop off |
+| Ctrl+L | Loop the selected region (or clips); again: loop off; nothing selected: previous loop back on |
 | Ctrl+J | Consolidate clips (audio is rendered to a new sample) |
 | Ctrl+R | Rename the selected clip, else the selected track (or double-click a header / clip title) |
 | Ctrl+A | Select all notes (piano roll) or all clips |

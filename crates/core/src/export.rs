@@ -97,7 +97,7 @@ pub fn render_with_cache(p: &Project, cache: &mut SampleCache, opts: &ExportOpti
 
     let sr = opts.sample_rate as f64;
     let block = opts.block.clamp(16, 8192);
-    let (mut engine, mut h) = create(EngineConfig { sample_rate: sr, max_block_frames: block });
+    let (mut engine, mut h) = create(EngineConfig { sample_rate: sr, max_block_frames: block, ..Default::default() });
     let song = compile(p, cache, &mut RtSlots::default());
     h.set_song(song).map_err(|_| "song queue full")?;
     let mut cmds = vec![
@@ -133,9 +133,14 @@ pub fn render_with_cache(p: &Project, cache: &mut SampleCache, opts: &ExportOpti
 
 /// Write interleaved stereo as 16/24-bit PCM (TPDF-dithered) or 32-bit float WAV.
 pub fn write_wav(path: &Path, data: &[f32], sample_rate: u32, bits: u16) -> Result<(), String> {
+    write_wav_channels(path, data, sample_rate, bits, 2)
+}
+
+/// [`write_wav`] for interleaved `channels`-channel data (1 = mono).
+pub fn write_wav_channels(path: &Path, data: &[f32], sample_rate: u32, bits: u16, channels: u16) -> Result<(), String> {
     let float = bits == 32;
     let spec = hound::WavSpec {
-        channels: 2,
+        channels,
         sample_rate,
         bits_per_sample: if float {
             32

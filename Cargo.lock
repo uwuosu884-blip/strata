@@ -919,7 +919,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "daw-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_no_alloc",
  "cpal",
@@ -929,12 +929,14 @@ dependencies = [
  "eframe",
  "midir",
  "no_denormals",
+ "ron",
  "rtrb",
+ "serde",
 ]
 
 [[package]]
 name = "daw-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "daw-engine",
  "daw-project",
@@ -946,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "daw-engine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_no_alloc",
  "rtrb",
@@ -955,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "daw-project"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "daw-engine",
  "ron",
@@ -964,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "daw-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "daw-core",
  "daw-engine",

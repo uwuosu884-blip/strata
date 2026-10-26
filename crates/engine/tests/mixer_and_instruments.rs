@@ -5,22 +5,13 @@ use common::*;
 use daw_engine::*;
 use std::sync::Arc;
 
-fn dc_clip(level: f32) -> Clip {
-    let s = Arc::new(SampleBuffer::mono("dc", SR as u32, vec![level; SR as usize * 4]));
-    Clip { length: 4.0, looping: true, content: ClipContent::Audio(AudioClip { sample: s, offset_frames: 0.0, warp_bpm: None, gain: 1.0 }) }
-}
-
-fn audio_track(rt: u16, clip: Clip) -> SongTrack {
-    SongTrack { rt, slots: vec![Some(clip)], ..Default::default() }
-}
-
 #[test]
 fn pan_law_and_unity_centre() {
     for (pan, expect_l, expect_r) in [(0.0f32, 0.5f32, 0.5f32), (-1.0, 0.5 * std::f32::consts::SQRT_2, 0.0), (1.0, 0.0, 0.707)] {
         let (mut e, mut h) = engine();
         let mut t = audio_track(0, dc_clip(0.5));
         t.pan = pan;
-        h.set_song(Song { tracks: vec![t] }).unwrap();
+        h.set_song(Song::new(vec![t])).unwrap();
         h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
         let out = render(&mut e, 4800, 480);
         let (l, r) = (left(&out)[4000], right(&out)[4000]);
@@ -33,7 +24,7 @@ fn mute_solo_and_gain() {
     let (mut e, mut h) = engine();
     let a = audio_track(0, dc_clip(0.25));
     let b = audio_track(1, dc_clip(0.125));
-    h.set_song(Song { tracks: vec![a, b] }).unwrap();
+    h.set_song(Song::new(vec![a, b])).unwrap();
     h.send(Command::LaunchScene { scene: 0 }).unwrap();
     let level = |e: &mut Engine| *left(&render(e, 4800, 480)).last().unwrap();
     assert!((level(&mut e) - 0.375).abs() < 1e-4);
@@ -66,7 +57,7 @@ fn audio_clip_follows_source_and_warp_repitches() {
             looping: true,
             content: ClipContent::Audio(AudioClip { sample: s.clone(), offset_frames: 100.0, warp_bpm: warp, gain: 1.0 }),
         };
-        h.set_song(Song { tracks: vec![audio_track(0, clip)] }).unwrap();
+        h.set_song(Song::new(vec![audio_track(0, clip)])).unwrap();
         h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
         let out = left(&render(&mut e, 2000, 512));
         let expected = (100.0 + 1000.0 * speed) / 1.0e6;
@@ -87,7 +78,7 @@ fn synth_plays_correct_pitch_and_releases() {
             filter_env_octaves: 0.0,
             ..Default::default()
         };
-        h.set_song(Song { tracks: vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), ..Default::default() }] }).unwrap();
+        h.set_song(Song::new(vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), ..Default::default() }])).unwrap();
         h.send(Command::NoteOn { track: 0, pitch: 69, velocity: 100 }).unwrap();
         let out = left(&render(&mut e, 24_000, 512));
         let f = freq(&out[4800..], SR);
@@ -105,7 +96,7 @@ fn synth_presets_are_stable_with_full_polyphony() {
     for name in SynthParams::PRESETS {
         let (mut e, mut h) = engine();
         let instrument = Instrument::Synth(SynthParams::preset(name));
-        h.set_song(Song { tracks: vec![SongTrack { rt: 0, instrument, ..Default::default() }] }).unwrap();
+        h.set_song(Song::new(vec![SongTrack { rt: 0, instrument, ..Default::default() }])).unwrap();
         for p in 30..70 {
             h.send(Command::NoteOn { track: 0, pitch: p, velocity: 127 }).unwrap(); // 40 notes > 16 voices
         }
@@ -125,7 +116,7 @@ fn clip_notes_end_after_their_length() {
         looping: true,
         content: ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false }]),
     };
-    h.set_song(Song { tracks: vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), slots: vec![Some(clip)], ..Default::default() }] })
+    h.set_song(Song::new(vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), slots: vec![Some(clip)], ..Default::default() }]))
         .unwrap();
     h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
     let out = left(&render(&mut e, SPB * 2, 512));
@@ -139,7 +130,7 @@ fn sampler_transposes_relative_to_root() {
     let s = std::sync::Arc::new(SampleBuffer::mono("sine", SR as u32, sine));
     let (mut e, mut h) = engine();
     let instrument = Instrument::Sampler { sample: Some(s), params: SamplerParams { root_note: 60, ..Default::default() } };
-    h.set_song(Song { tracks: vec![SongTrack { rt: 0, instrument, ..Default::default() }] }).unwrap();
+    h.set_song(Song::new(vec![SongTrack { rt: 0, instrument, ..Default::default() }])).unwrap();
     h.send(Command::NoteOn { track: 0, pitch: 72, velocity: 127 }).unwrap();
     let out = left(&render(&mut e, 12_000, 512));
     let f = freq(&out[1000..], SR);
@@ -152,7 +143,7 @@ fn drum_rack_pads_and_choke_groups() {
     let pad = |choke| DrumPad { name: "p".into(), sample: Some(long.clone()), gain: 1.0, tune_semitones: 0.0, choke };
     let (mut e, mut h) = engine();
     let instrument = Instrument::Drums(vec![pad(0), pad(1), pad(1)]);
-    h.set_song(Song { tracks: vec![SongTrack { rt: 0, instrument, ..Default::default() }] }).unwrap();
+    h.set_song(Song::new(vec![SongTrack { rt: 0, instrument, ..Default::default() }])).unwrap();
     send_all(
         &mut h,
         &[
@@ -174,25 +165,39 @@ fn drum_rack_pads_and_choke_groups() {
 }
 
 #[test]
-fn hardware_midi_goes_to_midi_target() {
+fn hardware_midi_follows_input_port_channel_and_arm() {
     let (mut e, mut h) = engine();
     let mut midi = h.take_midi_input().unwrap();
-    h.set_song(Song { tracks: vec![track(3, vec![])] }).unwrap();
-    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
-    assert!(nonzero(&render(&mut e, 512, 512)).is_empty(), "no target yet");
-    h.send(Command::SetMidiTargets(1 << 3)).unwrap();
-    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
-    assert_eq!(nonzero(&left(&render(&mut e, 512, 512))), vec![0]);
+    h.set_song(Song::new(vec![midi_track(3, false)])).unwrap();
+    midi.push(note_on(0, 0, 60)).unwrap();
+    assert!(nonzero(&render(&mut e, 512, 512)).is_empty(), "Auto + unarmed: not monitored");
+    h.send(Command::SetAutoArm(3)).unwrap();
+    midi.push(note_on(0, 0, 60)).unwrap();
+    assert_eq!(nonzero(&left(&render(&mut e, 512, 512))), vec![0], "auto-arm monitors");
+    // Port 1 / channel 2 only.
+    let t = SongTrack { input: TrackInput::Midi { port: 1, channel: 2 }, ..midi_track(3, true) };
+    h.set_song(Song::new(vec![t])).unwrap();
+    for (port, ch, hit) in [(0, 1, false), (1, 0, false), (1, 1, true)] {
+        midi.push(note_on(port, ch, 61)).unwrap();
+        let out = left(&render(&mut e, 512, 512));
+        assert_eq!(!nonzero(&out).is_empty(), hit, "port {port} ch {ch}");
+        render(&mut e, 4800, 480);
+    }
+    // Monitor Off: never heard, even armed.
+    let t = SongTrack { monitor: Monitor::Off, ..midi_track(3, true) };
+    h.set_song(Song::new(vec![t])).unwrap();
+    midi.push(note_on(0, 0, 62)).unwrap();
+    assert!(nonzero(&render(&mut e, 512, 512)).is_empty());
 }
 
 #[test]
 fn group_bus_sums_children_and_solo_propagates() {
     let (mut e, mut h) = engine();
     let g = SongTrack { rt: 5, ..Default::default() };
-    let a = SongTrack { output: Some(5), ..audio_track(0, dc_clip(0.25)) };
-    let b = SongTrack { output: Some(5), ..audio_track(1, dc_clip(0.125)) };
+    let a = SongTrack { output: TrackOutput::Track(5), ..audio_track(0, dc_clip(0.25)) };
+    let b = SongTrack { output: TrackOutput::Track(5), ..audio_track(1, dc_clip(0.125)) };
     let c = audio_track(2, dc_clip(0.0625)); // outside the group
-    h.set_song(Song { tracks: vec![g, a, b, c] }).unwrap();
+    h.set_song(Song::new(vec![g, a, b, c])).unwrap();
     h.send(Command::LaunchScene { scene: 0 }).unwrap();
     let level = |e: &mut Engine| *left(&render(e, 4800, 480)).last().unwrap();
     assert!((level(&mut e) - 0.4375).abs() < 1e-4, "all to master");
@@ -208,35 +213,41 @@ fn group_bus_sums_children_and_solo_propagates() {
 }
 
 #[test]
-fn group_output_must_precede_child() {
-    // Child listed before its "group" → routed to master instead (no cycle / lost audio).
-    let mut s = Song {
-        tracks: vec![
-            SongTrack { output: Some(1), ..audio_track(0, dc_clip(0.1)) },
-            SongTrack { rt: 1, output: Some(0), ..Default::default() },
-        ],
-    };
+fn routing_cycles_are_broken_and_order_is_topological() {
+    let mut s = Song::new(vec![
+        SongTrack { output: TrackOutput::Track(1), ..audio_track(0, dc_clip(0.1)) },
+        SongTrack { rt: 1, output: TrackOutput::Track(0), ..Default::default() },
+        SongTrack { rt: 2, input: TrackInput::Track { rt: 3, tap: Tap::PostFx }, ..Default::default() },
+        SongTrack { rt: 3, output: TrackOutput::Track(9), ..Default::default() }, // dangling
+    ]);
     s.prepare();
-    assert_eq!(s.tracks[0].output, None);
-    assert_eq!(s.tracks[1].output, Some(0));
+    let cut = (s.tracks[0].output == TrackOutput::Master) as u8 + (s.tracks[1].output == TrackOutput::Master) as u8;
+    assert_eq!(cut, 1, "exactly one edge of the cycle is cut");
+    assert_eq!(s.tracks[3].output, TrackOutput::Master);
+    let pos = |i: u16| s.order.iter().position(|&o| o == i).unwrap();
+    assert!(pos(3) < pos(2), "tap source first");
+    let (src, dst) = if s.tracks[0].output == TrackOutput::Track(1) { (0, 1) } else { (1, 0) };
+    assert!(pos(src) < pos(dst));
+    assert_eq!(s.order.len(), 4);
 }
 
 #[test]
 fn hardware_midi_reaches_every_armed_track() {
     let (mut e, mut h) = engine();
     let mut midi = h.take_midi_input().unwrap();
-    h.set_song(Song { tracks: vec![track(1, vec![]), track(3, vec![]), track(4, vec![])] }).unwrap();
-    // Each impulse-sampler voice emits one sample: one target → v, two → 2v (track 4 silent).
+    let song = |arm: [bool; 3]| Song::new(vec![midi_track(1, arm[0]), midi_track(3, arm[1]), midi_track(4, arm[2])]);
+    // Each impulse-sampler voice emits one sample: one target → v, two → 2v.
     // Prime every voice once (first-note state), then compare.
-    h.send(Command::SetMidiTargets((1 << 1) | (1 << 3) | (1 << 4))).unwrap();
-    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    h.set_song(song([true; 3])).unwrap();
+    midi.push(note_on(0, 0, 60)).unwrap();
     render(&mut e, 9600, 480);
-    h.send(Command::SetMidiTargets(1 << 1)).unwrap();
-    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    h.set_song(song([true, false, false])).unwrap();
+    midi.push(note_on(0, 0, 60)).unwrap();
     let one = left(&render(&mut e, 512, 512))[0];
     assert!(one > 0.0);
-    h.send(Command::SetMidiTargets((1 << 1) | (1 << 3))).unwrap();
-    midi.push(MidiEvent::NoteOn { pitch: 60, velocity: 127 }).unwrap();
+    render(&mut e, 9600, 480);
+    h.set_song(song([true, true, false])).unwrap();
+    midi.push(note_on(0, 0, 60)).unwrap();
     let out = left(&render(&mut e, 512, 512));
     assert_eq!(nonzero(&out), vec![0]);
     assert!((out[0] - 2.0 * one).abs() < 1e-4, "both armed tracks play: {} vs {one}", out[0]);
@@ -245,7 +256,7 @@ fn hardware_midi_reaches_every_armed_track() {
 #[test]
 fn master_pan_balances_the_mix() {
     let (mut e, mut h) = engine();
-    h.set_song(Song { tracks: vec![audio_track(0, dc_clip(0.5))] }).unwrap();
+    h.set_song(Song::new(vec![audio_track(0, dc_clip(0.5))])).unwrap();
     h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
     h.send(Command::SetMasterPan(1.0)).unwrap();
     let out = render(&mut e, 9600, 480);

@@ -20,6 +20,12 @@ pub enum Instrument {
     Drums(Vec<DrumPad>),
 }
 
+/// Individual drum pad output buffer (one per pad, per track).
+pub struct PadBuf {
+    pub l: Vec<f32>,
+    pub r: Vec<f32>,
+}
+
 /// Per-track voice state for every instrument type, pre-allocated so that
 /// switching instruments never allocates on the audio thread.
 #[derive(Default)]
@@ -68,6 +74,39 @@ impl Voices {
 
     pub fn active_voices(&self) -> usize {
         self.synth.active_voices() + self.sampler.active_voices() + self.drums.active_voices()
+    }
+
+    /// Render, with drum pads in `pad_outs` going to their own buffers
+    /// (`pads[k]` = (left, right) for pad k, same range as `l`/`r`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_split(
+        &mut self,
+        def: &Instrument,
+        l: &mut [f32],
+        r: &mut [f32],
+        sr: f32,
+        pad_outs: u32,
+        pads: &mut [PadBuf],
+        range: (usize, usize),
+    ) {
+        if let (Instrument::Drums(defs), true) = (def, pad_outs != 0) {
+            if !self.drums.is_active() {
+                return;
+            }
+            let s = |pad: u8| defs.get(pad as usize).and_then(|p| p.sample.as_deref());
+            self.drums.render_pads(l, r, s, |p| pad_outs & (1 << p) == 0);
+            let mut m = pad_outs;
+            while m != 0 {
+                let k = m.trailing_zeros() as u8;
+                m &= m - 1;
+                if let Some(pb) = pads.get_mut(k as usize) {
+                    let (pl, pr) = (&mut pb.l[range.0..range.1], &mut pb.r[range.0..range.1]);
+                    self.drums.render_pads(pl, pr, s, |p| p == k);
+                }
+            }
+            return;
+        }
+        self.render(def, l, r, sr);
     }
 
     pub fn render(&mut self, def: &Instrument, l: &mut [f32], r: &mut [f32], sr: f32) {

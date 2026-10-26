@@ -1,12 +1,16 @@
 //! Per-track real-time state: session launch state, clip playback, instrument
 //! voices and the channel strip (gain/pan/mute/solo).
 
-use crate::instruments::Voices;
+use crate::instruments::{PadBuf, Voices};
 use crate::smoother::Smoothed;
 use crate::song::{Clip, ClipContent, SongTrack};
 use std::f32::consts::{FRAC_PI_4, SQRT_2};
 
-const MAX_EVENTS: usize = 512;
+pub(crate) const MAX_EVENTS: usize = 512;
+/// Note events other tracks forward to this one per segment.
+const MAX_FWD: usize = 256;
+/// Hanging notes on a hardware MIDI output (for timed note-offs).
+pub(crate) const MAX_OUT_NOTES: usize = 64;
 /// Fade length at audio clip edges (samples) — removes start/loop clicks.
 const DECLICK: f64 = 64.0;
 /// Tolerance for beat comparisons (far below one sample at any tempo).
@@ -25,11 +29,19 @@ pub(crate) struct Pending {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct NoteEvent {
-    offset: u32,
-    pitch: u8,
-    vel: u8,
-    len: u32,
+pub(crate) struct NoteEvent {
+    pub offset: u32,
+    pub pitch: u8,
+    pub vel: u8,
+    pub len: u32,
+}
+
+/// A clip note sent from another track. `direct` = straight to the
+/// instrument; otherwise it arrives at the input (subject to monitoring).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FwdEvent {
+    pub ev: NoteEvent,
+    pub direct: bool,
 }
 
 /// Timing of the segment being rendered.
@@ -48,7 +60,6 @@ pub(crate) struct TrackRt {
     pub pan: f32,
     pub mute: bool,
     pub solo: bool,
-    pub monitor: bool,
     gl: Smoothed,
     gr: Smoothed,
     /// (scene, song beat where clip position 0 is)
@@ -57,10 +68,28 @@ pub(crate) struct TrackRt {
     /// A session clip took over this track → arrangement muted until "Back to Arrangement".
     pub session_override: bool,
     pub voices: Voices,
+    /// Pre-fader signal of the segment.
     pub l: Vec<f32>,
     pub r: Vec<f32>,
-    events: [NoteEvent; MAX_EVENTS],
-    n_events: usize,
+    /// Input signal of the segment (audio input tracks; recorded + monitored).
+    pub in_l: Vec<f32>,
+    pub in_r: Vec<f32>,
+    /// Audio routed into this track by others (summed before the mixer).
+    pub bus_l: Vec<f32>,
+    pub bus_r: Vec<f32>,
+    pub bus_active: bool,
+    /// Post-mixer signal (for routing / Post Mixer taps).
+    pub post_l: Vec<f32>,
+    pub post_r: Vec<f32>,
+    /// Individual drum pad outputs.
+    pub pads: Vec<PadBuf>,
+    pub events: [NoteEvent; MAX_EVENTS],
+    pub n_events: usize,
+    fwd: [FwdEvent; MAX_FWD],
+    n_fwd: usize,
+    /// Hardware MIDI out: (pitch, samples left) of sounding clip notes.
+    pub out_notes: [(u8, u32); MAX_OUT_NOTES],
+    pub n_out_notes: usize,
     pub peak: [f32; 2],
     /// Nothing produced sound in the last segment → mixing can be skipped.
     silent: bool,
@@ -74,7 +103,6 @@ impl TrackRt {
             pan: 0.0,
             mute: false,
             solo: false,
-            monitor: false,
             gl: Smoothed::new(1.0, sr, 0.01),
             gr: Smoothed::new(1.0, sr, 0.01),
             playing: None,
@@ -83,8 +111,20 @@ impl TrackRt {
             voices: Voices::default(),
             l: vec![0.0; max_block],
             r: vec![0.0; max_block],
+            in_l: vec![0.0; max_block],
+            in_r: vec![0.0; max_block],
+            bus_l: vec![0.0; max_block],
+            bus_r: vec![0.0; max_block],
+            bus_active: false,
+            post_l: vec![0.0; max_block],
+            post_r: vec![0.0; max_block],
+            pads: (0..crate::DRUM_PADS).map(|_| PadBuf { l: vec![0.0; max_block], r: vec![0.0; max_block] }).collect(),
             events: [NoteEvent::default(); MAX_EVENTS],
             n_events: 0,
+            fwd: [FwdEvent::default(); MAX_FWD],
+            n_fwd: 0,
+            out_notes: [(0, 0); MAX_OUT_NOTES],
+            n_out_notes: 0,
             peak: [0.0; 2],
             silent: true,
         }
@@ -102,7 +142,14 @@ impl TrackRt {
         self.pan = st.pan;
         self.mute = st.mute;
         self.solo = st.solo;
-        self.monitor = st.monitor;
+    }
+
+    /// Queue a note forwarded from another track (dropped when full).
+    pub fn push_fwd(&mut self, ev: NoteEvent, direct: bool) {
+        if self.n_fwd < MAX_FWD {
+            self.fwd[self.n_fwd] = FwdEvent { ev, direct };
+            self.n_fwd += 1;
+        }
     }
 
     /// Equal-power pan normalised to unity at centre.
@@ -122,22 +169,26 @@ impl TrackRt {
         Some(if clip.looping { local.rem_euclid(clip.length) } else { local.min(clip.length) })
     }
 
-    /// Render this track's own output (pre-fader) into `self.l/r[..n]`.
-    pub fn render(&mut self, st: &SongTrack, ctx: &SegCtx, input: Option<(&[f32], &[f32])>) {
+    /// Render clips + instrument (pre-fader) into `self.l/r[..n]`.
+    /// `clips_on` = false (monitor In) silences clip output while clips keep
+    /// running; `midi_monitor` = forwarded "Track In" notes are played.
+    /// Returns true if a clip covered part of the segment.
+    pub fn render(&mut self, st: &SongTrack, ctx: &SegCtx, clips_on: bool, midi_monitor: bool) -> bool {
         let n = ctx.n;
-        let Self { l, r, events, n_events, voices, playing, session_override, .. } = self;
+        let Self { l, r, events, n_events, voices, playing, session_override, fwd, n_fwd, pads, .. } = self;
         let (l, r) = (&mut l[..n], &mut r[..n]);
         l.fill(0.0);
         r.fill(0.0);
         *n_events = 0;
         let mut produced = false;
         let mut finished = false;
+        let mut covered = false;
 
         if ctx.playing {
             if let Some((scene, origin)) = *playing {
                 match st.slots.get(scene as usize).and_then(Option::as_ref) {
                     Some(clip) => {
-                        produced |= play_clip(clip, origin, clip.looping, ctx, l, r, events, n_events);
+                        covered |= play_clip(clip, origin, clip.looping, ctx, l, r, events, n_events);
                         finished = !clip.looping && ctx.beat0 + n as f64 * ctx.bps - origin >= clip.length - EPS;
                     }
                     None => finished = true, // clip was deleted
@@ -149,34 +200,45 @@ impl TrackRt {
                         break;
                     }
                     if ac.start + ac.clip.length > ctx.beat0 {
-                        produced |= play_clip(&ac.clip, ac.start, false, ctx, l, r, events, n_events);
+                        covered |= play_clip(&ac.clip, ac.start, false, ctx, l, r, events, n_events);
                     }
                 }
             }
         }
+        if !clips_on {
+            l.fill(0.0);
+            r.fill(0.0);
+            *n_events = 0;
+        }
+        produced |= covered && clips_on;
+        for f in &fwd[..*n_fwd] {
+            if (f.direct || midi_monitor) && *n_events < MAX_EVENTS {
+                events[*n_events] = f.ev;
+                *n_events += 1;
+            }
+        }
+        *n_fwd = 0;
 
         // Instrument: render between note events for sample accuracy.
+        if st.pad_outs != 0 {
+            for p in pads.iter_mut() {
+                p.l[..n].fill(0.0);
+                p.r[..n].fill(0.0);
+            }
+        }
         let evs = &mut events[..*n_events];
         evs.sort_unstable_by_key(|e| e.offset); // in-place, never allocates
         let mut pos = 0;
         for e in evs.iter() {
             let off = (e.offset as usize).min(n);
             if off > pos {
-                voices.render(&st.instrument, &mut l[pos..off], &mut r[pos..off], ctx.sr);
+                voices.render_split(&st.instrument, &mut l[pos..off], &mut r[pos..off], ctx.sr, st.pad_outs, pads, (pos, off));
                 pos = off;
             }
             voices.note_on(&st.instrument, e.pitch, e.vel, e.len, true, ctx.sr);
         }
         if voices.is_active() {
-            voices.render(&st.instrument, &mut l[pos..], &mut r[pos..], ctx.sr);
-            produced = true;
-        }
-
-        if let Some((il, ir)) = input {
-            for i in 0..n {
-                l[i] += il[i];
-                r[i] += ir[i];
-            }
+            voices.render_split(&st.instrument, &mut l[pos..], &mut r[pos..], ctx.sr, st.pad_outs, pads, (pos, n));
             produced = true;
         }
 
@@ -185,40 +247,60 @@ impl TrackRt {
             voices.release_clip_notes();
         }
         self.silent = !produced;
+        covered
     }
 
-    /// Apply gain/pan (smoothed) and add into the master bus.
-    /// `audible` is false when another track is soloed (see `render_segment`).
-    pub fn mix_into(&mut self, ml: &mut [f32], mr: &mut [f32], audible: bool) {
+    /// Add the input signal (`in_l/in_r`) — monitoring.
+    pub fn add_input(&mut self, n: usize) {
+        for i in 0..n {
+            self.l[i] += self.in_l[i];
+            self.r[i] += self.in_r[i];
+        }
+        self.silent = false;
+    }
+
+    /// Add audio routed in from other tracks and clear the bus.
+    pub fn add_bus(&mut self, n: usize) {
+        if !self.bus_active {
+            return;
+        }
+        for i in 0..n {
+            self.l[i] += self.bus_l[i];
+            self.r[i] += self.bus_r[i];
+        }
+        self.bus_l[..n].fill(0.0);
+        self.bus_r[..n].fill(0.0);
+        self.bus_active = false;
+        self.silent = false;
+    }
+
+    /// Apply gain/pan (smoothed) into `post_l/post_r`. Returns false when the
+    /// result is silent (nothing to route). `audible` is false when another
+    /// track is soloed (see `render_segment`).
+    pub fn mix(&mut self, n: usize, audible: bool) -> bool {
         let (tl, tr) = self.target_gains(audible);
         self.gl.set_target(tl);
         self.gr.set_target(tr);
-        let n = ml.len();
         if self.silent {
             // Keep smoothers moving so a later sound starts at the right gain.
             self.gl.skip(n);
             self.gr.skip(n);
-            return;
+            self.post_l[..n].fill(0.0);
+            self.post_r[..n].fill(0.0);
+            return false;
         }
         let mut pk = [0.0f32; 2];
         for i in 0..n {
             let a = self.l[i] * self.gl.next();
             let b = self.r[i] * self.gr.next();
-            ml[i] += a;
-            mr[i] += b;
+            self.post_l[i] = a;
+            self.post_r[i] = b;
             pk[0] = pk[0].max(a.abs());
             pk[1] = pk[1].max(b.abs());
         }
         self.peak[0] = self.peak[0].max(pk[0]);
         self.peak[1] = self.peak[1].max(pk[1]);
-    }
-
-    /// Sum this track (post fader) into a group bus's buffers.
-    pub fn mix_into_group(&mut self, group: &mut TrackRt, n: usize, audible: bool) {
-        self.mix_into(&mut group.l[..n], &mut group.r[..n], audible);
-        if !self.silent {
-            group.silent = false;
-        }
+        true
     }
 }
 

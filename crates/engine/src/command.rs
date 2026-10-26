@@ -43,10 +43,6 @@ pub enum Command {
         track: u16,
         solo: bool,
     },
-    SetTrackMonitor {
-        track: u16,
-        monitor: bool,
-    },
 
     /// Launch the clip in `scene` (an empty slot stops the track).
     LaunchClip {
@@ -75,9 +71,14 @@ pub enum Command {
     AllNotesOff {
         track: u16,
     },
-    /// Tracks that receive hardware MIDI input: bit `i` = runtime track `i`
-    /// (every armed MIDI track; 0 = nowhere).
-    SetMidiTargets(u64),
+    /// Live's auto-arm: this runtime track monitors MIDI as if armed
+    /// (`u16::MAX` = none). Not recorded into unless really armed.
+    SetAutoArm(u16),
+    /// Computer MIDI keyboard note (velocity 0 = off), routed like a port.
+    KeyboardNote {
+        pitch: u8,
+        velocity: u8,
+    },
 
     /// Start/stop recording at the next launch-quantize boundary.
     SetRecording(bool),
@@ -91,7 +92,30 @@ pub enum MidiEvent {
     AllNotesOff,
 }
 
+/// A hardware MIDI event with its source port index and channel (0..=15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiInput {
+    pub port: u8,
+    pub channel: u8,
+    pub event: MidiEvent,
+}
+
+/// Raw MIDI bytes for a hardware output port (engine → MIDI output thread).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiOutput {
+    pub port: u8,
+    pub bytes: [u8; 3],
+}
+
+/// Most armed audio tracks recorded at once.
+pub const MAX_REC_LANES: usize = 16;
+
 impl MidiEvent {
+    /// Channel (0..=15) of a channel message.
+    pub fn channel_of(bytes: &[u8]) -> u8 {
+        bytes.first().map_or(0, |s| s & 0x0F)
+    }
+
     /// Parse a raw MIDI message (any channel). Returns None for unsupported messages.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
         let status = *bytes.first()?;
@@ -107,19 +131,23 @@ impl MidiEvent {
 }
 
 /// Recording events from the audio thread to the recorder thread.
-/// Recorded audio frames travel separately (interleaved stereo f32 ring).
+/// Recorded audio travels separately: per frame, (L, R) of every lane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RecordEvent {
-    /// Recording began at this song position. `frame` = index (in the
-    /// recorded-audio stream) of the take's first frame.
+    /// Recording began at this song position. `pos` = sample index (in the
+    /// recorded-audio stream) of the take's first sample. Lanes = runtime
+    /// tracks whose input is recorded; bit k of `mono` = lane k is mono.
     Started {
         beat: f64,
-        frame: u64,
+        pos: u64,
+        lanes: [u16; MAX_REC_LANES],
+        n_lanes: u8,
+        mono: u16,
     },
-    /// Recording ended. `frame` = index one past the take's last frame.
+    /// Recording ended. `pos` = sample index one past the take's last sample.
     Stopped {
         beat: f64,
-        frame: u64,
+        pos: u64,
     },
     /// A live note played into `track` while recording. `clip_pos` is the
     /// position inside the session clip playing on that track (for overdub).
