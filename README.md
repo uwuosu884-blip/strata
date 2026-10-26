@@ -22,6 +22,13 @@ from source (see below).
 - **Instruments**: 2-oscillator synth with filter and presets, sampler, and a
   16-pad drum rack with choke groups. A factory drum kit is built in, so no
   sample files are needed.
+- **Clip View** (Live style): clip / launch / notes or audio panels, start,
+  end and loop markers, launch modes and Follow Actions, clip envelopes, MPE
+  editor, Groove Pool, MIDI Tools (Pitch & Time, 12 Transform and 5 Generate
+  tools with Auto Apply).
+- **Warping**: Beats / Tones / Texture / Re-Pitch / Complex / Complex Pro,
+  warp markers and transients, Warp As, quantize markers, reverse, crop,
+  Tap Tempo, Nudge and leader clips with tempo Follow.
 - **Piano roll**: add, move and resize notes, edit velocity, quantize and
   transpose.
 - **Recording**: audio and MIDI, from a MIDI controller or the computer
@@ -128,6 +135,9 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
 | Ctrl+L | Loop the selected region (or clips); again: loop off; nothing selected: previous loop back on |
 | Ctrl+J | Consolidate clips (audio is rendered to a new sample) |
+| Ctrl+Shift+J | Crop the clip in Clip View |
+| Ctrl+U / Ctrl+Shift+U | Quantize (notes or warp markers) / Quantize tool |
+| Ctrl+Enter | Apply the MIDI tool |
 | Ctrl+R | Rename the selected clip, else the selected track (or double-click a header / clip title) |
 | Ctrl+A | Select all notes (piano roll) or all clips |
 | ↑ / ↓, Shift+↑ / ↓ | Transpose the selected notes by a semitone / an octave |

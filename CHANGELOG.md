@@ -8,7 +8,60 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Planned
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
-- Plugin hosting (CLAP/VST3), audio warping, multi-core track processing.
+- Plugin hosting (CLAP/VST3), multi-core track processing.
+
+## [0.6.0] - 2026-10-26
+
+### Added
+- **Clip View (Live 12 ch. 8)** in the detail area, panels foldable (`<`):
+  - Clip box: Clip Activator, name (double-click renames), colour menu with
+    Assign Track Color, Info Text, selected-clip count; Signature, Groove +
+    Commit, Scale (root / name, highlighted in the editor), Start / End and
+    Loop Position / Length with Set buttons (min:sec for unwarped audio),
+    Duplicate Loop, Crop (Ctrl+Shift+J).
+  - Launch box (Session clips, `L`): Trigger / Gate / Toggle / Repeat, Legato,
+    Quantization, Velocity, Follow Actions (A / B, Chance, Time, Linked,
+    multiplier, Jump), Bank / Sub-bank / Program sent on launch.
+  - Marker strip: draggable start / end / loop markers, loop brace keys
+    (Up/Down shift by loop length, Ctrl+Left/Right shorten/lengthen,
+    Ctrl+Up/Down double/halve), Follow auto-scroll.
+- **Audio clips, tempo and warping (ch. 9)**: Warp toggle, Seg. BPM ×2/÷2,
+  warp modes Beats (Preserve, Transient Loop, Envelope), Tones, Texture
+  (Grain / Flux), Re-Pitch, Complex, Complex Pro (Formants, Envelope); warp
+  markers (double-click / Ctrl+I add, drag, Delete), transients, Set 1.1.1
+  Here, Warp From Here, Warp As N bars, Quantize Markers (Ctrl+U); Gain,
+  Transpose, Detune, Fade, RAM, HiQ, Reverse (new sample), Edit (external
+  editor). Phase vocoder with identity phase locking for the stretch modes.
+  Tap Tempo, Phase Nudge −/+, Leader clips + Follow (tempo automation).
+- **MIDI Tools (ch. 11)**: Pitch & Time (Transpose in scale degrees, Fit to
+  Scale, Invert, Add Interval, Stretch ×2/÷2, Set Length, Humanize, Reverse,
+  Legato); Transform tools Arpeggiate, Chop, Connect, Glissando, LFO,
+  Ornament, Quantize (Ctrl+Shift+U), Recombine, Span, Strum, Time Warp,
+  Velocity Shaper; Generate tools Rhythm, Seed, Shape, Stacks, Euclidean.
+  Auto Apply re-runs from the original notes; Apply / Ctrl+Enter, Reset.
+- **Clip envelopes**: Volume, Pan, Clip Gain, Transpose, Pitch Bend, Mod
+  Wheel; linked or unlinked with their own loop length.
+- **MPE**: per-note pitch / slide / pressure curves, MPE editor tab, synth
+  per-note expression.
+- **Groove Pool**: factory grooves, extract from a clip, Base / Quantize /
+  Timing / Random / Velocity, Global Amount, hot-swap, Commit.
+- Clip launch buttons fire on press; release sends Gate / Repeat stops.
+
+### Changed
+- Arrangement clips draw from their start marker, loop and warp markers.
+- Track header: Routing & I/O sits between the name and the controls and
+  collapses when zoomed out; pan knob matches the volume knob; Solo + Arm
+  together match one knob; no rounded corners on the colour part.
+- The device view has a fixed height; clip view / piano roll stay resizable.
+
+### Fixed
+- Tracks with Resampling input were silent.
+- Clicking the empty area below the tracks deselects everything without
+  moving the playhead.
+- Piano roll: resizing several notes keeps their relative lengths; clicking
+  the keys plays them.
+- BPM field released focus after editing.
+- Clicking a clip moves the start point only from its title bar.
 
 ## [0.5.0] - 2026-10-26
 
@@ -300,7 +353,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...v0.3.0

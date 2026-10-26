@@ -163,6 +163,30 @@ fn beat_field(ui: &mut egui::Ui, v: &mut f64, bpb: f64, pos: bool, range: std::o
     )
 }
 
+/// Unwarped audio: positions in min:sec (beats ↔ seconds at the song tempo).
+fn sec_field(ui: &mut egui::Ui, v: &mut f64, spb: f64, range: std::ops::RangeInclusive<f64>) -> egui::Response {
+    ui.add(
+        egui::DragValue::new(v)
+            .range(range)
+            .speed(0.05)
+            .custom_formatter(move |x, _| {
+                let t = x * spb;
+                let sign = if t < 0.0 { "-" } else { "" };
+                let t = t.abs();
+                format!("{sign}{}:{:06.3}", (t / 60.0).floor() as i64, t % 60.0)
+            })
+            .custom_parser(move |s| {
+                let s = s.trim();
+                let (neg, s) = s.strip_prefix('-').map_or((false, s), |r| (true, r));
+                let secs = match s.split_once(':') {
+                    Some((m, x)) => m.trim().parse::<f64>().ok()? * 60.0 + x.trim().parse::<f64>().ok()?,
+                    None => s.parse::<f64>().ok()?,
+                };
+                Some(if neg { -secs } else { secs } / spb)
+            }),
+    )
+}
+
 /// Collects gesture / change flags from widgets (one undo step per gesture).
 #[derive(Default)]
 struct Ed {
@@ -282,11 +306,14 @@ fn framed(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().fill(Color32::from_gray(34)).inner_margin(4.0).corner_radius(2.0).show(ui, |ui| {
         ui.set_width(BOX_W);
         ui.set_min_height(ui.available_height());
-        egui::ScrollArea::vertical().id_salt(("cv_box", title, ui.next_auto_id())).auto_shrink([false, false]).show(ui, |ui| {
-            if !title.is_empty() {
-                ui.label(egui::RichText::new(title).small().strong().color(Color32::from_gray(170)));
-            }
-            f(ui)
+        // Frame inherits the row layout: force a column.
+        ui.vertical(|ui| {
+            egui::ScrollArea::vertical().id_salt(("cv_box", title)).auto_shrink([false, false]).show(ui, |ui| {
+                if !title.is_empty() {
+                    ui.label(egui::RichText::new(title).small().strong().color(Color32::from_gray(170)));
+                }
+                f(ui)
+            });
         });
     });
 }
@@ -430,7 +457,7 @@ fn clip_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
         // Scale.
         ui.label("Scale");
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::selectable(c.scale.on, "♯").min_size(vec2(18.0, 16.0))).on_hover_text("Scale Mode").clicked() {
+            if ui.add(egui::Button::selectable(c.scale.on, "#").min_size(vec2(18.0, 16.0))).on_hover_text("Scale Mode").clicked() {
                 c.scale.on = !c.scale.on;
                 ed.set();
             }
@@ -448,7 +475,12 @@ fn clip_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
         ui.end_row();
         // Start / End.
         ui.label("Start");
-        ed.t(beat_field(ui, &mut c.start, bpb, true, -4096.0..=4096.0));
+        let spb = 60.0 / app.project.tempo_bpm.max(1.0);
+        let secs = warp_off(&c);
+        let field = move |ui: &mut egui::Ui, v: &mut f64, pos: bool, r: std::ops::RangeInclusive<f64>| {
+            if secs { sec_field(ui, v, spb, r) } else { beat_field(ui, v, bpb, pos, r) }
+        };
+        ed.t(field(ui, &mut c.start, true, -4096.0..=4096.0));
         if set_btn(ui) {
             c.start = pos.unwrap_or(c.start);
             ed.set();
@@ -457,7 +489,7 @@ fn clip_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
         if !c.looping {
             ui.label("End");
             let mut end = c.start + c.length;
-            let r = ed.t(beat_field(ui, &mut end, bpb, true, (c.start + 1.0 / 16.0)..=(c.start + 4096.0)));
+            let r = ed.t(field(ui, &mut end, true, (c.start + 1.0 / 16.0)..=(c.start + 4096.0)));
             if r.changed() {
                 c.length = end - c.start;
             }
@@ -709,9 +741,9 @@ fn audio_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
                     ui.label("Loop");
                     ui.horizontal(|ui| {
                         for (m, l, tip) in [
-                            (clipx::TransientLoop::Off, "→|", "Loop Off"),
-                            (clipx::TransientLoop::Forward, "→→", "Loop Forward"),
-                            (clipx::TransientLoop::BackAndForth, "↔", "Loop Back-and-Forth"),
+                            (clipx::TransientLoop::Off, "Off", "Loop Off"),
+                            (clipx::TransientLoop::Forward, "Fwd", "Loop Forward"),
+                            (clipx::TransientLoop::BackAndForth, "B-F", "Loop Back-and-Forth"),
                         ] {
                             ed.t(ui.selectable_value(&mut wp.loop_mode, m, l).on_hover_text(tip));
                         }
@@ -828,7 +860,7 @@ fn open_external(path: &str) {
 }
 
 fn notes_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.selectable_value(&mut app.cv.panel, NotesPanel::PitchTime, "Pitch & Time");
         ui.selectable_value(&mut app.cv.panel, NotesPanel::Transform, "Transform");
         ui.selectable_value(&mut app.cv.panel, NotesPanel::Generate, "Generate");
@@ -1021,12 +1053,12 @@ fn tools(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
             ui.label(s.name);
             let v = &mut vals[k];
             let r = match s.kind {
-                PKind::Num => ui.add(
-                    egui::DragValue::new(v)
-                        .range(s.min..=s.max)
-                        .speed(((s.max - s.min) / 200.0).max(0.01))
-                        .max_decimals(if s.max - s.min > 20.0 { 0 } else { 2 }),
-                ),
+                PKind::Num => {
+                    // Whole-number specs (Steps, Parts, Voices…) drag in integers.
+                    let int = [s.min, s.max, s.default].iter().all(|x| x.fract() == 0.0) && s.max - s.min > 2.0;
+                    let d = egui::DragValue::new(v).range(s.min..=s.max);
+                    ui.add(if int { d.speed(0.1).fixed_decimals(0) } else { d.speed(((s.max - s.min) / 200.0).max(0.01)).max_decimals(2) })
+                }
                 PKind::Pct => ui.add(egui::DragValue::new(v).range(s.min..=s.max).suffix(" %")),
                 PKind::Toggle => {
                     let mut on = *v > 0.5;
@@ -1229,7 +1261,7 @@ pub fn groove_pool(app: &mut DawApp, ctx: &egui::Context) {
                     gesture |= r.drag_started() || r.gained_focus();
                     changed |= r.changed();
                 }
-                if ui.small_button("✖").on_hover_text("Remove from pool").clicked() {
+                if ui.small_button("x").on_hover_text("Remove from pool").clicked() {
                     remove = Some(i);
                 }
                 ui.end_row();
@@ -1706,15 +1738,26 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     while x < wave.max.x {
         let (f0, f1) = (map.frame_at(beat_at(x)), map.frame_at(beat_at(x + 1.0)));
         if f1 > 0.0 && f0 < total {
-            let i0 = (f0.max(0.0) / daw_engine::PEAK_BLOCK as f64) as usize;
-            let i1 = ((f1.min(total) / daw_engine::PEAK_BLOCK as f64) as usize).max(i0 + 1).min(pk.len());
-            let step = ((i1 - i0) / 64).max(1);
+            let block = daw_engine::PEAK_BLOCK as f64;
             let (mut lo, mut hi) = (0.0f32, 0.0f32);
-            let mut i = i0;
-            while i < i1 {
-                lo = lo.min(pk[i].0);
-                hi = hi.max(pk[i].1);
-                i += step;
+            if f1 - f0 < block * 2.0 {
+                // Zoomed in: raw samples (peak blocks would draw as steps).
+                let a = (f0.max(0.0) as usize).min(buf.len() - 1);
+                let b = (f1.min(total).ceil() as usize).clamp(a + 1, buf.len());
+                for &v in &buf.left[a..b] {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+            } else {
+                let i0 = (f0.max(0.0) / block) as usize;
+                let i1 = ((f1.min(total) / block) as usize).max(i0 + 1).min(pk.len());
+                let step = ((i1 - i0) / 64).max(1);
+                let mut i = i0;
+                while i < i1 {
+                    lo = lo.min(pk[i].0);
+                    hi = hi.max(pk[i].1);
+                    i += step;
+                }
             }
             p.line_segment([pos2(x, mid - hi * half), pos2(x, mid - lo * half)], Stroke::new(1.0, col));
         }

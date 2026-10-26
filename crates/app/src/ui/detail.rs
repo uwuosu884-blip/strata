@@ -57,7 +57,7 @@ fn clip_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef) {
     ui.horizontal_top(|ui| {
         // Panels fold away with the ◂ button (or Shift+double-click on the title).
         let fold = ui
-            .add(egui::Button::new(if app.cv.folded { "▸" } else { "◂" }).small().min_size(vec2(12.0, h)))
+            .add(egui::Button::new(if app.cv.folded { ">" } else { "<" }).small().min_size(vec2(12.0, h)))
             .on_hover_text("Show / hide the clip panels");
         if fold.clicked() {
             app.cv.folded = !app.cv.folded;
@@ -377,7 +377,9 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         CornerRadius::ZERO,
         Color32::from_gray(30),
     );
-    for v in [127u8, 64, 1] {
+    // Envelope / MPE lanes draw their own scale.
+    let vel_scale: &[u8] = if app.cv.tab == super::clip::Tab::Main { &[127, 64, 1] } else { &[] };
+    for &v in vel_scale {
         let y = vel_area.max.y - vel_area.height() * v as f32 / 127.0;
         sp.line_segment([pos2(vel_area.min.x - 6.0, y), pos2(vel_area.min.x - 2.0, y)], Stroke::new(1.0, Color32::from_gray(120)));
         sp.text(pos2(vel_area.min.x - 8.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::proportional(9.0), Color32::from_gray(150));
