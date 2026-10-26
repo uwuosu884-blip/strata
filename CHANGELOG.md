@@ -10,6 +10,67 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), audio warping, multi-core track processing.
 
+## [0.3.0] - 2026-10-25
+
+### Added
+- **Track numbers**: every track shows its position number before its name,
+  and the number follows the track when it moves. Renaming a track drops its
+  number without changing the other tracks. A name starting with `#` gets the
+  number substituted (`# Bass` shows as `3 Bass`).
+- **Rename** with Ctrl+R, by double-clicking the header, or from the track
+  menu. Enter (or clicking elsewhere) commits, Esc cancels.
+- **Volume and pan in arrangement headers** (Live style): a dB box and a pan
+  box (50L … C … 50R). Drag to change, Shift for fine steps, double-click to
+  reset.
+- **Per-track height**: Alt+wheel resizes the selected tracks (all tracks
+  when none are selected).
+- **Collapse**: zooming a track all the way out, or using the ⊳/⊽ button at
+  the left of its header, collapses it so its clips show only their title
+  bars.
+- **Reorder tracks** by dragging headers, including into and out of groups.
+- **Ctrl+J consolidate**: merges the selected clips (or the time selection)
+  into one clip per track. MIDI notes are merged. Audio is rendered offline
+  into a new sample.
+- **0 deactivates** the selected clips, or the selected notes when the piano
+  roll has focus. Deactivated items are drawn grey and are silent. Clips also
+  get an "Active" checkbox.
+- **Grid menu** in the arrangement and piano-roll context menus: adaptive
+  (Widest … Narrowest), fixed (4 bars … 1/32), or off.
+- **Alt bypasses the grid** for playhead clicks, clip trimming and note
+  moving/resizing.
+- **Shift+Tab** switches the detail panel between the clip view and the
+  device view.
+- **Clip names** follow the track: `<track> <n>` for created and recorded
+  clips.
+- **Loop brace edges** can be dragged in the ruler.
+- **Piano roll**:
+  - Rubber-band selection (drag on empty grid; Shift/Ctrl adds to the
+    selection).
+  - Ctrl+wheel zooms horizontally, Alt+wheel changes row height, Shift+wheel
+    scrolls horizontally, and dragging past an edge auto-scrolls.
+  - A ruler: click it to move the song playhead.
+  - Right-click menu with Delete, Duplicate, Deactivate, Select All and Grid.
+
+### Changed
+- **Ctrl+L** a second time on the same region turns the loop off.
+- **Play** while playing (or after Stop) restarts from the last start point.
+  Stop leaves the playhead where it is, and Shift+Space continues from there.
+- Clips can't be trimmed beyond their content (audio sample or MIDI length).
+- New MIDI tracks are empty (no instrument) until you drop one on them.
+- BPM box: drag up or down with the cursor hidden, so it never stops at the
+  screen edge. Double-click to type a value.
+- Project format version 3. Older projects load fine, and old auto names
+  (`1 MIDI`) are migrated to numbered names.
+
+### Fixed
+- Delete now deletes the selected tracks.
+- Ctrl+D with notes selected duplicates the notes, not the clip.
+- Piano roll velocity lane: overlapping (chord) notes all show their own
+  stem, and with nothing selected a drag edits the whole chord instead of
+  only the last note.
+- The device view no longer sticks to an audio clip after you click another
+  track's header.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added
@@ -142,6 +203,7 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/uwuosu884-blip/strata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/uwuosu884-blip/strata/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/uwuosu884-blip/strata/releases/tag/v0.1.0

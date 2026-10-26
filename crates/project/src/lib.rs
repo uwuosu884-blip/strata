@@ -5,13 +5,17 @@
 
 mod arrange;
 mod history;
+mod tracks;
 pub use history::History;
+pub use arrange::{trim_left, trim_right};
+pub use tracks::TrackDrop;
 
 pub use daw_engine::{AdsrParams, Note, SamplerParams, SynthParams, Wave};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const FORMAT_VERSION: u32 = 2;
+/// 3: default track names use the `#` index placeholder; clip disable/extent, track height.
+pub const FORMAT_VERSION: u32 = 3;
 pub const FILE_EXTENSION: &str = "dawproj";
 /// Prefix for built-in (synthesised) sounds, e.g. `factory:Kick`.
 pub const FACTORY_PREFIX: &str = "factory:";
@@ -108,6 +112,10 @@ pub struct Track {
     pub group: Option<u64>,
     /// Group tracks only: children hidden in the UI.
     pub folded: bool,
+    /// Arrangement lane height in points (0 = the view's default). View state.
+    pub height: f32,
+    /// Arrangement lane collapsed to the clip title bars. View state.
+    pub collapsed: bool,
 }
 
 impl Default for Track {
@@ -128,6 +136,8 @@ impl Default for Track {
             arrangement: Vec::new(),
             group: None,
             folded: false,
+            height: 0.0,
+            collapsed: false,
         }
     }
 }
@@ -197,11 +207,69 @@ pub struct Clip {
     pub length: f64,
     pub looping: bool,
     pub content: ClipContent,
+    /// Deactivated (key 0): drawn grey, never played.
+    pub muted: bool,
+    /// MIDI only: beats of content hidden before the clip start (left-trimmed;
+    /// those notes have negative starts).
+    pub head: f64,
+    /// MIDI only: total content length from `-head`; 0 = `head + length`.
+    /// Bounds how far the clip edges can be dragged back out.
+    pub full: f64,
 }
 
 impl Default for Clip {
     fn default() -> Self {
-        Self { id: 0, name: "Clip".into(), color: PALETTE[0], length: 4.0, looping: true, content: ClipContent::Midi { notes: Vec::new() } }
+        Self {
+            id: 0,
+            name: "Clip".into(),
+            color: PALETTE[0],
+            length: 4.0,
+            looping: true,
+            content: ClipContent::Midi { notes: Vec::new() },
+            muted: false,
+            head: 0.0,
+            full: 0.0,
+        }
+    }
+}
+
+impl Clip {
+    /// Forget hidden MIDI content bounds (after cutting a clip into pieces).
+    pub fn clear_extent(&mut self) {
+        self.head = 0.0;
+        self.full = 0.0;
+    }
+
+    /// Total MIDI content length measured from `-head`.
+    pub fn content_full(&self) -> f64 {
+        if self.full > 0.0 { self.full.max(self.head + self.length) } else { self.head + self.length }
+    }
+
+    /// How far (beats) the left / right edge may be dragged outwards without
+    /// leaving the source material. `fpb` = source frames per beat and
+    /// `total_frames` = sample length for audio clips (None if not loaded: no limit).
+    pub fn extend_limits(&self, fpb: f64, total_frames: Option<f64>) -> (f64, f64) {
+        match &self.content {
+            ClipContent::Midi { .. } => {
+                let right = if self.looping { f64::INFINITY } else { (self.content_full() - self.head - self.length).max(0.0) };
+                (self.head.max(0.0), right)
+            }
+            ClipContent::Audio { offset_frames, .. } => {
+                let Some(total) = total_frames.filter(|_| fpb > 0.0) else { return (f64::INFINITY, f64::INFINITY) };
+                let left = (offset_frames / fpb).max(0.0);
+                let right = if self.looping { f64::INFINITY } else { ((total - offset_frames) / fpb - self.length).max(0.0) };
+                (left, right)
+            }
+        }
+    }
+}
+
+/// Track name as shown: a leading `#` stands for the track's position (1-based),
+/// so default names (`# MIDI`) renumber when tracks move; renamed tracks don't.
+pub fn display_name(name: &str, index: usize) -> String {
+    match name.strip_prefix('#') {
+        Some(rest) => format!("{}{rest}", index + 1),
+        None => name.to_string(),
     }
 }
 
@@ -257,16 +325,16 @@ impl Project {
             p.add_scene();
         }
         let drums = p.add_track(TrackKind::Midi);
-        p.tracks[drums].name = "Drums".into();
+        p.tracks[drums].name = "# Drums".into();
         p.tracks[drums].instrument = InstrumentDef::factory_drums();
         let bass = p.add_track(TrackKind::Midi);
-        p.tracks[bass].name = "Bass".into();
+        p.tracks[bass].name = "# Bass".into();
         p.tracks[bass].instrument = InstrumentDef::Synth(SynthParams::preset("Bass"));
         let keys = p.add_track(TrackKind::Midi);
-        p.tracks[keys].name = "Keys".into();
+        p.tracks[keys].name = "# Keys".into();
         p.tracks[keys].instrument = InstrumentDef::Synth(SynthParams::preset("Pad"));
         let audio = p.add_track(TrackKind::Audio);
-        p.tracks[audio].name = "Audio".into();
+        p.tracks[audio].name = "# Audio".into();
         p
     }
 
@@ -309,15 +377,13 @@ impl Project {
         let id = self.alloc_id();
         let n = self.tracks.len();
         let name = match kind {
-            TrackKind::Audio => format!("{} Audio", n + 1),
-            TrackKind::Midi => format!("{} MIDI", n + 1),
-            TrackKind::Group => format!("{} Group", n + 1),
-        };
-        let instrument = match kind {
-            TrackKind::Audio | TrackKind::Group => InstrumentDef::None,
-            TrackKind::Midi => InstrumentDef::Synth(SynthParams::default()),
-        };
-        self.tracks.push(Track { id, name, kind, color: PALETTE[n % PALETTE.len()], instrument, ..Default::default() });
+            TrackKind::Audio => "# Audio",
+            TrackKind::Midi => "# MIDI",
+            TrackKind::Group => "# Group",
+        }
+        .to_string();
+        // New MIDI tracks start empty (drop an instrument from the browser).
+        self.tracks.push(Track { id, name, kind, color: PALETTE[n % PALETTE.len()], ..Default::default() });
         self.normalize();
         n
     }
@@ -438,7 +504,7 @@ impl Project {
         let n_groups = self.tracks.iter().filter(|t| t.kind == TrackKind::Group).count();
         let mut block = vec![Track {
             id: gid,
-            name: format!("Group {}", n_groups + 1),
+            name: if n_groups == 0 { "# Group".into() } else { format!("# Group {}", n_groups + 1) },
             kind: TrackKind::Group,
             color,
             group: parent,
@@ -584,16 +650,18 @@ impl Project {
 
     /// Create an empty MIDI clip in a session slot. Returns the clip id.
     pub fn new_midi_clip(&mut self, track: usize, scene: usize, length: f64) -> Option<u64> {
+        self.tracks.get(track)?.slots.get(scene)?;
         let id = self.alloc_id();
+        let name = self.next_clip_name(track);
         let t = self.tracks.get_mut(track)?;
-        let slot = t.slots.get_mut(scene)?;
-        *slot = Some(Clip {
+        t.slots[scene] = Some(Clip {
             id,
-            name: format!("Clip {id}"),
+            name,
             color: t.color,
             length,
             looping: true,
             content: ClipContent::Midi { notes: Vec::new() },
+            ..Default::default()
         });
         Some(id)
     }
@@ -618,6 +686,7 @@ impl Project {
                 // Head survives.
                 let mut head = a.clone();
                 head.clip.length = start - s;
+                head.clip.clear_extent();
                 out.push(head);
             }
             if e > end {
@@ -626,6 +695,7 @@ impl Project {
                 let mut tail = a.clone();
                 tail.start = end;
                 tail.clip.length = e - end;
+                tail.clip.clear_extent();
                 if s < start {
                     tail.clip.id = next_id;
                     next_id += 1;
@@ -660,8 +730,10 @@ impl Project {
         }
         let mut tail = a.clone();
         a.clip.length = cut;
+        a.clip.clear_extent();
+        tail.clip.clear_extent();
         if let ClipContent::Midi { notes } = &mut a.clip.content {
-            notes.retain(|n| n.start < cut);
+            notes.retain(|n| n.start >= 0.0 && n.start < cut);
         }
         tail.start = at;
         tail.clip.length -= cut;
@@ -701,6 +773,18 @@ impl Project {
         let mut project: Project = ron::from_str(text).map_err(ProjectError::Parse)?;
         if project.format_version > FORMAT_VERSION {
             return Err(ProjectError::UnsupportedVersion(project.format_version));
+        }
+        if project.format_version < 3 {
+            // Old auto names ("3 MIDI") become index placeholders so they renumber.
+            for t in &mut project.tracks {
+                if let Some((num, rest)) = t.name.split_once(' ')
+                    && !num.is_empty()
+                    && num.bytes().all(|b| b.is_ascii_digit())
+                    && matches!(rest, "Audio" | "MIDI" | "Group")
+                {
+                    t.name = format!("# {rest}");
+                }
+            }
         }
         project.format_version = FORMAT_VERSION;
         project.normalize();
@@ -742,7 +826,7 @@ mod tests {
         let mut p = Project::new_default();
         let id = p.new_midi_clip(1, 2, 8.0).unwrap();
         if let Some(Some(Clip { content: ClipContent::Midi { notes }, .. })) = p.tracks[1].slots.get_mut(2) {
-            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100 });
+            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false });
         }
         p.tracks[3].arrangement.push(ArrangementClip {
             start: 4.0,
@@ -790,7 +874,7 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), n);
-        assert_eq!(p.tracks[d].name, "Drums copy");
+        assert_eq!(p.tracks[d].name, "# Drums copy");
         let mut text_loaded = Project::from_ron(&p.to_ron().unwrap()).unwrap();
         let fresh = text_loaded.alloc_id();
         assert!(!ids.contains(&fresh));
@@ -821,7 +905,7 @@ mod tests {
         let midi = |len: f64, starts: &[f64]| Clip {
             length: len,
             content: ClipContent::Midi {
-                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100 }).collect(),
+                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false }).collect(),
             },
             ..Default::default()
         };
@@ -935,7 +1019,7 @@ mod tests {
         let mut p = blank(1);
         let id = p.alloc_id();
         let notes =
-            vec![Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100 }, Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100 }];
+            vec![Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false }, Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false }];
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,
             clip: Clip { id, length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },

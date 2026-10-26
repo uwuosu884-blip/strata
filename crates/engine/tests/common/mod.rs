@@ -51,7 +51,7 @@ pub fn impulse_sampler() -> Instrument {
 }
 
 pub fn notes_at(beats: &[f64]) -> Vec<Note> {
-    beats.iter().map(|&b| Note { start: b, length: 0.25, pitch: 60, velocity: 127 }).collect()
+    beats.iter().map(|&b| Note { start: b, length: 0.25, pitch: 60, velocity: 127, muted: false }).collect()
 }
 
 pub fn midi_clip(length: f64, beats: &[f64]) -> Clip {

@@ -1,10 +1,59 @@
 //! Arrangement selection state and the editing commands that act on it
 //! (Ctrl+L loop, Ctrl+E split, Ctrl+Shift+M insert MIDI clip, Ctrl+G group …).
 
-use crate::app::{ClipRef, DawApp};
+use crate::app::{ClipRef, DawApp, DetailMode};
 use daw_engine::Command;
-use daw_project::{Clip, ClipContent, TrackKind};
+use daw_project::{ArrangementClip, Clip, ClipContent, Note, Project, TrackDrop, TrackKind};
 use std::collections::HashMap;
+
+/// Lane height of a collapsed track (clip title bars only) and the smallest expanded height.
+pub const COLLAPSED_H: f32 = 20.0;
+pub const ROW_MIN: f32 = 40.0;
+pub const ROW_MAX: f32 = 300.0;
+
+/// Snap grid (right-click menu in the arrangement / piano roll). Alt bypasses snapping.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GridMode {
+    /// Follows the zoom; -2 = widest … 2 = narrowest (Live's adaptive grid).
+    Adaptive(i8),
+    /// Fixed step in beats.
+    Fixed(f64),
+    /// No snapping (lines still follow the zoom).
+    Off,
+}
+
+impl GridMode {
+    pub const FIXED: [(f64, &'static str); 8] =
+        [(16.0, "4 Bars"), (8.0, "2 Bars"), (4.0, "1 Bar"), (2.0, "1/2"), (1.0, "1/4"), (0.5, "1/8"), (0.25, "1/16"), (0.125, "1/32")];
+    pub const ADAPTIVE: [(i8, &'static str); 5] = [(-2, "Widest"), (-1, "Wide"), (0, "Medium"), (1, "Narrow"), (2, "Narrowest")];
+
+    /// Grid step in beats at `ppb` pixels per beat.
+    pub fn step(self, ppb: f64, bpb: f64) -> f64 {
+        match self {
+            Self::Fixed(g) => g,
+            Self::Adaptive(level) => adaptive_step(ppb, bpb, 12.0 * 2f64.powi(-level as i32)),
+            Self::Off => adaptive_step(ppb, bpb, 12.0),
+        }
+    }
+
+    pub fn snaps(self) -> bool {
+        self != Self::Off
+    }
+}
+
+/// Smallest musical step that is at least `min_px` wide.
+pub fn adaptive_step(ppb: f64, bpb: f64, min_px: f64) -> f64 {
+    for g in [0.0625, 0.125, 0.25, 0.5, 1.0] {
+        if g * ppb >= min_px {
+            return g;
+        }
+    }
+    let mut g = bpb.max(1.0);
+    while g * ppb < min_px && g < 4096.0 {
+        g *= 2.0;
+    }
+    g
+}
 
 /// Time selection: `[start, end)` beats over the visible rows from track `t0` to `t1` (t0 <= t1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +110,17 @@ impl DawApp {
 
     pub fn is_track_selected(&self, t: usize) -> bool {
         if self.track_sel.is_empty() { self.selected_track == t } else { self.track_sel.contains(&t) }
+    }
+
+    /// Header click: explicit track selection (Alt+wheel zooms and Del deletes
+    /// these). The detail panel switches to the track's devices.
+    pub fn select_track_header(&mut self, t: usize, toggle: bool) {
+        self.click_track(t, toggle);
+        if self.track_sel.is_empty() {
+            self.track_sel.push(t);
+        }
+        self.detail_mode = DetailMode::Device;
+        self.focus_detail = false;
     }
 
     /// Header click: plain selects one track, Shift/Ctrl toggles it in the selection.
@@ -121,6 +181,7 @@ impl DawApp {
         if let Some((track, index)) = self.arr_sel.first().and_then(|&id| self.project.find_arrangement_clip(id)) {
             self.selected_clip = Some(ClipRef::Arr { track, index });
             self.selected_track = track;
+            self.detail_mode = DetailMode::Clip;
         }
     }
 
@@ -175,6 +236,14 @@ impl DawApp {
                     .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
             }
         };
+        let p = &self.project;
+        let same = range.is_none_or(|(s, e)| (s - p.loop_start).abs() < EPS && (e - p.loop_end).abs() < EPS);
+        if p.loop_enabled && same {
+            // Second Ctrl+L on the same region (or with nothing selected): loop off.
+            self.edit(|p| p.loop_enabled = false);
+            self.send_loop();
+            return;
+        }
         let Some((s, e)) = range else {
             self.toast("Select a region or clip to loop");
             return;
@@ -418,6 +487,293 @@ impl DawApp {
     }
 }
 
+
+impl DawApp {
+    // ----- track heights / collapse -------------------------------------------------
+
+    /// Arrangement lane height of track `t`.
+    pub fn track_height(&self, t: usize) -> f32 {
+        match self.project.tracks.get(t) {
+            Some(tr) if tr.collapsed => COLLAPSED_H,
+            Some(tr) if tr.height > 0.0 => tr.height.clamp(ROW_MIN, ROW_MAX),
+            _ => self.arr_row_h,
+        }
+    }
+
+    /// Alt+wheel: scale the explicitly selected tracks (header selection), or all
+    /// tracks when none is selected. Zooming out past the minimum collapses lanes
+    /// to their clip title bars; zooming in expands them again.
+    pub fn zoom_track_heights(&mut self, factor: f32) {
+        let targets: Vec<usize> = if self.track_sel.is_empty() { (0..self.project.tracks.len()).collect() } else { self.track_sel.clone() };
+        if self.track_sel.is_empty() {
+            self.arr_row_h = (self.arr_row_h * factor).clamp(ROW_MIN, ROW_MAX);
+        }
+        for t in targets {
+            let h = self.track_height(t);
+            let Some(tr) = self.project.tracks.get_mut(t) else { continue };
+            if tr.collapsed {
+                if factor > 1.0 {
+                    tr.collapsed = false;
+                    tr.height = ROW_MIN;
+                }
+                continue;
+            }
+            let nh = h * factor;
+            if nh < ROW_MIN {
+                tr.collapsed = true;
+                tr.height = ROW_MIN;
+            } else {
+                tr.height = nh.min(ROW_MAX);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Header ⊳ button: collapse to clip title bars / expand back.
+    pub fn toggle_collapse(&mut self, t: usize) {
+        if let Some(tr) = self.project.tracks.get_mut(t) {
+            tr.collapsed = !tr.collapsed;
+            self.dirty = true;
+        }
+    }
+
+    // ----- tracks ---------------------------------------------------------------------
+
+    /// Del with tracks selected in the headers.
+    pub fn delete_selected_tracks(&mut self) -> bool {
+        if self.track_sel.is_empty() {
+            return false;
+        }
+        let ids: Vec<u64> = self.track_sel.iter().filter_map(|&t| self.project.tracks.get(t).map(|x| x.id)).collect();
+        self.edit(|p| {
+            for id in ids {
+                if let Some(i) = p.track_index(id) {
+                    p.remove_track(i); // children of a deleted group go with it
+                }
+            }
+        });
+        self.selected_clip = None;
+        self.arr_sel.clear();
+        self.clear_structure_selection();
+        self.clamp_selection();
+        true
+    }
+
+    /// Header drag & drop.
+    pub fn drop_tracks(&mut self, ids: &[u64], to: TrackDrop) {
+        let mut moved = self.project.clone();
+        let Some(mut idx) = moved.move_tracks(ids, to) else { return };
+        if moved == self.project {
+            return; // dropped where it already was: no undo step
+        }
+        self.edit(|p| *p = moved);
+        self.clear_structure_selection();
+        idx.sort_unstable();
+        self.selected_track = idx.first().copied().unwrap_or(0);
+        self.track_sel = idx;
+    }
+
+    /// Ctrl+R / double-click: start renaming track `t`.
+    pub fn start_rename(&mut self, t: usize) {
+        if let Some(tr) = self.project.tracks.get(t) {
+            self.renaming = Some(crate::app::Rename { id: tr.id, text: self.project.track_label(t), fresh: true });
+        }
+    }
+
+    /// Finish a rename. Leaving the shown text unchanged keeps the name (and its auto number).
+    pub fn commit_rename(&mut self) {
+        let Some(r) = self.renaming.take() else { return };
+        let Some(t) = self.project.track_index(r.id) else { return };
+        let text = r.text.trim().to_string();
+        if text.is_empty() || text == self.project.track_label(t) {
+            return;
+        }
+        self.edit(|p| p.tracks[t].name = text);
+    }
+
+    // ----- clips ----------------------------------------------------------------------
+
+    /// Sample length (frames) of an audio clip's source, if loaded.
+    pub fn clip_total_frames(&self, c: &Clip) -> Option<f64> {
+        match &c.content {
+            ClipContent::Audio { sample, .. } => self.cache.peek(sample).map(|b| b.len() as f64),
+            _ => None,
+        }
+    }
+
+    /// 0: (de)activate the selected notes (piano roll focus) or clips.
+    pub fn toggle_disable(&mut self) {
+        if self.focus_detail
+            && !self.note_sel.is_empty()
+            && let Some(c) = self.selected_clip
+        {
+            let sel = self.note_sel.clone();
+            self.edit(|p| {
+                if let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(p, c) {
+                    let mute = sel.iter().any(|&i| notes.get(i).is_some_and(|n| !n.muted));
+                    for &i in &sel {
+                        if let Some(n) = notes.get_mut(i) {
+                            n.muted = mute;
+                        }
+                    }
+                }
+            });
+            return;
+        }
+        let ids: Vec<u64> = self.arr_sel.clone();
+        if !ids.is_empty() {
+            let p = &self.project;
+            let mute = ids.iter().filter_map(|&id| p.find_arrangement_clip(id)).any(|(t, i)| !p.tracks[t].arrangement[i].clip.muted);
+            self.edit(|p| {
+                for &id in &ids {
+                    if let Some((t, i)) = p.find_arrangement_clip(id) {
+                        p.tracks[t].arrangement[i].clip.muted = mute;
+                    }
+                }
+            });
+        } else if let Some(c) = self.selected_clip {
+            self.edit(|p| {
+                if let Some(clip) = DawApp::clip_mut(p, c) {
+                    clip.muted = !clip.muted;
+                }
+            });
+        }
+    }
+
+    /// Ctrl+D with notes selected in the piano roll: copy them right after themselves.
+    pub fn duplicate_selected_notes(&mut self) -> bool {
+        let Some(c) = self.selected_clip else { return false };
+        if !self.focus_detail || self.note_sel.is_empty() {
+            return false;
+        }
+        let Some(Clip { content: ClipContent::Midi { notes }, .. }) = self.clip(c) else { return false };
+        let picked: Vec<Note> = self.note_sel.iter().filter_map(|&i| notes.get(i).copied()).collect();
+        if picked.is_empty() {
+            return false;
+        }
+        let s = picked.iter().map(|n| n.start).fold(f64::MAX, f64::min);
+        let e = picked.iter().map(|n| n.start + n.length).fold(f64::MIN, f64::max);
+        // Shift by the selection span rounded up to the grid (Live).
+        let g = self.pr_grid_now.max(1.0 / 64.0);
+        let shift = (((e - s) / g) - 1e-9).ceil().max(1.0) * g;
+        let copies: Vec<Note> = picked.iter().map(|n| Note { start: n.start + shift, ..*n }).collect();
+        let sel = self.edit(|p| {
+            let Some(clip) = DawApp::clip_mut(p, c) else { return Vec::new() };
+            let end = copies.iter().map(|n| n.start + n.length).fold(0.0, f64::max);
+            if end > clip.length {
+                clip.length = (end / g).ceil() * g;
+                clip.full = 0.0;
+            }
+            let ClipContent::Midi { notes } = &mut clip.content else { return Vec::new() };
+            notes.extend(copies.iter().copied());
+            notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+            copies.iter().filter_map(|c| notes.iter().position(|n| n == c)).collect()
+        });
+        self.note_sel = sel;
+        true
+    }
+
+    /// Ctrl+J: merge the selected clips (or everything in the time selection) per
+    /// track into one clip. Audio is rendered into a new sample.
+    pub fn consolidate_selection(&mut self) {
+        let fpb = self.fpb_fn();
+        let mut p = self.project.clone();
+        // (track, clip ids, start, end)
+        let mut jobs: Vec<(usize, Vec<u64>, f64, f64)> = Vec::new();
+        if let Some(ts) = self.time_sel.filter(|t| t.len() > EPS) {
+            for t in self.time_sel_tracks(&ts) {
+                let ids = p.split_range(&[t], ts.start, ts.end, &fpb);
+                if !ids.is_empty() {
+                    jobs.push((t, ids, ts.start, ts.end));
+                }
+            }
+        } else {
+            let mut by_track: HashMap<usize, (Vec<u64>, f64, f64)> = HashMap::new();
+            for &id in &self.arr_sel {
+                if let Some((t, i)) = p.find_arrangement_clip(id) {
+                    let a = &p.tracks[t].arrangement[i];
+                    let e = by_track.entry(t).or_insert((Vec::new(), f64::MAX, f64::MIN));
+                    e.0.push(id);
+                    e.1 = e.1.min(a.start);
+                    e.2 = e.2.max(a.start + a.clip.length);
+                }
+            }
+            jobs = by_track.into_iter().map(|(t, (ids, s, e))| (t, ids, s, e)).collect();
+            jobs.sort_by_key(|j| j.0);
+        }
+        jobs.retain(|j| j.1.len() > 1 || self.time_sel.is_some() || p.tracks[j.0].kind == TrackKind::Audio);
+        if jobs.is_empty() {
+            self.toast("Select two or more clips (or a region) to consolidate");
+            return;
+        }
+        let mut new_ids = Vec::new();
+        for (t, ids, s, e) in jobs {
+            match p.tracks[t].kind {
+                TrackKind::Midi => new_ids.extend(p.consolidate_midi(t, &ids, s, e)),
+                TrackKind::Audio => match self.render_audio_range(&p, t, &ids, s, e) {
+                    Ok(clip) => {
+                        let id = p.alloc_id();
+                        let tr = &mut p.tracks[t];
+                        tr.arrangement.retain(|a| !ids.contains(&a.clip.id));
+                        tr.arrangement.push(ArrangementClip { start: s, clip: Clip { id, ..clip } });
+                        tr.arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
+                        new_ids.push(id);
+                    }
+                    Err(e) => self.toast(format!("Consolidate failed: {e}")),
+                },
+                TrackKind::Group => {}
+            }
+        }
+        if new_ids.is_empty() {
+            return;
+        }
+        self.edit(|proj| *proj = p);
+        self.arr_sel = new_ids;
+        self.time_sel = None;
+        self.resync_selected_clip();
+    }
+
+    /// Render audio clips `ids` of track `t` over `[s, e)` (clip gain, no track
+    /// mixer) into a new recording-style sample; returns the replacement clip (id 0).
+    fn render_audio_range(&mut self, p: &Project, t: usize, ids: &[u64], s: f64, e: f64) -> Result<Clip, String> {
+        let src = &p.tracks[t];
+        let clips: Vec<ArrangementClip> = src
+            .arrangement
+            .iter()
+            .filter(|a| ids.contains(&a.clip.id) && !a.clip.muted)
+            .map(|a| ArrangementClip { start: a.start - s, clip: a.clip.clone() })
+            .collect();
+        let first = src.arrangement.iter().find(|a| ids.contains(&a.clip.id)).map(|a| a.clip.clone()).ok_or("no clips")?;
+        let mut mini = Project { tempo_bpm: p.tempo_bpm, beats_per_bar: p.beats_per_bar, ..Default::default() };
+        let mt = mini.add_track(TrackKind::Audio);
+        mini.tracks[mt].arrangement = clips;
+        mini.tracks[mt].gain_db = 0.0; // unity: only clip gain is baked in
+        mini.tracks[mt].pan = 0.0;
+        let sr = self.audio.info.sample_rate;
+        let len = e - s;
+        let opts = daw_core::ExportOptions {
+            sample_rate: sr,
+            bars: Some(len / p.beats_per_bar.max(1) as f64),
+            tail_seconds: 0.0,
+            ..Default::default()
+        };
+        let r = daw_core::export::render_with_cache(&mini, &mut self.cache, &opts)?;
+        let frames = (len * 60.0 / p.tempo_bpm * sr as f64).round() as usize;
+        let mut data = r.data;
+        data.resize(frames * 2, 0.0);
+        let key = self.store_audio("consolidated", &data);
+        Ok(Clip {
+            id: 0,
+            name: first.name.clone(),
+            color: first.color,
+            length: len,
+            looping: false,
+            content: ClipContent::Audio { sample: key, offset_frames: 0.0, warp_bpm: Some(p.tempo_bpm), gain_db: 0.0 },
+            ..Default::default()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TimeSel;
@@ -429,4 +785,187 @@ mod tests {
         assert!(t.contains(2.0, 2) && !t.contains(8.0, 2) && !t.contains(4.0, 0));
         assert_eq!(t.len(), 6.0);
     }
+
+    #[test]
+    fn adaptive_grid_follows_zoom_and_level() {
+        use super::{GridMode, adaptive_step};
+        assert_eq!(adaptive_step(100.0, 4.0, 12.0), 0.125);
+        assert_eq!(adaptive_step(30.0, 4.0, 12.0), 0.5);
+        assert_eq!(adaptive_step(5.0, 4.0, 12.0), 4.0);
+        assert_eq!(adaptive_step(1.0, 4.0, 12.0), 16.0);
+        assert_eq!(GridMode::Adaptive(-2).step(100.0, 4.0), 0.5);
+        assert_eq!(GridMode::Fixed(0.25).step(1.0, 4.0), 0.25);
+        assert!(!GridMode::Off.snaps());
+    }
 }
+
+#[cfg(test)]
+mod app_tests {
+    use crate::app::{ClipRef, DawApp};
+    use daw_project::{ArrangementClip, Clip, ClipContent, Note, Project, TrackKind};
+
+    fn app() -> DawApp {
+        let (audio, engine) = crate::audio::start(&crate::audio::AudioOptions { force_null: true, no_input: true, ..Default::default() });
+        DawApp::new(engine, audio, Project::default(), None, false)
+    }
+
+    fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
+        let id = p.alloc_id();
+        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false }];
+        p.tracks[t].arrangement.push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
+        p.tracks[t].arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
+        id
+    }
+
+    #[test]
+    fn track_height_zoom_targets_selection_and_collapses() {
+        let mut a = app();
+        a.project.add_track(TrackKind::Midi);
+        a.project.add_track(TrackKind::Midi);
+        let h0 = a.track_height(0);
+        // Selected track only.
+        a.track_sel = vec![1];
+        a.zoom_track_heights(2.0);
+        assert_eq!(a.track_height(0), h0);
+        assert!(a.track_height(1) > h0);
+        // Nothing selected: all tracks; zooming far out collapses.
+        a.track_sel.clear();
+        for _ in 0..20 {
+            a.zoom_track_heights(0.5);
+        }
+        assert!(a.project.tracks.iter().all(|t| t.collapsed));
+        a.zoom_track_heights(1.2);
+        assert!(a.project.tracks.iter().all(|t| !t.collapsed));
+        a.toggle_collapse(0);
+        assert!(a.project.tracks[0].collapsed);
+    }
+
+    #[test]
+    fn delete_tracks_and_rename() {
+        let mut a = app();
+        for _ in 0..3 {
+            a.project.add_track(TrackKind::Audio);
+        }
+        assert_eq!(a.project.track_label(2), "3 Audio");
+        a.start_rename(2);
+        a.renaming.as_mut().unwrap().text = "Bass".into();
+        a.commit_rename();
+        assert_eq!(a.project.track_label(2), "Bass");
+        a.track_sel = vec![0];
+        assert!(a.delete_selected_tracks());
+        assert_eq!(a.project.tracks.len(), 2);
+        // Others renumber, the renamed one keeps its name.
+        assert_eq!(a.project.track_label(0), "1 Audio");
+        assert_eq!(a.project.track_label(1), "Bass");
+        a.track_sel.clear();
+        assert!(!a.delete_selected_tracks());
+    }
+
+    #[test]
+    fn disable_clips_and_notes() {
+        let mut a = app();
+        let t = a.project.add_track(TrackKind::Midi);
+        let id = midi_clip(&mut a.project, t, 0.0, 4.0, 60);
+        a.arr_sel = vec![id];
+        a.toggle_disable();
+        assert!(a.project.tracks[t].arrangement[0].clip.muted);
+        a.toggle_disable();
+        assert!(!a.project.tracks[t].arrangement[0].clip.muted);
+        // Notes when the piano roll has focus.
+        a.selected_clip = Some(ClipRef::Arr { track: t, index: 0 });
+        a.focus_detail = true;
+        a.note_sel = vec![0];
+        a.toggle_disable();
+        let ClipContent::Midi { notes } = &a.project.tracks[t].arrangement[0].clip.content else { panic!() };
+        assert!(notes[0].muted);
+        assert!(!a.project.tracks[t].arrangement[0].clip.muted);
+    }
+
+    #[test]
+    fn duplicate_notes_in_piano_roll() {
+        let mut a = app();
+        let t = a.project.add_track(TrackKind::Midi);
+        midi_clip(&mut a.project, t, 0.0, 1.0, 60);
+        a.selected_clip = Some(ClipRef::Arr { track: t, index: 0 });
+        a.note_sel = vec![0];
+        assert!(!a.duplicate_selected_notes(), "needs piano-roll focus");
+        a.focus_detail = true;
+        a.pr_grid_now = 0.25;
+        assert!(a.duplicate_selected_notes());
+        let c = &a.project.tracks[t].arrangement[0].clip;
+        let ClipContent::Midi { notes } = &c.content else { panic!() };
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[1].start, 0.5);
+        assert_eq!(a.note_sel, vec![1]);
+    }
+
+    #[test]
+    fn consolidate_midi_clips() {
+        let mut a = app();
+        let t = a.project.add_track(TrackKind::Midi);
+        let c1 = midi_clip(&mut a.project, t, 0.0, 2.0, 60);
+        let c2 = midi_clip(&mut a.project, t, 4.0, 2.0, 64);
+        a.arr_sel = vec![c1];
+        a.consolidate_selection(); // a single MIDI clip: nothing to merge
+        assert_eq!(a.project.tracks[t].arrangement.len(), 2);
+        a.arr_sel = vec![c1, c2];
+        a.consolidate_selection();
+        let arr = &a.project.tracks[t].arrangement;
+        assert_eq!(arr.len(), 1);
+        assert_eq!((arr[0].start, arr[0].clip.length), (0.0, 6.0));
+        let ClipContent::Midi { notes } = &arr[0].clip.content else { panic!() };
+        assert_eq!(notes.iter().map(|n| (n.start, n.pitch)).collect::<Vec<_>>(), vec![(0.0, 60), (4.0, 64)]);
+    }
+
+    #[test]
+    fn consolidate_audio_renders_new_sample() {
+        let mut a = app();
+        let sr = a.audio.info.sample_rate;
+        let t = a.project.add_track(TrackKind::Audio);
+        // 1 beat at 120 BPM of DC per clip.
+        let frames = sr as usize / 2;
+        let key = a.store_audio("test", &vec![0.5; frames * 2]);
+        let mut ids = Vec::new();
+        for start in [0.0, 2.0] {
+            let id = a.project.alloc_id();
+            let content = ClipContent::Audio { sample: key.clone(), offset_frames: 0.0, warp_bpm: Some(120.0), gain_db: 0.0 };
+            a.project.tracks[t].arrangement.push(ArrangementClip { start, clip: Clip { id, length: 1.0, content, ..Default::default() } });
+            ids.push(id);
+        }
+        a.project.tempo_bpm = 120.0;
+        a.arr_sel = ids;
+        a.consolidate_selection();
+        let arr = &a.project.tracks[t].arrangement;
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].clip.length, 3.0);
+        let ClipContent::Audio { sample, .. } = &arr[0].clip.content else { panic!() };
+        let buf = a.cache.peek(sample).expect("rendered sample cached");
+        assert_eq!(buf.len(), frames * 3);
+        // Signal in beat 0 and 2, silence in beat 1.
+        let l = &buf.left;
+        assert!(l[frames / 2].abs() > 0.1, "clip 1 audible");
+        assert!(l[frames + frames / 2].abs() < 1e-4, "gap silent");
+        assert!(l[2 * frames + frames / 2].abs() > 0.1, "clip 2 audible");
+    }
+
+    #[test]
+    fn loop_toggle_with_ctrl_l() {
+        let mut a = app();
+        let t = a.project.add_track(TrackKind::Midi);
+        let id = midi_clip(&mut a.project, t, 4.0, 4.0, 60);
+        a.arr_sel = vec![id];
+        a.loop_selection();
+        assert!(a.project.loop_enabled);
+        assert_eq!((a.project.loop_start, a.project.loop_end), (4.0, 8.0));
+        a.loop_selection();
+        assert!(!a.project.loop_enabled);
+    }
+
+    #[test]
+    fn play_restarts_from_start_point() {
+        let mut a = app();
+        a.set_playhead(8.0);
+        assert_eq!(a.play_start, 8.0);
+    }
+}
+

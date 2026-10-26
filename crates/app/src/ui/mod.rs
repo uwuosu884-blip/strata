@@ -6,7 +6,7 @@ mod detail;
 mod session;
 pub mod widgets;
 
-use crate::app::{DawApp, Dialog, DragItem, PendingAction, View};
+use crate::app::{DawApp, DetailMode, Dialog, DragItem, PendingAction, View};
 use daw_engine::{Command, RecordState};
 use daw_project::{InstrumentDef, TrackKind, db_to_gain};
 use eframe::egui::{self, Color32, Key, Modifiers};
@@ -50,12 +50,27 @@ impl eframe::App for DawApp {
         egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 3)))
             .show(ui, |ui| self.status_bar(ui));
-        egui::Panel::bottom("detail")
+        // Selecting a (different) clip switches the detail panel to the clip view.
+        let prev_id = egui::Id::unique("prev_selected_clip");
+        let prev: Option<Option<crate::app::ClipRef>> = ctx.data(|d| d.get_temp(prev_id));
+        if prev != Some(self.selected_clip) {
+            if self.selected_clip.is_some() {
+                self.detail_mode = DetailMode::Clip;
+            }
+            ctx.data_mut(|d| d.insert_temp(prev_id, self.selected_clip));
+        }
+        let detail_rect = egui::Panel::bottom("detail")
             .resizable(true)
             .default_size(250.0)
             .size_range(120.0..=600.0)
             .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::same(4)))
-            .show(ui, |ui| detail::detail_panel(self, ui));
+            .show(ui, |ui| detail::detail_panel(self, ui))
+            .response
+            .rect;
+        // Keys like Del / Ctrl+D / 0 act on whatever was clicked last: notes or the main view.
+        if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
+            self.focus_detail = detail_rect.contains(p);
+        }
         if self.show_browser {
             egui::Panel::left("browser")
                 .resizable(true)
@@ -159,7 +174,16 @@ impl DawApp {
         if cmd(Key::E) {
             self.split_selection();
         }
-        if cmd(Key::D) && !(self.view == View::Arrangement && self.duplicate_arrangement_selection()) {
+        if cmd(Key::J) {
+            self.consolidate_selection();
+        }
+        if cmd(Key::R) {
+            self.start_rename(self.selected_track);
+        }
+        if cmd(Key::D)
+            && !self.duplicate_selected_notes()
+            && !(self.view == View::Arrangement && self.duplicate_arrangement_selection())
+        {
             self.duplicate_selected_clip();
         }
         if cmd(Key::B) {
@@ -173,6 +197,7 @@ impl DawApp {
             self.time_sel = None;
             self.arr_sel.clear();
             self.track_sel.clear();
+            self.note_sel.clear();
         }
         let events = std::mem::take(&mut self.key_events);
         for ev in events {
@@ -184,14 +209,26 @@ impl DawApp {
                 match key {
                     Key::Space => {
                         if modifiers.shift {
-                            self.send_now(Command::Play); // continue from position
+                            self.send_now(Command::Play); // continue from where it stopped
                         } else {
                             self.toggle_play();
                         }
                         continue;
                     }
+                    Key::Tab if modifiers.shift => {
+                        // Clip view (piano roll / sample) ⇄ device view.
+                        self.detail_mode = match self.detail_mode {
+                            DetailMode::Clip => DetailMode::Device,
+                            DetailMode::Device => DetailMode::Clip,
+                        };
+                        continue;
+                    }
                     Key::Tab => {
                         self.view = if self.view == View::Session { View::Arrangement } else { View::Session };
+                        continue;
+                    }
+                    Key::Num0 => {
+                        self.toggle_disable();
                         continue;
                     }
                     Key::F9 => {
@@ -199,7 +236,16 @@ impl DawApp {
                         continue;
                     }
                     Key::Delete | Key::Backspace => {
-                        if !self.delete_selected_notes() && !(self.view == View::Arrangement && self.delete_arrangement_selection()) {
+                        if self.focus_detail {
+                            self.delete_selected_notes(); // piano roll focused: never touch clips/tracks
+                            continue;
+                        }
+                        if !(self.view == View::Arrangement && self.delete_arrangement_selection()) {
+                            // Clips first; tracks when they were selected in the headers.
+                            let slot = matches!(self.selected_clip, Some(crate::app::ClipRef::Slot { .. }));
+                            if !(slot && self.view == View::Session) && self.delete_selected_tracks() {
+                                continue;
+                            }
                             self.delete_selected_clip();
                         }
                         continue;
@@ -234,15 +280,7 @@ impl DawApp {
             ui.spacing_mut().item_spacing.x = 5.0;
             ui.menu_button("File", |ui| self.file_menu(ui));
 
-            let mut tempo = self.project.tempo_bpm;
-            let r = ui.add(egui::DragValue::new(&mut tempo).range(20.0..=999.0).speed(0.1).fixed_decimals(2).suffix(" BPM"));
-            if r.drag_started() || r.gained_focus() {
-                self.begin_gesture();
-            }
-            if r.changed() {
-                self.project.tempo_bpm = tempo;
-                self.send_now(Command::SetTempo(tempo));
-            }
+            self.tempo_box(ui);
             let mut bpb = self.project.beats_per_bar;
             if ui.add(egui::DragValue::new(&mut bpb).range(1..=32).suffix(" / 4")).changed() {
                 self.edit(|p| p.beats_per_bar = bpb);
@@ -276,12 +314,10 @@ impl DawApp {
                     .size(17.0)
                     .color(if self.status.playing { Color32::WHITE } else { Color32::LIGHT_GRAY }),
             );
-            if icon_button(ui, Icon::Play, self.status.playing, "Play / Stop (Space)").clicked() {
-                if self.status.playing {
-                    self.send_now(Command::Rewind);
-                } else {
-                    self.send_now(Command::Play);
-                }
+            if icon_button(ui, Icon::Play, self.status.playing, "Play from the start point (Space) · Shift+Space: continue").clicked() {
+                // Live: Play while playing restarts from the start point.
+                self.send_now(Command::SetPosition(self.play_start));
+                self.send_now(Command::Play);
             }
             if icon_button(ui, Icon::Stop, false, "Stop; press again to return to start").clicked() {
                 self.stop();
@@ -341,6 +377,63 @@ impl DawApp {
                 }
             });
         });
+    }
+
+    /// BPM: drag up/down with the cursor hidden and parked (never hits the screen
+    /// edge; Shift = fine), double-click to type a value.
+    fn tempo_box(&mut self, ui: &mut egui::Ui) {
+        let id = ui.make_persistent_id("tempo_box");
+        let edit_id = id.with("editing");
+        let mut editing: Option<String> = ui.data(|d| d.get_temp(edit_id));
+        let size = egui::vec2(84.0, 20.0);
+        if let Some(text) = editing.as_mut() {
+            let r = ui.add_sized(size, egui::TextEdit::singleline(text).id(id.with("te")));
+            r.request_focus();
+            if r.lost_focus() {
+                if !ui.input(|i| i.key_pressed(Key::Escape))
+                    && let Ok(v) = text.trim().trim_end_matches("BPM").trim().parse::<f64>()
+                {
+                    let v = v.clamp(20.0, 999.0);
+                    self.edit(|p| p.tempo_bpm = v);
+                    self.send_now(Command::SetTempo(v));
+                }
+                editing = None;
+            }
+            ui.data_mut(|d| match editing {
+                Some(t) => {
+                    d.insert_temp(edit_id, t);
+                }
+                None => d.remove::<String>(edit_id),
+            });
+            return;
+        }
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let delta = endless_drag(ui, &resp);
+        if resp.drag_started() {
+            self.begin_gesture();
+        }
+        if delta != egui::Vec2::ZERO {
+            let k = if ui.input(|i| i.modifiers.shift) { 0.01 } else { 0.25 };
+            let t = (self.project.tempo_bpm + ((delta.x - delta.y) * k) as f64).clamp(20.0, 999.0);
+            let t = (t * 100.0).round() / 100.0;
+            if t != self.project.tempo_bpm {
+                self.project.tempo_bpm = t;
+                self.send_now(Command::SetTempo(t));
+            }
+        }
+        if resp.double_clicked() {
+            ui.data_mut(|d| d.insert_temp(edit_id, format!("{:.2}", self.project.tempo_bpm)));
+        }
+        let active = resp.hovered() || resp.dragged();
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{:.2} BPM", self.project.tempo_bpm),
+            egui::FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+        resp.on_hover_text("Tempo: drag up/down (Shift = fine), double-click to type");
     }
 
     pub fn send_loop(&mut self) {
@@ -634,3 +727,33 @@ pub fn instrument_for(item: &DragItem) -> Option<InstrumentDef> {
         DragItem::SessionClip { .. } => None,
     }
 }
+
+/// Inline track-name editor over `rect` (arrangement / session headers) while
+/// `app.renaming` targets track `t`. Enter or clicking elsewhere commits, Esc cancels.
+pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, t: usize) {
+    let Some(r) = app.renaming.as_mut() else { return };
+    if app.project.tracks.get(t).is_none_or(|x| x.id != r.id) {
+        return;
+    }
+    let id = ui.make_persistent_id(("rename", r.id));
+    let resp = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
+    if r.fresh {
+        r.fresh = false;
+        resp.request_focus();
+        // Select everything so typing replaces the name.
+        if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+            let n = r.text.chars().count();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+            st.store(ui.ctx(), id);
+        }
+        return;
+    }
+    if resp.lost_focus() {
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            app.renaming = None;
+        } else {
+            app.commit_rename();
+        }
+    }
+}
+

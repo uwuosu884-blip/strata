@@ -48,7 +48,10 @@ impl RtSlots {
 
 fn clip(c: &p::Clip, cache: &mut SampleCache) -> e::Clip {
     let content = match &c.content {
-        p::ClipContent::Midi { notes } => e::ClipContent::Midi(notes.clone()),
+        // Deactivated clips keep their timing (session launch) but play nothing.
+        _ if c.muted => e::ClipContent::Midi(Vec::new()),
+        // Left-trimmed (negative start) and deactivated notes are not played.
+        p::ClipContent::Midi { notes } => e::ClipContent::Midi(notes.iter().filter(|n| !n.muted && n.start >= 0.0).copied().collect()),
         p::ClipContent::Audio { sample, offset_frames, warp_bpm, gain_db } => match cache.get(sample) {
             Some(buf) => e::ClipContent::Audio(e::AudioClip {
                 sample: buf,
@@ -106,7 +109,12 @@ pub fn compile(project: &Project, cache: &mut SampleCache, slots: &mut RtSlots) 
                 monitor: t.monitor,
                 instrument: instrument(&t.instrument, cache),
                 slots: t.slots.iter().map(|s| s.as_ref().map(|c| clip(c, cache))).collect(),
-                arrangement: t.arrangement.iter().map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache) }).collect(),
+                arrangement: t
+                    .arrangement
+                    .iter()
+                    .filter(|a| !a.clip.muted)
+                    .map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache) })
+                    .collect(),
             })
         })
         .collect();

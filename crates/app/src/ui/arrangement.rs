@@ -1,25 +1,27 @@
 //! Arrangement view (Live-style): timeline lanes on the left, track headers on
 //! the right, ruler with loop brace on top.
 //!
-//! Mouse: clip title bar = move (all selected clips), clip right edge = resize,
-//! lane / clip body drag = time selection, drag inside a selection = cut that
-//! part out and move it, click = playhead + select. Wheel = vertical scroll,
-//! Shift+wheel = horizontal scroll, Ctrl+wheel = zoom, Alt+wheel = track height.
+//! Mouse: clip title bar = move (all selected clips), clip edges = trim (never
+//! past the source material), lane / clip body drag = time selection, drag inside
+//! a selection = cut that part out and move it, click = playhead + select.
+//! Alt = ignore the grid. Wheel = vertical scroll, Shift+wheel = horizontal
+//! scroll, Ctrl+wheel = zoom, Alt+wheel = height of the selected tracks (all
+//! when none is selected; the minimum collapses lanes to clip title bars).
+//! Headers: click/Shift+click select, drag = reorder / move in or out of groups,
+//! double-click = rename, ⊙ = collapse.
 
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use crate::arr_ops::TimeSel;
-use daw_engine::{Command, SampleBuffer};
-use daw_project::{ArrangementClip, Clip, ClipContent, TrackKind};
+use daw_engine::SampleBuffer;
+use daw_project::{ArrangementClip, Clip, ClipContent, TrackDrop, TrackKind};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
-const HEAD_W: f32 = 176.0;
+const HEAD_W: f32 = 196.0;
 const RULER_H: f32 = 30.0;
 const EDGE: f32 = 6.0;
 const TITLE_H: f32 = 14.0;
 const INDENT: f32 = 9.0;
-pub const ROW_MIN: f32 = 24.0;
-pub const ROW_MAX: f32 = 240.0;
 
 /// Screen geometry of the current frame.
 struct Geo {
@@ -29,9 +31,12 @@ struct Geo {
     body: Rect,
     lanes: Rect,
     rows: Vec<usize>,
-    row_h: f32,
+    /// Content-space top of each row; `ys[rows.len()]` = drop zone top, last = content end.
+    ys: Vec<f32>,
     vscroll: f32,
     grid: f64,
+    /// Grid snapping active (grid not Off and Alt not held).
+    snap_on: bool,
 }
 
 impl Geo {
@@ -42,18 +47,26 @@ impl Geo {
         (self.scroll + (x - self.x0) as f64 / self.zoom).max(0.0)
     }
     fn snap(&self, b: f64) -> f64 {
-        (b / self.grid).round() * self.grid
+        if self.snap_on { (b / self.grid).round() * self.grid } else { b }
     }
     fn row_y(&self, k: usize) -> f32 {
-        self.body.min.y - self.vscroll + k as f32 * self.row_h
+        self.body.min.y - self.vscroll + self.ys[k.min(self.ys.len() - 1)]
+    }
+    fn row_h(&self, k: usize) -> f32 {
+        if k + 1 < self.ys.len() { self.ys[k + 1] - self.ys[k] } else { 0.0 }
     }
     /// Lane rect of visible row `k` (k == rows.len() is the "add track" drop zone).
     fn lane(&self, k: usize) -> Rect {
-        Rect::from_min_max(pos2(self.lanes.min.x, self.row_y(k)), pos2(self.lanes.max.x, self.row_y(k) + self.row_h - 1.0))
+        let y = self.row_y(k);
+        Rect::from_min_max(pos2(self.lanes.min.x, y), pos2(self.lanes.max.x, y + self.row_h(k) - 1.0))
     }
-    /// Row index under `y` (may be rows.len() = drop zone, or beyond).
+    /// Row index under `y` (rows.len() = drop zone, rows.len() + 1 = below everything).
     fn row_at(&self, y: f32) -> usize {
-        ((y - self.body.min.y + self.vscroll) / self.row_h).floor().max(0.0) as usize
+        let cy = y - self.body.min.y + self.vscroll;
+        if cy < 0.0 {
+            return 0;
+        }
+        self.ys.partition_point(|&v| v <= cy).saturating_sub(1)
     }
     fn track_at(&self, y: f32) -> Option<usize> {
         self.rows.get(self.row_at(y)).copied()
@@ -82,9 +95,13 @@ struct MoveDrag {
 enum Gesture {
     Select { anchor: f64, track: usize },
     Move(MoveDrag),
-    Resize { id: u64 },
+    /// Edge trim; `orig` is the clip at drag start (limits come from it).
+    Resize { orig: Box<ArrangementClip>, left: bool, fpb: f64, total: Option<f64> },
     LoopNew { anchor: f64 },
     LoopMove { grab: f64 },
+    LoopEdge { start: bool },
+    /// Header drag: reorder / regroup these tracks.
+    Tracks { ids: Vec<u64> },
 }
 
 fn gesture_id() -> egui::Id {
@@ -98,28 +115,36 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let lanes = Rect::from_min_max(body.min, pos2(lanes_x1, body.max.y));
     let x0 = full.min.x;
 
-    wheel(app, ui, full, body, x0);
+    wheel(app, ui, full, x0);
 
     let rows = app.project.visible_tracks();
-    let row_h = app.arr_row_h;
-    let content_h = (rows.len() as f32 + 1.0) * row_h;
+    let mut ys = Vec::with_capacity(rows.len() + 2);
+    let mut y = 0.0;
+    for &t in &rows {
+        ys.push(y);
+        y += app.track_height(t);
+    }
+    ys.push(y);
+    ys.push(y + app.arr_row_h); // drop zone
+    let content_h = y + app.arr_row_h;
     app.arr_vscroll = app.arr_vscroll.clamp(0.0, (content_h - body.height()).max(0.0));
     let bpb = app.project.beats_per_bar.max(1) as f64;
     let zoom = app.arr_zoom as f64;
-    let grid = grid_for_zoom(zoom, bpb);
+    let grid = app.arr_grid.step(zoom, bpb);
     app.grid = grid;
-    let g = Geo { x0, zoom, scroll: app.arr_scroll as f64, body, lanes, rows, row_h, vscroll: app.arr_vscroll, grid };
+    let alt = ui.input(|i| i.modifiers.alt);
+    let g = Geo { x0, zoom, scroll: app.arr_scroll as f64, body, lanes, rows, ys, vscroll: app.arr_vscroll, grid, snap_on: app.arr_grid.snaps() && !alt };
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
     ui.painter().rect_filled(side, CornerRadius::ZERO, PANEL_BG);
-    ui.painter().text(
-        side.left_center() + vec2(8.0, 0.0),
-        Align2::LEFT_CENTER,
-        format!("Grid {}", grid_label(grid)),
-        FontId::proportional(11.0),
-        Color32::GRAY,
-    );
+    let grid_txt = match app.arr_grid {
+        crate::arr_ops::GridMode::Off => "Grid off".to_string(),
+        _ => format!("Grid {}", grid_label(grid)),
+    };
+    ui.painter().text(side.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, grid_txt, FontId::proportional(11.0), Color32::GRAY);
+    let side_r = ui.interact(side, ui.scope_id().with("arr_grid_label"), Sense::click());
+    side_r.context_menu(|ui| grid_menu(ui, &mut app.arr_grid));
 
     // ---- Lanes background ------------------------------------------------------
     let p = ui.painter_at(lanes);
@@ -189,17 +214,32 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
             }
         }
     }
-    if let Some(Gesture::Move(d)) = ui.data(|m| m.get_temp::<Gesture>(gesture_id()))
-        && let Some(pos) = ui.ctx().pointer_latest_pos()
-    {
-        for (id, t, start) in move_targets(app, &g, &d, pos) {
-            let Some(&(_, _, _, len, _)) = d.clips.iter().find(|c| c.0 == id) else { continue };
-            let Some(k) = g.rows.iter().position(|&r| r == t) else { continue };
-            let lane = g.lane(k);
-            let r = Rect::from_min_max(pos2(g.to_x(start), lane.min.y + 1.0), pos2(g.to_x(start + len), lane.max.y - 1.0));
-            p.rect_filled(r, CornerRadius::same(3), Color32::from_white_alpha(30));
-            p.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
+    match ui.data(|m| m.get_temp::<Gesture>(gesture_id())) {
+        Some(Gesture::Move(d)) => {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                for (id, t, start) in move_targets(app, &g, &d, pos) {
+                    let Some(&(_, _, _, len, _)) = d.clips.iter().find(|c| c.0 == id) else { continue };
+                    let Some(k) = g.rows.iter().position(|&r| r == t) else { continue };
+                    let lane = g.lane(k);
+                    let r = Rect::from_min_max(pos2(g.to_x(start), lane.min.y + 1.0), pos2(g.to_x(start + len), lane.max.y - 1.0));
+                    p.rect_filled(r, CornerRadius::same(3), Color32::from_white_alpha(30));
+                    p.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
+                }
+            }
         }
+        Some(Gesture::Tracks { .. }) => {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                let (_, mark) = track_drop_target(app, &g, pos.y);
+                let hp = ui.painter_at(body);
+                let mark = Rect::from_min_max(pos2(body.min.x, mark.min.y), pos2(body.max.x, mark.max.y));
+                if mark.height() > 3.0 {
+                    hp.rect_stroke(mark, CornerRadius::same(2), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+                } else {
+                    hp.line_segment([mark.left_center(), mark.right_center()], Stroke::new(2.0, ACCENT));
+                }
+            }
+        }
+        _ => {}
     }
     // Playhead over lanes + ruler.
     let x = g.to_x(app.status.beat_position);
@@ -218,8 +258,8 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
 }
 
 /// Wheel: vertical scroll, Shift = horizontal (egui maps it to x), Ctrl = zoom
-/// around the pointer (egui reports it as zoom_delta), Alt = track height.
-fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, body: Rect, x0: f32) {
+/// around the pointer (egui reports it as zoom_delta), Alt = track heights.
+fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, x0: f32) {
     if !ui.rect_contains_pointer(full) {
         return;
     }
@@ -236,11 +276,7 @@ fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, body: Rect, x0: f32) {
     }
     if alt {
         let dy = if delta.y != 0.0 { delta.y } else { delta.x };
-        let old = app.arr_row_h;
-        app.arr_row_h = (old * (1.0 + dy * 0.004)).clamp(ROW_MIN, ROW_MAX);
-        // Keep the row under the pointer in place.
-        let py = (pointer.y - body.min.y).max(0.0);
-        app.arr_vscroll = ((app.arr_vscroll + py) * app.arr_row_h / old - py).max(0.0);
+        app.zoom_track_heights(1.0 + (dy * 0.004).clamp(-0.5, 0.5));
     } else {
         app.arr_scroll = (app.arr_scroll - delta.x / app.arr_zoom).max(0.0);
         app.arr_vscroll = (app.arr_vscroll - delta.y).max(0.0);
@@ -256,7 +292,28 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     let band = Rect::from_min_max(ruler.min, pos2(ruler.max.x, ruler.min.y + 12.0));
     let (ls, le) = (app.project.loop_start, app.project.loop_end);
     let brace = Rect::from_min_max(pos2(g.to_x(ls), band.min.y + 2.0), pos2(g.to_x(le).max(g.to_x(ls) + 4.0), band.max.y));
-    p.rect_filled(brace, CornerRadius::same(2), if app.project.loop_enabled { shade(ACCENT, 0.9) } else { Color32::from_gray(90) });
+    let col = if app.project.loop_enabled { shade(ACCENT, 0.9) } else { Color32::from_gray(90) };
+    p.rect_filled(brace, CornerRadius::same(2), col);
+    // Corner handles: drag to adjust the loop start / end.
+    for x in [brace.min.x, brace.max.x] {
+        p.rect_filled(Rect::from_center_size(pos2(x, brace.center().y), vec2(3.0, brace.height() + 2.0)), CornerRadius::ZERO, shade(col, 1.3));
+    }
+    let edge_at = |pos: Pos2| -> Option<bool> {
+        if !band.expand(2.0).contains(pos) {
+            return None;
+        }
+        let (dl, dr) = ((pos.x - brace.min.x).abs(), (pos.x - brace.max.x).abs());
+        if dl.min(dr) > 5.0 {
+            None
+        } else {
+            Some(dl <= dr)
+        }
+    };
+    if let Some(h) = resp.hover_pos()
+        && edge_at(h).is_some()
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
     if let Some(ts) = app.time_sel.filter(|t| t.len() > 1e-9) {
         let r = Rect::from_min_max(pos2(g.to_x(ts.start), ruler.max.y - 3.0), pos2(g.to_x(ts.end), ruler.max.y));
         p.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(120));
@@ -278,14 +335,16 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         }
         bar += 1;
     }
-    // Drag on the brace moves the loop; drag elsewhere draws a new loop range.
-    // Neither switches looping on (click the brace or Ctrl+L for that).
+    // Drag a brace corner = resize, the brace body = move, elsewhere = draw a new range.
+    // None of these switch looping on (click the brace or Ctrl+L for that).
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin())
     {
         app.begin_gesture();
         let b = g.beat_at(pos.x);
-        let gst = if band.contains(pos) && brace.contains(pos) {
+        let gst = if let Some(start) = edge_at(pos) {
+            Gesture::LoopEdge { start }
+        } else if band.contains(pos) && brace.contains(pos) {
             Gesture::LoopMove { grab: b - ls }
         } else {
             Gesture::LoopNew { anchor: g.snap(b) }
@@ -300,9 +359,10 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             app.edit(|p| p.loop_enabled = on);
             app.send_loop();
         } else {
-            app.send_now(Command::SetPosition(g.snap(g.beat_at(pos.x))));
+            app.set_playhead(g.snap(g.beat_at(pos.x)));
         }
     }
+    resp.context_menu(|ui| grid_menu(ui, &mut app.arr_grid));
 }
 
 fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
@@ -325,6 +385,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let painter = ui.painter_at(lane.intersect(g.lanes));
     let track = &app.project.tracks[t];
     let selected = app.is_track_selected(t);
+    let collapsed = track.collapsed;
     if track.kind == TrackKind::Group {
         painter.rect_filled(lane, CornerRadius::ZERO, rgb(track.color).gamma_multiply(0.10));
         // Overview of the children's clips, one thin band per child track.
@@ -339,7 +400,8 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
                     continue;
                 }
                 let r = Rect::from_min_max(pos2(x1, y), pos2(x2.max(x1 + 2.0), y + (h - 1.0).max(1.0)));
-                painter.rect_filled(r, CornerRadius::same(1), shade(rgb(a.clip.color), 0.8));
+                let col = if a.clip.muted { disabled(rgb(a.clip.color)) } else { shade(rgb(a.clip.color), 0.8) };
+                painter.rect_filled(r, CornerRadius::same(1), col);
                 painter.rect_stroke(r, CornerRadius::same(1), Stroke::new(1.0, Color32::from_black_alpha(90)), egui::StrokeKind::Inside);
             }
         }
@@ -367,21 +429,24 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         let r = Rect::from_min_max(pos2(x1, lane.min.y + 1.0), pos2(x2.max(x1 + 3.0), lane.max.y - 1.0));
         let sel = app.arr_sel.contains(&id) || app.selected_clip == Some(ClipRef::Arr { track: t, index: i });
         let p = &painter;
-        draw_clip(p, r, &a.clip, sel, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm);
+        draw_clip(p, r, &a.clip, sel, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm, collapsed);
         if moving.contains(&id) {
             p.rect_filled(r, CornerRadius::same(3), Color32::from_black_alpha(110));
         }
 
-        // Title bar = move, right edge = resize. The body belongs to the lane (time selection).
+        // Title bar = move, edges = trim. The body belongs to the lane (time selection).
         let vis = r.intersect(g.lanes).intersect(g.body);
         if vis.width() <= 0.0 || vis.height() <= 0.0 {
             continue;
         }
-        let edge = Rect::from_min_max(pos2((r.max.x - EDGE).max(r.min.x + 2.0), r.min.y), r.max).intersect(vis);
-        let title = Rect::from_min_max(r.min, pos2(edge.min.x, r.min.y + TITLE_H.min(r.height()))).intersect(vis);
+        let ew = EDGE.min(r.width() / 3.0);
+        let redge = Rect::from_min_max(pos2(r.max.x - ew, r.min.y), r.max).intersect(vis);
+        let ledge = Rect::from_min_max(r.min, pos2(r.min.x + ew, r.max.y)).intersect(vis);
+        let title = Rect::from_min_max(pos2(r.min.x + ew, r.min.y), pos2(r.max.x - ew, r.min.y + TITLE_H.min(r.height()))).intersect(vis);
         let tr = ui.interact(title, ui.scope_id().with(("aclip_title", id)), Sense::click_and_drag());
-        let er = ui.interact(edge, ui.scope_id().with(("aclip_edge", id)), Sense::drag());
-        if er.hovered() || er.dragged() {
+        let er = ui.interact(redge, ui.scope_id().with(("aclip_edge", id)), Sense::drag());
+        let el = ui.interact(ledge, ui.scope_id().with(("aclip_ledge", id)), Sense::drag());
+        if er.hovered() || er.dragged() || el.hovered() || el.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         } else if tr.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -391,7 +456,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             app.select_arr_clip(id, toggle);
             app.time_sel = None;
             if let Some(pos) = tr.interact_pointer_pos() {
-                app.send_now(Command::SetPosition(g.snap(g.beat_at(pos.x))));
+                app.set_playhead(g.snap(g.beat_at(pos.x)));
             }
         }
         if tr.drag_started()
@@ -402,10 +467,15 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             }
             start_move(app, ui, g, pos, true, false);
         }
-        if er.drag_started() {
-            app.begin_gesture();
-            app.select_arr_clip(id, false);
-            ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Resize { id }));
+        for (resp, left) in [(&er, false), (&el, true)] {
+            if resp.drag_started() {
+                app.begin_gesture();
+                app.select_arr_clip(id, false);
+                let a = app.project.tracks[t].arrangement[i].clone();
+                let fpb = (app.fpb_fn())(&a.clip);
+                let total = app.clip_total_frames(&a.clip);
+                ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Resize { orig: Box::new(a), left, fpb, total }));
+            }
         }
         tr.context_menu(|ui| {
             if !app.arr_sel.contains(&id) {
@@ -468,6 +538,29 @@ fn move_targets(app: &DawApp, g: &Geo, d: &MoveDrag, pos: Pos2) -> Vec<(u64, usi
         .collect()
 }
 
+/// Where a header drag at `y` would drop, plus the marker to draw
+/// (thin rect = insertion line, tall rect = "into this group").
+fn track_drop_target(app: &DawApp, g: &Geo, y: f32) -> (TrackDrop, Rect) {
+    let k = g.row_at(y);
+    let line = |yy: f32| Rect::from_min_max(pos2(g.lanes.min.x, yy - 1.0), pos2(g.body.max.x, yy + 1.0));
+    if k >= g.rows.len() {
+        return (TrackDrop::Before(None), line(g.row_y(g.rows.len())));
+    }
+    let t = g.rows[k];
+    let r = g.lane(k);
+    let f = (y - r.min.y) / r.height().max(1.0);
+    let tr = &app.project.tracks[t];
+    if tr.kind == TrackKind::Group && (0.25..0.75).contains(&f) {
+        return (TrackDrop::Into(tr.id), Rect::from_min_max(pos2(g.lanes.min.x, r.min.y), pos2(g.body.max.x, r.max.y)));
+    }
+    if f < 0.5 {
+        (TrackDrop::Before(Some(tr.id)), line(r.min.y))
+    } else {
+        let next = g.rows.get(k + 1).map(|&n| app.project.tracks[n].id);
+        (TrackDrop::Before(next), line(r.max.y + 1.0))
+    }
+}
+
 fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let lane = g.lane(k);
     let head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
@@ -480,7 +573,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let color = rgb(track.color);
     let is_group = track.kind == TrackKind::Group;
     let selected = app.is_track_selected(t);
-    let (mute, solo, arm, folded, name) = (track.mute, track.solo, track.arm, track.folded, track.name.clone());
+    let (mute, solo, arm, folded, collapsed, id) = (track.mute, track.solo, track.arm, track.folded, track.collapsed, track.id);
+    let name = app.project.track_label(t);
 
     // Ancestor colour strips (Live shows the group's colour down the left of its children).
     let mut chain = Vec::new();
@@ -508,22 +602,30 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             rgb(app.project.tracks[a].color),
         );
     }
-    painter.rect_filled(Rect::from_min_size(inner.min, vec2(5.0, inner.height())), CornerRadius::ZERO, color);
-    let mut x = inner.min.x + 10.0;
-    let fold_zone = Rect::from_min_size(pos2(x - 4.0, inner.min.y), vec2(18.0, 20.0));
-    if is_group {
-        super::session::draw_fold_arrow(&painter, pos2(x + 4.0, inner.min.y + 11.0), folded, Color32::BLACK);
-        x += 16.0;
-    }
+    painter.rect_filled(Rect::from_min_size(inner.min, vec2(4.0, inner.height())), CornerRadius::ZERO, color);
     let text_col = if is_group { Color32::BLACK } else { Color32::WHITE };
-    let buttons_w = if is_group { 54.0 } else { 86.0 };
-    painter.with_clip_rect(Rect::from_min_max(inner.min, pos2(inner.max.x - buttons_w - 6.0, inner.max.y)).intersect(clip)).text(
-        pos2(x, inner.min.y + 4.0),
-        Align2::LEFT_TOP,
-        &name,
-        FontId::proportional(12.0),
-        text_col,
-    );
+    let row1 = inner.min.y + 2.0; // top line: buttons + name (18 px)
+    // ⊙ collapse button at the very left.
+    let cbtn = Rect::from_min_size(pos2(inner.min.x + 6.0, row1), vec2(16.0, 18.0));
+    draw_collapse_button(&painter, cbtn.center(), collapsed, if is_group { Color32::BLACK } else { Color32::from_gray(200) });
+    let mut x = cbtn.max.x + 3.0;
+    let fold_zone = Rect::from_min_size(pos2(x - 2.0, row1), vec2(16.0, 18.0));
+    if is_group {
+        super::session::draw_fold_arrow(&painter, fold_zone.center(), folded, Color32::BLACK);
+        x += 15.0;
+    }
+    let buttons_w = if is_group { 47.0 } else { 72.0 };
+    let name_rect = Rect::from_min_max(pos2(x, row1), pos2(inner.max.x - buttons_w - 8.0, row1 + 18.0));
+    let renaming = app.renaming.as_ref().is_some_and(|r| r.id == id);
+    if !renaming {
+        painter.with_clip_rect(name_rect.intersect(clip)).text(
+            name_rect.left_center(),
+            Align2::LEFT_CENTER,
+            &name,
+            FontId::proportional(12.0),
+            text_col,
+        );
+    }
     // Slim meter at the right edge.
     let m = app.track_meters.get(t).copied().unwrap_or([0.0; 2]);
     let lvl = ((daw_project::gain_to_db(m[0].max(m[1])) + 60.0) / 60.0).clamp(0.0, 1.0);
@@ -531,14 +633,36 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     painter.rect_filled(mr, CornerRadius::ZERO, Color32::from_gray(24));
     painter.rect_filled(Rect::from_min_max(pos2(mr.min.x, mr.max.y - mr.height() * lvl), mr.max), CornerRadius::ZERO, PLAY_GREEN);
 
-    let hr = ui.interact(clip, ui.scope_id().with(("arr_head", t)), Sense::click());
-    if hr.clicked() {
-        if is_group && hr.interact_pointer_pos().is_some_and(|p| fold_zone.contains(p)) {
+    let hr = ui.interact(clip, ui.scope_id().with(("arr_head", t)), Sense::click_and_drag());
+    if hr.clicked()
+        && let Some(pos) = hr.interact_pointer_pos()
+    {
+        if cbtn.contains(pos) {
+            app.toggle_collapse(t);
+        } else if is_group && fold_zone.contains(pos) {
             app.toggle_fold(t);
         } else {
             let toggle = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            app.click_track(t, toggle);
+            app.select_track_header(t, toggle);
+            app.arr_sel.clear();
+            app.time_sel = None;
+            app.resync_selected_clip();
         }
+    }
+    if hr.double_clicked() && hr.interact_pointer_pos().is_some_and(|p| !cbtn.contains(p) && !(is_group && fold_zone.contains(p))) {
+        app.select_track_header(t, false);
+        app.start_rename(t);
+    }
+    if hr.drag_started() {
+        // Drag the header selection if this track is part of it, else just this track.
+        if !app.track_sel.contains(&t) {
+            app.select_track_header(t, false);
+        }
+        let ids: Vec<u64> = app.track_sel.iter().filter_map(|&i| app.project.tracks.get(i).map(|x| x.id)).collect();
+        ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Tracks { ids }));
+    }
+    if hr.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     }
     if let Some(item) = hr.dnd_release_payload::<DragItem>()
         && let Some(def) = super::instrument_for(&item)
@@ -546,8 +670,11 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         app.set_instrument(t, def);
     }
     hr.context_menu(|ui| super::session::track_menu(app, ui, t));
+    if renaming {
+        super::rename_editor(app, ui, name_rect.intersect(clip), t);
+    }
 
-    let brect = Rect::from_min_size(pos2(inner.max.x - buttons_w - 6.0, inner.min.y + 2.0), vec2(buttons_w, 18.0));
+    let brect = Rect::from_min_size(pos2(inner.max.x - buttons_w - 6.0, row1), vec2(buttons_w, 18.0));
     if !clip.contains_rect(brect) {
         return;
     }
@@ -563,8 +690,32 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if !is_group && toggle_box(&mut bui, "REC", arm, REC_RED, "Arm (Ctrl: add)").clicked() {
         app.toggle_track_flag(t, TrackFlag::Arm, excl);
     }
-    if lane.height() >= 44.0 && app.track_status.get(t).is_some_and(|s| s.arrangement_off) {
-        painter.text(pos2(x, inner.min.y + 22.0), Align2::LEFT_TOP, "session clip playing", FontId::proportional(10.0), ACCENT);
+    // Second line (expanded lanes): volume + pan boxes like Live 12.
+    let row2 = row1 + 21.0;
+    if !collapsed && row2 + 15.0 <= inner.max.y {
+        let vr = Rect::from_min_size(pos2(cbtn.max.x + 3.0, row2), vec2(46.0, 15.0));
+        let pr = Rect::from_min_size(pos2(vr.max.x + 4.0, row2), vec2(36.0, 15.0));
+        if clip.contains_rect(vr) && clip.contains_rect(pr) {
+            let mut db = app.project.tracks[t].gain_db;
+            let (r, changed) = volume_box(ui, vr, ui.scope_id().with(("hvol", id)), &mut db);
+            if r.drag_started() || r.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_track_gain(t, db);
+            }
+            let mut pan = app.project.tracks[t].pan;
+            let (r, changed) = pan_box(ui, pr, ui.scope_id().with(("hpan", id)), &mut pan);
+            if r.drag_started() || r.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_track_pan(t, pan);
+            }
+        }
+        if row2 + 34.0 <= inner.max.y && app.track_status.get(t).is_some_and(|s| s.arrangement_off) {
+            painter.text(pos2(cbtn.max.x + 3.0, row2 + 19.0), Align2::LEFT_TOP, "session clip playing", FontId::proportional(10.0), ACCENT);
+        }
     }
 }
 
@@ -598,7 +749,7 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
         && let Some(pos) = lr.interact_pointer_pos()
     {
         let beat = g.beat_at(pos.x);
-        app.send_now(Command::SetPosition(g.snap(beat)));
+        app.set_playhead(g.snap(beat));
         app.time_sel = None;
         match g.track_at(pos.y) {
             Some(t) => {
@@ -670,6 +821,10 @@ fn selection_menu(app: &mut DawApp, ui: &mut egui::Ui) {
         app.split_selection();
         ui.close();
     }
+    if ui.button("Consolidate         Ctrl+J").clicked() {
+        app.consolidate_selection();
+        ui.close();
+    }
     if ui.button("Loop Selection      Ctrl+L").clicked() {
         app.loop_selection();
         ui.close();
@@ -682,10 +837,17 @@ fn selection_menu(app: &mut DawApp, ui: &mut egui::Ui) {
         app.duplicate_arrangement_selection();
         ui.close();
     }
+    if ui.button("Deactivate / Activate   0").clicked() {
+        app.focus_detail = false;
+        app.toggle_disable();
+        ui.close();
+    }
     if ui.button("Delete              Del").clicked() {
         app.delete_arrangement_selection();
         ui.close();
     }
+    ui.separator();
+    grid_menu(ui, &mut app.arr_grid);
     ui.separator();
     if ui.button("Add Audio Track     Ctrl+T").clicked() {
         app.add_track(TrackKind::Audio);
@@ -711,23 +873,36 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
                 if ts.len() < 1e-9 {
                     app.time_sel = None;
                 }
-                app.send_now(Command::SetPosition(ts.start));
+                app.set_playhead(ts.start);
             }
         }
-        Gesture::Resize { id } => {
-            if let Some((t, i)) = app.project.find_arrangement_clip(*id) {
+        Gesture::Resize { orig, left, fpb, total } => {
+            let min_len = if g.snap_on { g.grid.min(orig.clip.length) } else { 1.0 / 64.0 };
+            let b = g.snap(g.beat_at(pos.x));
+            let new = if *left {
+                daw_project::trim_left(orig, b, min_len, *fpb, *total)
+            } else {
+                daw_project::trim_right(orig, b - orig.start, min_len, *fpb, *total)
+            };
+            if let Some((t, i)) = app.project.find_arrangement_clip(orig.clip.id) {
                 let a = &mut app.project.tracks[t].arrangement[i];
-                let len = (g.snap(g.beat_at(pos.x)) - a.start).max(g.grid.max(1.0 / 16.0));
-                if (len - a.clip.length).abs() > 1e-12 {
-                    a.clip.length = len;
+                if *a != new {
+                    *a = new;
                     app.needs_compile = true;
                 }
+            }
+            if !down {
+                let fpb = app.fpb_fn();
+                app.project.overwrite_around(orig.clip.id, &fpb);
+                app.needs_compile = true;
+                app.resync_selected_clip();
             }
         }
         Gesture::LoopNew { anchor } => {
             let b = g.snap(g.beat_at(pos.x));
             let (s, e) = if b >= *anchor { (*anchor, b) } else { (b, *anchor) };
-            if e - s >= g.grid && (s, e) != (app.project.loop_start, app.project.loop_end) {
+            let min = if g.snap_on { g.grid } else { 1.0 / 16.0 };
+            if e - s >= min && (s, e) != (app.project.loop_start, app.project.loop_end) {
                 app.project.loop_start = s;
                 app.project.loop_end = e;
                 app.send_loop();
@@ -740,6 +915,24 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
                 app.project.loop_start = s;
                 app.project.loop_end = s + len;
                 app.send_loop();
+            }
+        }
+        Gesture::LoopEdge { start } => {
+            let b = g.snap(g.beat_at(pos.x));
+            let min = if g.snap_on { g.grid } else { 1.0 / 16.0 };
+            let (ls, le) = (app.project.loop_start, app.project.loop_end);
+            let (ns, ne) = if *start { (b.min(le - min).max(0.0), le) } else { (ls, b.max(ls + min)) };
+            if (ns, ne) != (ls, le) {
+                app.project.loop_start = ns;
+                app.project.loop_end = ne;
+                app.send_loop();
+            }
+        }
+        Gesture::Tracks { ids } => {
+            if !down {
+                let (to, _) = track_drop_target(app, g, pos.y);
+                let ids = ids.clone();
+                app.drop_tracks(&ids, to);
             }
         }
         Gesture::Move(d) => {
@@ -805,7 +998,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem, at: f64) {
     let Some(mut clip) = app.audio_clip_for(key, name) else { return };
     let (t, id) = app.edit(|p| {
         let t = p.add_track(TrackKind::Audio);
-        p.tracks[t].name = name.clone();
+        p.tracks[t].name = format!("# {name}");
         clip.id = p.alloc_id();
         clip.looping = false;
         let id = clip.id;
@@ -872,10 +1065,25 @@ fn sample_key(c: &Clip) -> &str {
     }
 }
 
-/// Draw a clip body with a MIDI or waveform preview.
+/// Draw a clip with a MIDI or waveform preview (`collapsed`: title bar only).
+/// Deactivated clips are drawn grey.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_clip(p: &egui::Painter, r: Rect, clip: &Clip, selected: bool, sample: Option<&SampleBuffer>, zoom: f64, tempo: f64) {
-    let c = rgb(clip.color);
+pub fn draw_clip(p: &egui::Painter, r: Rect, clip: &Clip, selected: bool, sample: Option<&SampleBuffer>, zoom: f64, tempo: f64, collapsed: bool) {
+    let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
+    if collapsed {
+        p.rect_filled(r, CornerRadius::same(3), c);
+        p.with_clip_rect(r.intersect(p.clip_rect())).text(
+            r.left_center() + vec2(4.0, 0.0),
+            Align2::LEFT_CENTER,
+            &clip.name,
+            FontId::proportional(10.0),
+            Color32::BLACK,
+        );
+        if selected {
+            p.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
+        }
+        return;
+    }
     p.rect_filled(r, CornerRadius::same(3), shade(c, 0.45));
     let title = Rect::from_min_size(r.min, vec2(r.width(), 14.0));
     p.rect_filled(title, CornerRadius::same(3), c);
@@ -903,14 +1111,14 @@ pub fn draw_clip(p: &egui::Painter, r: Rect, clip: &Clip, selected: bool, sample
             let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
             let span = (hi - lo).max(1) as f32 + 1.0;
             let nh = (body.height() / span).clamp(1.0, 4.0);
-            for n in notes.iter().filter(|n| n.start < clip.length) {
+            for n in notes.iter().filter(|n| n.start >= 0.0 && n.start < clip.length) {
                 let x1 = body.min.x + (n.start * zoom) as f32;
                 let x2 = (x1 + (n.length.min(clip.length - n.start) * zoom) as f32).max(x1 + 1.0);
                 if x2 < visible.min.x || x1 > visible.max.x {
                     continue;
                 }
                 let y = body.max.y - ((n.pitch - lo) as f32 + 1.0) / span * body.height();
-                p.rect_filled(Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)), CornerRadius::ZERO, ink);
+                p.rect_filled(Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)), CornerRadius::ZERO, if n.muted { shade(c, 0.7) } else { ink });
             }
         }
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
@@ -973,20 +1181,6 @@ pub fn draw_wave(
     }
 }
 
-fn grid_for_zoom(zoom: f64, bpb: f64) -> f64 {
-    // Aim for >= 12 px per grid line.
-    for g in [0.25, 0.5, 1.0] {
-        if g * zoom >= 12.0 {
-            return g;
-        }
-    }
-    let mut g = bpb;
-    while g * zoom < 12.0 {
-        g *= 2.0;
-    }
-    g
-}
-
 pub fn grid_label(g: f64) -> String {
     match g {
         0.0625 => "1/64".into(),
@@ -996,16 +1190,5 @@ pub fn grid_label(g: f64) -> String {
         1.0 => "1/4".into(),
         2.0 => "1/2".into(),
         v => format!("{} bar", v / 4.0),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn grid_adapts_to_zoom() {
-        assert_eq!(super::grid_for_zoom(100.0, 4.0), 0.25);
-        assert_eq!(super::grid_for_zoom(30.0, 4.0), 0.5);
-        assert_eq!(super::grid_for_zoom(5.0, 4.0), 4.0);
-        assert_eq!(super::grid_for_zoom(1.0, 4.0), 16.0);
     }
 }

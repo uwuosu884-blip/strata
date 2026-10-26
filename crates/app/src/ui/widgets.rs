@@ -269,3 +269,160 @@ pub fn pan_label(v: f32) -> String {
         format!("{:.0}R", v * 50.0)
     }
 }
+
+/// Relative drag that never runs into the screen edge (BPM, header volume/pan):
+/// the cursor is hidden and parked at the press point while movement comes from
+/// raw mouse deltas (winit `DeviceEvent::MouseMotion` → `Event::MouseMoved`).
+/// Falls back to ordinary pointer deltas if the platform sends no raw motion.
+/// Returns this frame's movement in points.
+pub fn endless_drag(ui: &egui::Ui, resp: &egui::Response) -> Vec2 {
+    let ctx = ui.ctx();
+    let seen_id = egui::Id::unique("endless_raw_seen");
+    let anchor_id = resp.id.with("endless_anchor");
+    let raw: Vec2 = ui.input(|i| {
+        i.events.iter().filter_map(|e| if let egui::Event::MouseMoved(d) = e { Some(*d) } else { None }).fold(Vec2::ZERO, |a, b| a + b)
+    });
+    let mut seen = ctx.data(|d| d.get_temp::<bool>(seen_id)).unwrap_or(false);
+    if raw != Vec2::ZERO && !seen {
+        seen = true;
+        ctx.data_mut(|d| d.insert_temp(seen_id, true));
+    }
+    if resp.drag_started() {
+        let anchor = ui.input(|i| i.pointer.press_origin()).unwrap_or(resp.rect.center());
+        ctx.data_mut(|d| d.insert_temp(anchor_id, anchor));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+        // Wayland/macOS lock the pointer; X11/Windows refuse and we re-park it below instead.
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::Locked));
+    }
+    let anchor = ctx.data(|d| d.get_temp::<egui::Pos2>(anchor_id));
+    let mut delta = Vec2::ZERO;
+    if resp.dragged() {
+        if seen {
+            delta = raw / ctx.pixels_per_point();
+            if raw != Vec2::ZERO
+                && let Some(a) = anchor
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(a));
+            }
+        } else {
+            delta = resp.drag_delta();
+        }
+    }
+    if resp.drag_stopped() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
+        if let Some(a) = anchor {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(a));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        ctx.data_mut(|d| d.remove::<egui::Pos2>(anchor_id));
+    }
+    delta
+}
+
+/// dB ↔ 0..1 position used by faders and volume boxes (more resolution near 0 dB).
+pub fn db_to_pos(db: f32) -> f32 {
+    ((db - METER_FLOOR_DB) / (6.0 - METER_FLOOR_DB)).clamp(0.0, 1.0).powf(2.0)
+}
+
+pub fn pos_to_db(t: f32) -> f32 {
+    METER_FLOOR_DB + t.clamp(0.0, 1.0).sqrt() * (6.0 - METER_FLOOR_DB)
+}
+
+/// Live-style track volume box: shows dB, drag up/down (Shift = fine), double-click = 0 dB.
+pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let mut changed = false;
+    let d = endless_drag(ui, &resp);
+    if resp.double_clicked() {
+        *db = 0.0;
+        changed = true;
+    } else if d != Vec2::ZERO {
+        let k = if ui.input(|i| i.modifiers.shift) { 0.0007 } else { 0.006 };
+        let nd = pos_to_db(db_to_pos(*db) - (d.y - d.x) * k).clamp(METER_FLOOR_DB, 6.0);
+        if (nd - *db).abs() > 1e-5 {
+            *db = nd;
+            changed = true;
+        }
+    }
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
+    let w = rect.width() * db_to_pos(*db);
+    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::same(2), shade(ACCENT, 0.55));
+    let text = if *db <= METER_FLOOR_DB { "-inf".to_string() } else { format!("{db:.1}") };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), Color32::from_gray(235));
+    (resp.on_hover_text("Track volume (dB) · drag · double-click: 0 dB"), changed)
+}
+
+/// Live-style pan box: 50L … C … 50R, drag up/down (Shift = fine), double-click = centre.
+pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (egui::Response, bool) {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let mut changed = false;
+    let d = endless_drag(ui, &resp);
+    if resp.double_clicked() {
+        *pan = 0.0;
+        changed = true;
+    } else if d != Vec2::ZERO {
+        let k = if ui.input(|i| i.modifiers.shift) { 0.002 } else { 0.02 };
+        let np = (*pan - (d.y - d.x) * k).clamp(-1.0, 1.0);
+        if (np - *pan).abs() > 1e-6 {
+            *pan = np;
+            changed = true;
+        }
+    }
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
+    let cx = rect.center().x;
+    let x = cx + *pan * rect.width() * 0.5;
+    if pan.abs() > 0.005 {
+        p.rect_filled(Rect::from_x_y_ranges(cx.min(x)..=cx.max(x), rect.y_range()), CornerRadius::ZERO, shade(ACCENT, 0.55));
+    }
+    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, Color32::from_gray(140)));
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), egui::FontId::proportional(10.0), Color32::from_gray(235));
+    (resp.on_hover_text("Pan · drag · double-click: centre"), changed)
+}
+
+/// ⊳ / ⊽ in a circle: collapse button at the left of arrangement track headers.
+pub fn draw_collapse_button(p: &egui::Painter, c: egui::Pos2, collapsed: bool, col: Color32) {
+    p.circle_stroke(c, 6.0, Stroke::new(1.2, col));
+    let pts = if collapsed {
+        vec![c + vec2(-1.8, -3.2), c + vec2(3.0, 0.0), c + vec2(-1.8, 3.2)]
+    } else {
+        vec![c + vec2(-3.2, -1.6), c + vec2(3.2, -1.6), c + vec2(0.0, 3.0)]
+    };
+    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+}
+
+/// Deactivated clip / note colour: greyer and darker.
+pub fn disabled(c: Color32) -> Color32 {
+    let g = (c.r() as u32 + c.g() as u32 + c.b() as u32) / 3;
+    let m = |v: u8| ((v as u32 + 2 * g) / 3 * 55 / 100) as u8;
+    Color32::from_rgb(m(c.r()), m(c.g()), m(c.b()))
+}
+
+/// Right-click grid menu (arrangement and piano roll).
+pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode) {
+    use crate::arr_ops::GridMode;
+    ui.menu_button("Grid", |ui| {
+        ui.label(egui::RichText::new("Adaptive").small().color(Color32::GRAY));
+        for (lvl, name) in GridMode::ADAPTIVE {
+            if ui.radio(*mode == GridMode::Adaptive(lvl), name).clicked() {
+                *mode = GridMode::Adaptive(lvl);
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Fixed").small().color(Color32::GRAY));
+        for (g, name) in GridMode::FIXED {
+            if ui.radio(*mode == GridMode::Fixed(g), name).clicked() {
+                *mode = GridMode::Fixed(g);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.radio(*mode == GridMode::Off, "Off (no snapping)").clicked() {
+            *mode = GridMode::Off;
+            ui.close();
+        }
+        ui.label(egui::RichText::new("Hold Alt to ignore the grid").small().color(Color32::GRAY));
+    });
+}

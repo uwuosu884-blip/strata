@@ -21,7 +21,7 @@ fn big_song(variant: usize) -> Song {
         content: ClipContent::Audio(AudioClip { sample: sample.clone(), offset_frames: 0.0, warp_bpm: Some(100.0), gain: 0.5 }),
     };
     let many_notes: Vec<Note> =
-        (0..600).map(|i| Note { start: i as f64 / 150.0, length: 0.1, pitch: 30 + (i % 60) as u8, velocity: 100 }).collect();
+        (0..600).map(|i| Note { start: i as f64 / 150.0, length: 0.1, pitch: 30 + (i % 60) as u8, velocity: 100, muted: false }).collect();
     let midi = Clip { length: 4.0, looping: true, content: ClipContent::Midi(many_notes) };
     let pads = (0..16)
         .map(|i| DrumPad { name: "p".into(), sample: Some(sample.clone()), gain: 0.5, tune_semitones: 0.0, choke: (i % 3) as u8 })

@@ -97,32 +97,44 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 
 | Key | Action |
 |---|---|
-| Space | Play / stop |
+| Space / Shift+Space | Play from the start point / continue; stop |
 | Tab | Switch Session ↔ Arrangement |
+| Shift+Tab | Detail panel: clip view ↔ device view |
 | Enter | Launch the selected scene |
 | F9 | Record |
 | A … ' | Play notes (computer keyboard MIDI); Z/X octave, C/V velocity |
 | Shift+M | Toggle computer keyboard MIDI |
-| Del | Delete selection (time selection, clips or notes) |
+| Del | Delete selection (notes, time selection, clips or tracks) |
+| 0 | Deactivate / activate the selected clips or notes |
 | Esc | Clear the arrangement selection |
 | Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) | Undo / redo |
 | Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N | Save / save as / open / new |
 | Ctrl+Shift+R | Export audio |
 | Ctrl+T / Ctrl+Shift+T | Add audio / MIDI track |
 | Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
-| Ctrl+L | Loop the selected region (or clips) |
+| Ctrl+L | Loop the selected region (or clips); again: loop off |
+| Ctrl+J | Consolidate clips (audio is rendered to a new sample) |
+| Ctrl+R | Rename the selected track (or double-click its header) |
 | Ctrl+E | Split clips at the selection edges or at the playhead |
 | Ctrl+Shift+M | Insert a MIDI clip over the selected region |
-| Ctrl+D | Duplicate (selection, clips or session clip) |
+| Ctrl+D | Duplicate (notes, selection, clips or session clip) |
 | Ctrl+B | Show / hide browser |
 
 Arrangement mouse: drag a clip's title bar to move it (and all selected
-clips); drag its right edge to resize. Drag on a lane or clip body to make a
+clips); drag its left/right edge to trim (up to the clip's content). Drag on a lane or clip body to make a
 time selection; drag inside a selection to cut that part out and move it.
 Click anywhere to move the playhead. Shift+click headers or clips to
 multi-select. Wheel scrolls, Shift+wheel scrolls horizontally, Ctrl+wheel
-zooms, Alt+wheel changes track height. Drag in the ruler to set the loop
-range; click the loop brace to switch looping on or off.
+zooms, Alt+wheel changes the height of the selected tracks (all when none
+is selected); zoom fully out, or use the ⊳ header button, to collapse a
+track to clip title bars. Drag headers to reorder tracks or move them into
+or out of groups. Drag in the ruler to set the loop range, drag the loop
+brace or its edges to adjust it, and click it to switch looping on or off. Hold
+Alt to ignore the grid. Right-click → Grid sets the grid size.
+
+Piano roll: double-click adds or removes notes, drag on empty space to select
+with a rubber band, Ctrl+wheel / Alt+wheel zoom, Shift+wheel scrolls, and
+clicking the ruler moves the playhead.
 
 Audio files: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG (Vorbis, FLAC and Opus).
 

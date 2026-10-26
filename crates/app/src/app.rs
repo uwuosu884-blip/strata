@@ -15,6 +15,22 @@ pub enum View {
     Arrangement,
 }
 
+/// Detail panel content (Shift+Tab toggles).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DetailMode {
+    Clip,
+    Device,
+}
+
+/// Inline track rename in progress.
+#[derive(Clone, Debug)]
+pub struct Rename {
+    pub id: u64,
+    pub text: String,
+    /// Focus has not been requested yet.
+    pub fresh: bool,
+}
+
 /// What the detail panel (bottom) shows.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ClipRef {
@@ -137,7 +153,21 @@ pub struct DawApp {
     pub arr_row_h: f32,
     pub arr_vscroll: f32,
     pub pr_low_note: i32,
+    /// Piano roll: pixels per beat (0 = fit the clip), first visible beat, key row height.
+    pub pr_zoom: f32,
+    pub pr_scroll: f64,
+    pub pr_row_h: f32,
+    /// Current arrangement / piano roll grid step (beats), for labels and Quantize.
     pub grid: f64,
+    pub pr_grid_now: f64,
+    pub arr_grid: crate::arr_ops::GridMode,
+    pub pr_grid: crate::arr_ops::GridMode,
+    pub detail_mode: DetailMode,
+    /// Last mouse press was in the detail panel (keys like Del/Ctrl+D/0 act on notes).
+    pub focus_detail: bool,
+    /// Where Space starts playback (set by clicking the timeline).
+    pub play_start: f64,
+    pub renaming: Option<Rename>,
     pub browser_dir: PathBuf,
     pub show_browser: bool,
 }
@@ -195,7 +225,17 @@ impl DawApp {
             arr_row_h: 58.0,
             arr_vscroll: 0.0,
             pr_low_note: 48,
+            pr_zoom: 0.0,
+            pr_scroll: 0.0,
+            pr_row_h: 11.0,
             grid: 0.25,
+            pr_grid_now: 0.25,
+            arr_grid: crate::arr_ops::GridMode::Adaptive(0),
+            pr_grid: crate::arr_ops::GridMode::Adaptive(0),
+            detail_mode: DetailMode::Device,
+            focus_detail: false,
+            play_start: 0.0,
+            renaming: None,
             browser_dir,
             show_browser: true,
         };
@@ -512,6 +552,7 @@ impl DawApp {
             length,
             looping: warp.is_some(),
             content: ClipContent::Audio { sample: key.to_string(), offset_frames: 0.0, warp_bpm: warp, gain_db: 0.0 },
+            ..Default::default()
         })
     }
 
@@ -525,13 +566,31 @@ impl DawApp {
         self.send(Command::LaunchScene { scene: scene as u32 });
     }
 
+    /// Space: stop (the playhead stays where it stopped), or play from the start
+    /// point (the last position set by clicking), not from where it stopped.
     pub fn toggle_play(&mut self) {
-        self.send_now(if self.status.playing { Command::Stop } else { Command::Play });
+        if self.status.playing {
+            self.send_now(Command::Stop);
+        } else {
+            self.send_now(Command::SetPosition(self.play_start));
+            self.send_now(Command::Play);
+        }
+    }
+
+    /// Move the playhead (and the start point for the next play).
+    pub fn set_playhead(&mut self, beat: f64) {
+        self.play_start = beat.max(0.0);
+        self.send_now(Command::SetPosition(self.play_start));
     }
 
     /// Live: Stop while playing pauses; Stop while stopped rewinds.
     pub fn stop(&mut self) {
-        self.send_now(if self.status.playing { Command::Stop } else { Command::Rewind });
+        if self.status.playing {
+            self.send_now(Command::Stop);
+        } else {
+            self.play_start = 0.0;
+            self.send_now(Command::Rewind);
+        }
     }
 
     // ----- mixer (immediate commands + project value) -------------------------------------
@@ -624,10 +683,16 @@ impl DawApp {
     }
 
     fn store_recording(&mut self, take: &Take) -> String {
+        self.store_audio("take", &take.audio)
+    }
+
+    /// Keep interleaved stereo audio in the cache under a `recording:` key
+    /// (written next to the project on save). Used for takes and consolidated clips.
+    pub fn store_audio(&mut self, kind: &str, interleaved: &[f32]) -> String {
         self.rec_counter += 1;
-        let key = format!("{RECORDING_PREFIX}take-{}-{}", std::process::id(), self.rec_counter);
-        let (l, r): (Vec<f32>, Vec<f32>) = take.audio.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
-        self.cache.insert(&key, SampleBuffer::new(format!("Take {}", self.rec_counter), self.audio.info.sample_rate, l, r));
+        let key = format!("{RECORDING_PREFIX}{kind}-{}-{}", std::process::id(), self.rec_counter);
+        let (l, r): (Vec<f32>, Vec<f32>) = interleaved.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
+        self.cache.insert(&key, SampleBuffer::new(format!("{kind} {}", self.rec_counter), self.audio.info.sample_rate, l, r));
         key
     }
 
@@ -676,10 +741,12 @@ impl DawApp {
                         length: (n.end_beat - n.start_beat).max(1.0 / 64.0),
                         pitch: n.pitch,
                         velocity: n.velocity,
+                        muted: false,
                     })
                     .collect()
             };
             let mut arr_new: Vec<(usize, Clip)> = Vec::new();
+            let names: Vec<String> = (0..p.tracks.len()).map(|i| p.next_clip_name(i)).collect();
             for (i, t) in p.tracks.iter_mut().enumerate() {
                 if !t.arm {
                     continue;
@@ -706,6 +773,7 @@ impl DawApp {
                                     length: (n.end_beat - n.start_beat).max(1.0 / 64.0),
                                     pitch: n.pitch,
                                     velocity: n.velocity,
+                                    muted: false,
                                 });
                             }
                             existing.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -726,7 +794,8 @@ impl DawApp {
                 created += 1;
                 let id = p.next_id;
                 p.next_id += 1;
-                let clip = Clip { id, name: format!("Rec {id}"), color: t.color, length: len, looping: true, content };
+                let clip = Clip { id, name: String::new(), color: t.color, length: len, looping: true, content, ..Default::default() };
+                let clip = Clip { name: names[i].clone(), ..clip };
                 match session {
                     Some((_, scene)) => {
                         if scene < t.slots.len() {
@@ -825,6 +894,10 @@ impl DawApp {
         self.needs_compile = true;
         self.selected_clip = None;
         self.selected_track = 0;
+        self.play_start = 0.0;
+        self.renaming = None;
+        self.clear_structure_selection();
+        self.arr_sel.clear();
         self.sync_globals();
     }
 

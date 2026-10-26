@@ -8,13 +8,16 @@ use std::sync::Arc;
 
 pub const MAX_TRACKS: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Start in beats from clip start.
     pub start: f64,
     pub length: f64,
     pub pitch: u8,
     pub velocity: u8,
+    /// Deactivated (key 0): kept in the clip but never played.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone)]

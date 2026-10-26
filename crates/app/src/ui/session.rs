@@ -114,21 +114,31 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
         draw_fold_arrow(p, fold_zone.center(), folded, Color32::BLACK);
         x += 14.0;
     }
-    p.with_clip_rect(rect.shrink(2.0)).text(
-        pos2(x, rect.center().y),
-        Align2::LEFT_CENTER,
-        track.name.clone(),
-        FontId::proportional(12.0),
-        Color32::BLACK,
-    );
+    let renaming = app.renaming.as_ref().is_some_and(|r| r.id == track.id);
+    if !renaming {
+        p.with_clip_rect(rect.shrink(2.0)).text(
+            pos2(x, rect.center().y),
+            Align2::LEFT_CENTER,
+            app.project.track_label(t),
+            FontId::proportional(12.0),
+            Color32::BLACK,
+        );
+    }
     if resp.clicked() {
         if is_group && resp.interact_pointer_pos().is_some_and(|p| fold_zone.contains(p)) {
             app.toggle_fold(t);
         } else {
             let toggle = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            app.click_track(t, toggle);
+            app.select_track_header(t, toggle);
             app.selected_clip = None;
         }
+    }
+    if resp.double_clicked() {
+        app.select_track_header(t, false);
+        app.start_rename(t);
+    }
+    if renaming {
+        super::rename_editor(app, ui, Rect::from_min_max(pos2(x - 2.0, rect.min.y + 1.0), rect.max - vec2(1.0, 1.0)), t);
     }
     if let Some(item) = resp.dnd_release_payload::<DragItem>()
         && let Some(def) = super::instrument_for(&item)
@@ -149,13 +159,10 @@ pub fn draw_fold_arrow(p: &egui::Painter, c: egui::Pos2, folded: bool, col: Colo
 }
 
 pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
-    let mut name = app.project.tracks[t].name.clone();
-    let r = ui.text_edit_singleline(&mut name);
-    if r.gained_focus() {
-        app.begin_gesture();
-    }
-    if r.changed() {
-        app.project.tracks[t].name = name;
+    if ui.button("Rename               Ctrl+R").clicked() {
+        app.select_track_header(t, false);
+        app.start_rename(t);
+        ui.close();
     }
     ui.horizontal(|ui| {
         for (i, c) in daw_project::PALETTE.iter().enumerate() {
@@ -245,7 +252,7 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
 
     match track.slots.get(s).and_then(|c| c.as_ref()) {
         Some(clip) => {
-            let c = rgb(clip.color);
+            let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
             p.rect_filled(rect, CornerRadius::same(2), if playing { c } else { shade(c, 0.75) });
             if selected {
                 p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
@@ -413,7 +420,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem) {
             let Some(mut clip) = app.audio_clip_for(key, name) else { return };
             let t = app.edit(|p| {
                 let t = p.add_track(TrackKind::Audio);
-                p.tracks[t].name = name.clone();
+                p.tracks[t].name = format!("# {name}");
                 clip.id = p.alloc_id();
                 if p.scenes.is_empty() {
                     p.add_scene();
@@ -428,7 +435,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem) {
             if let Some(def) = super::instrument_for(item) {
                 let t = app.edit(|p| {
                     let t = p.add_track(TrackKind::Midi);
-                    p.tracks[t].name = def.label().to_string();
+                    p.tracks[t].name = format!("# {}", def.label());
                     p.tracks[t].instrument = def;
                     t
                 });
