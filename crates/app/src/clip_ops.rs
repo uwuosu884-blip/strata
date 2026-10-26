@@ -322,7 +322,8 @@ mod tests {
     fn loop_brace_shifts_by_its_length() {
         let mut a = app();
         let c = slot(&mut a, vec![]);
-        DawApp::clip_mut(&mut a.project, c).map(|cl| (cl.loop_start, cl.loop_end) = (1.0, 3.0));
+        let cl = DawApp::clip_mut(&mut a.project, c).unwrap();
+        (cl.loop_start, cl.loop_end) = (1.0, 3.0);
         a.shift_loop(c, 1.0);
         let cl = a.clip(c).unwrap();
         assert_eq!((cl.loop_start, cl.loop_end), (3.0, 5.0));
