@@ -52,11 +52,11 @@ fn audio_clip_follows_source_and_warp_repitches() {
     let s = Arc::new(SampleBuffer::mono("ramp", SR as u32, data));
     for (warp, speed) in [(None, 1.0), (Some(60.0), 2.0)] {
         let (mut e, mut h) = engine();
-        let clip = Clip {
-            length: 4.0,
-            looping: true,
-            content: ClipContent::Audio(AudioClip { sample: s.clone(), offset_frames: 100.0, warp_bpm: warp, gain: 1.0 }),
-        };
+        let clip = Clip::new(
+            4.0,
+            true,
+            ClipContent::Audio(AudioClip { sample: s.clone(), offset_frames: 100.0, warp_bpm: warp, gain: 1.0, warp: Default::default() }),
+        );
         h.set_song(Song::new(vec![audio_track(0, clip)])).unwrap();
         h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();
         let out = left(&render(&mut e, 2000, 512));
@@ -111,11 +111,8 @@ fn synth_presets_are_stable_with_full_polyphony() {
 fn clip_notes_end_after_their_length() {
     let (mut e, mut h) = engine();
     let p = SynthParams { amp: AdsrParams { attack: 0.001, decay: 0.1, sustain: 1.0, release: 0.01 }, ..Default::default() };
-    let clip = Clip {
-        length: 4.0,
-        looping: true,
-        content: ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false }]),
-    };
+    let clip =
+        Clip::new(4.0, true, ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0 }]));
     h.set_song(Song::new(vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), slots: vec![Some(clip)], ..Default::default() }]))
         .unwrap();
     h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();

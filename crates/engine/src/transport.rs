@@ -13,6 +13,8 @@ pub struct Transport {
     pub loop_enabled: bool,
     pub loop_start: f64,
     pub loop_end: f64,
+    /// Phase nudge rate factor (1 = off).
+    pub nudge: f64,
 }
 
 impl Default for Transport {
@@ -25,6 +27,7 @@ impl Default for Transport {
             loop_enabled: false,
             loop_start: 0.0,
             loop_end: 16.0,
+            nudge: 1.0,
         }
     }
 }
@@ -43,7 +46,7 @@ impl Transport {
     /// How far the playhead advances per audio sample.
     #[inline]
     pub fn beats_per_sample(&self, sample_rate: f64) -> f64 {
-        self.tempo_bpm / (60.0 * sample_rate)
+        self.tempo_bpm * self.nudge / (60.0 * sample_rate)
     }
 
     /// Loop region if active and valid.

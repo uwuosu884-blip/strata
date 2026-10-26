@@ -1055,7 +1055,7 @@ mod app_tests {
 
     fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
         let id = p.alloc_id();
-        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false }];
+        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false, mpe: 0 }];
         p.tracks[t]
             .arrangement
             .push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
@@ -1175,7 +1175,7 @@ mod app_tests {
         let mut a = tracks(1);
         let id = midi_clip(&mut a.project, 0, 0.0, 4.0, 60);
         if let Some(ClipContent::Midi { notes }) = super::clip_by_id(&mut a.project, id).map(|c| &mut c.content) {
-            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false });
+            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false, mpe: 0 });
         }
         let c = ClipRef::Arr { track: 0, index: 0 };
         a.selected_clip = Some(c);

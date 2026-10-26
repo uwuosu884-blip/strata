@@ -951,6 +951,7 @@ name = "daw-engine"
 version = "0.5.0"
 dependencies = [
  "assert_no_alloc",
+ "realfft",
  "rtrb",
  "serde",
 ]

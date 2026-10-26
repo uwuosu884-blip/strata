@@ -7,6 +7,9 @@ pub struct SampleBuffer {
     pub right: Vec<f32>,
     /// Min/max of the mono mix per `PEAK_BLOCK` frames, for waveform drawing.
     pub peaks: Vec<(f32, f32)>,
+    /// Detected transients (frames, ascending) — Beats-mode segments and
+    /// warp-marker suggestions.
+    pub transients: Vec<f64>,
 }
 
 pub const PEAK_BLOCK: usize = 256;
@@ -24,7 +27,8 @@ impl SampleBuffer {
                 })
             })
             .collect();
-        Self { name: name.into(), sample_rate, left, right, peaks }
+        let transients = detect_transients(&left, &right, sample_rate);
+        Self { name: name.into(), sample_rate, left, right, peaks, transients }
     }
 
     pub fn mono(name: impl Into<String>, sample_rate: u32, data: Vec<f32>) -> Self {
@@ -95,5 +99,76 @@ mod tests {
         let s = SampleBuffer::mono("t", 48_000, vec![0.5; PEAK_BLOCK * 3 + 1]);
         assert_eq!(s.peaks.len(), 4);
         assert_eq!(s.peaks[0], (0.0, 0.5));
+    }
+}
+
+/// Onset detection: energy of the first difference (high-frequency emphasis)
+/// per 256-frame hop; an onset is a local rise well above the recent average.
+/// Positions are refined to the strongest sample jump within the hop.
+pub fn detect_transients(left: &[f32], right: &[f32], sample_rate: u32) -> Vec<f64> {
+    const HOP: usize = 256;
+    let n = left.len().min(right.len());
+    if n < HOP * 2 {
+        return if n > 0 { vec![0.0] } else { Vec::new() };
+    }
+    let hops = n / HOP;
+    let mut e = vec![0.0f32; hops];
+    let mut prev = 0.0f32;
+    for (h, v) in e.iter_mut().enumerate() {
+        let mut acc = 0.0;
+        for i in h * HOP..(h + 1) * HOP {
+            let m = 0.5 * (left[i] + right[i]);
+            acc += (m - prev) * (m - prev);
+            prev = m;
+        }
+        *v = acc;
+    }
+    let peak = e.iter().copied().fold(0.0f32, f32::max);
+    let floor = peak * 1e-3 + 1e-9;
+    let min_gap = (sample_rate as usize / 20 / HOP).max(1); // 50 ms
+    let mut out: Vec<f64> = Vec::new();
+    let mut last: Option<usize> = None;
+    for h in 0..hops {
+        let lo = h.saturating_sub(8);
+        let avg = if h > lo { e[lo..h].iter().sum::<f32>() / (h - lo) as f32 } else { 0.0 };
+        let next = if h + 1 < hops { e[h + 1] } else { 0.0 };
+        let rise = e[h] > floor && e[h] > 3.0 * avg + floor && e[h] >= next * 0.7;
+        if rise && last.is_none_or(|l| h - l >= min_gap) {
+            // Refine: first frame whose |jump| exceeds half the hop's maximum.
+            let s = h.saturating_sub(1) * HOP;
+            let mut best = 0.0f32;
+            for i in s.max(1)..(h + 1) * HOP {
+                best = best.max((left[i] + right[i] - left[i - 1] - right[i - 1]).abs());
+            }
+            let pos = (s.max(1)..(h + 1) * HOP)
+                .find(|&i| (left[i] + right[i] - left[i - 1] - right[i - 1]).abs() >= best * 0.5)
+                .unwrap_or(h * HOP);
+            out.push(pos as f64);
+            last = Some(h);
+        }
+    }
+    if out.first().is_none_or(|&f| f > HOP as f64 * 4.0) {
+        out.insert(0, 0.0);
+    }
+    out
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    #[test]
+    fn finds_clicks() {
+        let mut d = vec![0.0f32; 48_000];
+        for k in [0usize, 12_000, 24_000, 36_000] {
+            for i in 0..2000 {
+                d[k + i] = (i as f32 * 0.3).sin() * (1.0 - i as f32 / 2000.0);
+            }
+        }
+        let t = detect_transients(&d, &d, 48_000);
+        assert_eq!(t.len(), 4, "{t:?}");
+        for (a, b) in t.iter().zip([0.0, 12_000.0, 24_000.0, 36_000.0]) {
+            assert!((a - b).abs() < 300.0, "{t:?}");
+        }
     }
 }

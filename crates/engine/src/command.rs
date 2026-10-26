@@ -82,6 +82,15 @@ pub enum Command {
 
     /// Start/stop recording at the next launch-quantize boundary.
     SetRecording(bool),
+    /// Clip launch button released (Gate / Repeat launch modes).
+    ReleaseClip {
+        track: u16,
+        scene: u32,
+    },
+    /// Follow the tempo automation of leader clips (false = "Unfollow").
+    SetTempoFollow(bool),
+    /// Phase nudge: playback rate factor while held (1 = off).
+    Nudge(f64),
 }
 
 /// Events from hardware MIDI input (parsed on the MIDI thread).

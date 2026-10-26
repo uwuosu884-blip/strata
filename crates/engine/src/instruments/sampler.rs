@@ -56,11 +56,13 @@ struct Voice {
 pub struct SampleVoices<const N: usize> {
     voices: [Voice; N],
     clock: u32,
+    /// Track-wide pitch bend in semitones (clip envelope).
+    pub bend: f32,
 }
 
 impl<const N: usize> Default for SampleVoices<N> {
     fn default() -> Self {
-        Self { voices: [Voice::default(); N], clock: 0 }
+        Self { voices: [Voice::default(); N], clock: 0, bend: 0.0 }
     }
 }
 
@@ -162,6 +164,7 @@ impl<const N: usize> SampleVoices<N> {
         sample_for: impl Fn(u8) -> Option<&'a SampleBuffer>,
         keep: impl Fn(u8) -> bool,
     ) {
+        let bend_k = if self.bend == 0.0 { 1.0 } else { (self.bend as f64 / 12.0).exp2() };
         for v in self.voices.iter_mut().filter(|v| v.active && keep(v.pad)) {
             let Some(s) = sample_for(v.pad) else {
                 v.active = false;
@@ -181,7 +184,7 @@ impl<const N: usize> SampleVoices<N> {
                 let g = v.env.tick() * v.gain;
                 *lo += a * g;
                 *ro += b * g;
-                v.pos += v.rate;
+                v.pos += v.rate * bend_k;
                 if v.pos >= end || v.env.is_idle() {
                     v.active = false;
                     break;

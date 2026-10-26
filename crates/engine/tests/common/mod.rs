@@ -51,11 +51,11 @@ pub fn impulse_sampler() -> Instrument {
 }
 
 pub fn notes_at(beats: &[f64]) -> Vec<Note> {
-    beats.iter().map(|&b| Note { start: b, length: 0.25, pitch: 60, velocity: 127, muted: false }).collect()
+    beats.iter().map(|&b| Note { start: b, length: 0.25, pitch: 60, velocity: 127, muted: false, mpe: 0 }).collect()
 }
 
 pub fn midi_clip(length: f64, beats: &[f64]) -> Clip {
-    Clip { length, looping: true, content: ClipContent::Midi(notes_at(beats)) }
+    Clip::new(length, true, ClipContent::Midi(notes_at(beats)))
 }
 
 pub fn track(rt: u16, slots: Vec<Option<Clip>>) -> SongTrack {
@@ -98,7 +98,11 @@ pub fn freq(v: &[f32], sr: f64) -> f64 {
 
 pub fn dc_clip(level: f32) -> Clip {
     let s = Arc::new(SampleBuffer::mono("dc", SR as u32, vec![level; SR as usize * 4]));
-    Clip { length: 4.0, looping: true, content: ClipContent::Audio(AudioClip { sample: s, offset_frames: 0.0, warp_bpm: None, gain: 1.0 }) }
+    Clip::new(
+        4.0,
+        true,
+        ClipContent::Audio(AudioClip { sample: s, offset_frames: 0.0, warp_bpm: None, gain: 1.0, warp: Default::default() }),
+    )
 }
 
 pub fn audio_track(rt: u16, clip: Clip) -> SongTrack {

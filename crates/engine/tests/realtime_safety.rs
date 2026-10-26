@@ -15,14 +15,59 @@ static A: AllocDisabler = AllocDisabler;
 
 fn big_song(variant: usize) -> Song {
     let sample = Arc::new(SampleBuffer::mono("s", 44_100, (0..44_100).map(|i| (i as f32 * 0.01).sin()).collect()));
-    let audio = Clip {
-        length: 2.0,
-        looping: true,
-        content: ClipContent::Audio(AudioClip { sample: sample.clone(), offset_frames: 0.0, warp_bpm: Some(100.0), gain: 0.5 }),
+    // Every warp mode (incl. the phase vocoder), envelopes, loop markers.
+    let mode =
+        [StretchMode::RePitch, StretchMode::Beats, StretchMode::Tones, StretchMode::Texture, StretchMode::Complex, StretchMode::ComplexPro]
+            [variant % 6];
+    let warp = WarpSetup {
+        map: WarpMap::from_markers(&[(0.0, 0.0), (1.0, 20_000.0), (2.0, 44_100.0)], 0.0, 26_460.0),
+        mode,
+        params: StretchParams {
+            flux: 0.5,
+            fade: 0.3,
+            loop_mode: [LoopMode::Off, LoopMode::Forward, LoopMode::BackAndForth][variant % 3],
+            ..Default::default()
+        },
+        segs: vec![0.0, 0.5, 1.0, 1.5],
+        transpose: 3.0,
+        gain_env: vec![(0.0, 1.0), (2.0, 0.2)],
+        transpose_env: vec![(0.0, 0.0), (1.0, -5.0)],
+        ..Default::default()
     };
-    let many_notes: Vec<Note> =
-        (0..600).map(|i| Note { start: i as f64 / 150.0, length: 0.1, pitch: 30 + (i % 60) as u8, velocity: 100, muted: false }).collect();
-    let midi = Clip { length: 4.0, looping: true, content: ClipContent::Midi(many_notes) };
+    let mut audio = Clip::new(
+        2.0,
+        true,
+        ClipContent::Audio(AudioClip { sample: sample.clone(), offset_frames: 0.0, warp_bpm: Some(100.0), gain: 0.5, warp }),
+    );
+    audio.start = 0.25;
+    audio.loop_start = 0.5;
+    audio.loop_end = 1.75;
+    let many_notes: Vec<Note> = (0..600)
+        .map(|i| Note {
+            start: i as f64 / 150.0,
+            length: 0.1,
+            pitch: 30 + (i % 60) as u8,
+            velocity: 100,
+            muted: false,
+            mpe: (i % 3) as u32,
+        })
+        .collect();
+    let mut midi = Clip::new(4.0, true, ClipContent::Midi(many_notes));
+    midi.start = 0.5;
+    midi.loop_start = 1.0;
+    midi.loop_end = 3.0;
+    let curve: Vec<(f64, f32)> = (0..80).map(|k| (k as f64 * 0.01, (k as f32 * 0.3).sin())).collect();
+    midi.extra.mpe = vec![NoteMpe { pitch: curve.clone(), slide: curve.clone(), pressure: curve }; 2];
+    midi.extra.vol_env = vec![(0.0, 0.5), (4.0, 1.0)];
+    midi.extra.bend_env = vec![(0.0, -1.0), (4.0, 1.0)];
+    midi.extra.launch = Launch {
+        mode: [LaunchMode::Trigger, LaunchMode::Gate, LaunchMode::Toggle, LaunchMode::Repeat][variant % 4],
+        quantize: Some(0.5),
+        legato: variant % 2 == 1,
+        velocity: 0.5,
+        follow: Some((Follow::Next, Follow::Any, 0.5, 1.0)),
+    };
+    midi.extra.program = [Some(1), Some(2), Some(3)];
     let pads = (0..16)
         .map(|i| DrumPad { name: "p".into(), sample: Some(sample.clone()), gain: 0.5, tune_semitones: 0.0, choke: (i % 3) as u8 })
         .collect();
@@ -63,7 +108,10 @@ fn big_song(variant: usize) -> Song {
             ..Default::default()
         })
         .collect();
-    Song::new(tracks)
+    let mut song = Song::new(tracks);
+    song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
+    song.base_tempo = 120.0;
+    song
 }
 
 #[test]
@@ -88,6 +136,12 @@ fn process_is_allocation_free() {
         Command::SetTrackSolo { track: 2, solo: true },
         Command::SetTrackPan { track: 1, pan: 0.3 },
         Command::LaunchClip { track: 4, scene: 2 },
+        Command::ReleaseClip { track: 4, scene: 2 },
+        Command::Nudge(1.08),
+        Command::SetTempoFollow(false),
+        Command::LaunchClip { track: 7, scene: 0 },
+        Command::Nudge(1.0),
+        Command::SetTempoFollow(true),
         Command::NoteOff { track: 1, pitch: 60 },
         Command::SetLaunchQuantize(0.25),
         Command::SetTrackSolo { track: 2, solo: false },

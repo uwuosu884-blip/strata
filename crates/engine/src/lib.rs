@@ -13,12 +13,14 @@ mod buffer;
 mod command;
 pub mod instruments;
 mod metronome;
+pub mod pv;
 mod sample;
 mod smoother;
 mod song;
 mod status;
 mod track;
 mod transport;
+pub mod warp;
 
 pub use buffer::StereoBuffer;
 pub use command::{Command, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
@@ -28,11 +30,12 @@ pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams
 pub use instruments::synth::{SynthParams, Wave};
 pub use sample::{PEAK_BLOCK, SampleBuffer};
 pub use song::{
-    ArrangementClip, AudioClip, Clip, ClipContent, MAX_IO_CHANNELS, MAX_TRACKS, MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note,
-    Song, SongTrack, Tap, TrackInput, TrackOutput,
+    ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_TRACKS, MIDI_ALL_INS,
+    MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup,
 };
 pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};
+pub use warp::{LoopMode, StretchMode, StretchParams, WarpMap};
 
 use metronome::Metronome;
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -93,6 +96,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
     let transport = Transport::default();
     status.publish_transport(&transport);
     let mb = config.max_block_frames;
+    let plans = pv::Plans::new();
     let bufs = |k: usize| (0..k).map(|_| vec![0.0f32; mb]).collect::<Vec<_>>();
 
     let engine = Engine {
@@ -121,9 +125,11 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         res_pos: 0,
         res_x: StereoBuffer::new(mb),
         song: Box::default(),
-        tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr)).collect(),
+        tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr, &plans)).collect(),
         rt_to_song: [NONE; MAX_TRACKS],
         quantum: 4.0,
+        follow_tempo: true,
+        rng: 0x2545_F491_4F6C_DD1D,
         auto_arm: NONE,
         rec: Recorder { state: RecordState::Idle, beat: 0.0 },
         rec_lanes: [NONE; MAX_REC_LANES],
@@ -181,6 +187,10 @@ pub struct Engine {
     tracks: Vec<TrackRt>,
     rt_to_song: [u16; MAX_TRACKS],
     quantum: f64,
+    /// Follow the song's tempo map (leader clips); off = "Unfollow Tempo Automation".
+    follow_tempo: bool,
+    /// Follow-action dice (xorshift).
+    rng: u64,
     auto_arm: u16,
     rec: Recorder,
     /// Runtime tracks whose input the current take records.
@@ -346,7 +356,24 @@ impl Engine {
 
     /// Next launch boundary at or after the current position.
     fn quantized(&self, beat: f64) -> f64 {
-        if !self.transport.playing || self.quantum <= 0.0 { beat } else { ((beat / self.quantum) - 1.0e-9).ceil() * self.quantum }
+        self.quantized_by(beat, self.quantum)
+    }
+
+    fn quantized_by(&self, beat: f64, q: f64) -> f64 {
+        if !self.transport.playing || q <= 0.0 { beat } else { ((beat / q) - 1.0e-9).ceil() * q }
+    }
+
+    fn dice(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        (x >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    fn slot_clip(&self, rt: u16, scene: u32) -> Option<&Clip> {
+        self.song_track(rt)?.slots.get(scene as usize)?.as_ref()
     }
 
     fn launch(&mut self, rt: u16, action: Action) {
@@ -356,13 +383,88 @@ impl Engine {
         if !self.transport.playing {
             self.transport.playing = true;
         }
-        let beat = self.quantized(self.transport.beat_position);
+        // Clip launch quantization (None = global).
+        let q = match action {
+            Action::Launch(s) => self.slot_clip(rt, s).and_then(|c| c.extra.launch.quantize).unwrap_or(self.quantum),
+            Action::Stop => self.quantum,
+        };
+        let beat = self.quantized_by(self.transport.beat_position, q);
         let t = &mut self.tracks[rt as usize];
         if action == Action::Stop && t.playing.is_none() {
             t.pending = None;
             return;
         }
         t.pending = Some(Pending { beat, action });
+    }
+
+    /// Launch button pressed on a slot (launch modes: Toggle stops a playing
+    /// clip; Gate / Repeat remember the held button).
+    fn press_clip(&mut self, rt: u16, scene: u32) {
+        let Some(mode) = self.slot_clip(rt, scene).map(|c| c.extra.launch.mode) else {
+            return self.launch(rt, Action::Stop);
+        };
+        let Some(t) = self.tracks.get_mut(rt as usize) else { return };
+        let playing_this = t.playing.is_some_and(|(s, _)| s == scene);
+        if mode == LaunchMode::Toggle && playing_this {
+            return self.launch(rt, Action::Stop);
+        }
+        t.held = matches!(mode, LaunchMode::Gate | LaunchMode::Repeat).then_some(scene);
+        self.launch(rt, Action::Launch(scene));
+    }
+
+    /// Launch button released: Gate stops the clip; Repeat stops retriggering.
+    fn release_clip(&mut self, rt: u16, scene: u32) {
+        let Some(t) = self.tracks.get_mut(rt as usize) else { return };
+        if t.held != Some(scene) {
+            return;
+        }
+        t.held = None;
+        let gate = self.slot_clip(rt, scene).is_some_and(|c| c.extra.launch.mode == LaunchMode::Gate);
+        let t = &mut self.tracks[rt as usize];
+        if gate {
+            if t.pending.is_some_and(|p| p.action == Action::Launch(scene)) {
+                t.pending = None;
+            }
+            if t.playing.is_some_and(|(s, _)| s == scene) {
+                t.voices.release_clip_notes();
+                t.playing = None;
+                t.follow_at = None;
+            }
+        } else if t.pending.is_some_and(|p| p.action == Action::Launch(scene)) && t.playing.is_some_and(|(s, _)| s == scene) {
+            t.pending = None; // queued repeat
+        }
+    }
+
+    /// Scene picked by a follow action for track `rt` (None = stop / nothing).
+    fn follow_target(&mut self, rt: u16, cur: u32, f: Follow) -> Option<Option<u32>> {
+        let r = self.dice();
+        let st = self.song_track(rt)?;
+        let n = st.slots.len() as u32;
+        let has = |s: u32| st.slots.get(s as usize).is_some_and(Option::is_some);
+        let count = (0..n).filter(|&s| has(s)).count() as u32;
+        let nth = |k: u32| (0..n).filter(|&s| has(s)).nth(k as usize);
+        let next = |from: u32, dir: i64| -> Option<u32> {
+            (1..=n as i64).map(|d| (from as i64 + d * dir).rem_euclid(n as i64) as u32).find(|&s| has(s))
+        };
+        Some(match f {
+            Follow::None => return None,
+            Follow::Stop => None,
+            Follow::Again => Some(cur),
+            Follow::Prev => next(cur, -1),
+            Follow::Next => next(cur, 1),
+            Follow::First => nth(0),
+            Follow::Last => count.checked_sub(1).and_then(nth),
+            Follow::Any => nth(((r * count as f32) as u32).min(count.saturating_sub(1))),
+            Follow::Other => {
+                if count <= 1 {
+                    Some(cur)
+                } else {
+                    let k = ((r * (count - 1) as f32) as u32).min(count - 2);
+                    (0..n).filter(|&s| has(s) && s != cur).nth(k as usize)
+                }
+            }
+            Follow::Jump(s) => has(s as u32).then_some(s as u32),
+        })
     }
 
     fn drain_commands(&mut self) {
@@ -413,10 +515,10 @@ impl Engine {
                         t.solo = solo;
                     }
                 }
-                Command::LaunchClip { track, scene } => {
-                    let has_clip = self.song_track(track).is_some_and(|t| t.slots.get(scene as usize).is_some_and(Option::is_some));
-                    self.launch(track, if has_clip { Action::Launch(scene) } else { Action::Stop });
-                }
+                Command::LaunchClip { track, scene } => self.press_clip(track, scene),
+                Command::ReleaseClip { track, scene } => self.release_clip(track, scene),
+                Command::SetTempoFollow(on) => self.follow_tempo = on,
+                Command::Nudge(k) => self.transport.nudge = if k.is_finite() { k.clamp(0.5, 2.0) } else { 1.0 },
                 Command::StopTrack { track } => self.launch(track, Action::Stop),
                 Command::LaunchScene { scene } => {
                     for i in 0..self.song.tracks.len() {
@@ -607,6 +709,8 @@ impl Engine {
         for t in &mut self.tracks {
             t.playing = None;
             t.pending = None;
+            t.follow_at = None;
+            t.held = None;
             t.voices.release_clip_notes();
         }
     }
@@ -618,6 +722,9 @@ impl Engine {
             // Session clips keep their phase; arrangement notes are cut.
             if let Some((_, origin)) = &mut t.playing {
                 *origin += delta;
+            }
+            if let Some(f) = &mut t.follow_at {
+                *f += delta;
             }
             if let Some(p) = &mut t.pending {
                 p.beat = (p.beat + delta).max(beat);
@@ -661,17 +768,68 @@ impl Engine {
     /// Apply launches / record transitions that are due at `beat`.
     fn apply_due(&mut self, beat: f64) {
         let limit = beat + EPS;
-        for st in &self.song.tracks {
-            let t = &mut self.tracks[st.rt as usize];
-            if let Some(p) = t.pending.filter(|p| p.beat <= limit) {
-                t.pending = None;
-                t.voices.release_clip_notes();
-                match p.action {
-                    Action::Launch(scene) => {
-                        t.playing = Some((scene, p.beat));
-                        t.session_override = true;
+        for i in 0..self.song.tracks.len() {
+            let rt = self.song.tracks[i].rt;
+            // Follow action due: pick A or B and launch right away.
+            if let Some(fa) = self.tracks[rt as usize].follow_at.filter(|&f| f <= limit) {
+                self.tracks[rt as usize].follow_at = None;
+                if let Some((cur, _)) = self.tracks[rt as usize].playing
+                    && let Some((a, b, chance, _)) = self.slot_clip(rt, cur).and_then(|c| c.extra.launch.follow)
+                {
+                    let f = if self.dice() < chance { a } else { b };
+                    match self.follow_target(rt, cur, f) {
+                        Some(Some(s)) => self.tracks[rt as usize].pending = Some(Pending { beat: fa, action: Action::Launch(s) }),
+                        Some(None) => self.tracks[rt as usize].pending = Some(Pending { beat: fa, action: Action::Stop }),
+                        None => {}
                     }
-                    Action::Stop => t.playing = None,
+                }
+            }
+            let Some(p) = self.tracks[rt as usize].pending.filter(|p| p.beat <= limit) else { continue };
+            let st = &self.song.tracks[i];
+            let t = &mut self.tracks[rt as usize];
+            t.pending = None;
+            match p.action {
+                Action::Launch(scene) => {
+                    let Some(clip) = st.slots.get(scene as usize).and_then(Option::as_ref) else { continue };
+                    let l = clip.extra.launch;
+                    // Legato: take over the previous clip's play position.
+                    let origin = match t.playing {
+                        Some((_, o)) if l.legato => o,
+                        _ => p.beat,
+                    };
+                    let same_pos = l.legato && t.playing.is_some();
+                    if !same_pos {
+                        t.voices.release_clip_notes();
+                    }
+                    t.playing = Some((scene, origin));
+                    t.session_override = true;
+                    t.follow_at = l.follow.and_then(|(_, _, _, time)| (time > 0.0).then_some(p.beat + time));
+                    // Repeat: retrigger every quantize step while held.
+                    if l.mode == LaunchMode::Repeat && t.held == Some(scene) {
+                        let q = l.quantize.unwrap_or(self.quantum);
+                        if q > 0.0 {
+                            t.pending = Some(Pending { beat: p.beat + q, action: Action::Launch(scene) });
+                        }
+                    }
+                    // Program change on launch (hardware MIDI out).
+                    if let TrackOutput::MidiPort { port, channel } = st.output {
+                        let c = channel.saturating_sub(1) & 0x0F;
+                        let [msb, lsb, pgm] = clip.extra.program;
+                        if let Some(v) = msb {
+                            let _ = self.midi_out.push(MidiOutput { port, bytes: [0xB0 | c, 0, v & 0x7F] });
+                        }
+                        if let Some(v) = lsb {
+                            let _ = self.midi_out.push(MidiOutput { port, bytes: [0xB0 | c, 32, v & 0x7F] });
+                        }
+                        if let Some(v) = pgm {
+                            let _ = self.midi_out.push(MidiOutput { port, bytes: [0xC0 | c, v & 0x7F, 0] });
+                        }
+                    }
+                }
+                Action::Stop => {
+                    t.voices.release_clip_notes();
+                    t.playing = None;
+                    t.follow_at = None;
                 }
             }
         }
@@ -704,8 +862,12 @@ impl Engine {
     fn next_event(&self, beat: f64) -> Option<f64> {
         let mut next = f64::INFINITY;
         for st in &self.song.tracks {
-            if let Some(p) = self.tracks[st.rt as usize].pending {
+            let t = &self.tracks[st.rt as usize];
+            if let Some(p) = t.pending {
                 next = next.min(p.beat);
+            }
+            if let Some(f) = t.follow_at {
+                next = next.min(f);
             }
         }
         if matches!(self.rec.state, RecordState::StartPending | RecordState::StopPending) {
@@ -716,6 +878,14 @@ impl Engine {
         {
             next = next.min(end);
         }
+        // Tempo map steps.
+        if self.follow_tempo {
+            let m = &self.song.tempo_map;
+            let i = m.partition_point(|p| p.0 <= beat + EPS);
+            if let Some(p) = m.get(i) {
+                next = next.min(p.0);
+            }
+        }
         (next.is_finite() && next > beat + EPS).then_some(next)
     }
 
@@ -725,8 +895,17 @@ impl Engine {
         while done < frames {
             let mut n = frames - done;
             let playing = self.transport.playing;
-            let bps = self.transport.beats_per_sample(self.config.sample_rate);
             let beat0 = self.transport.beat_position;
+            // Leader clips: tempo automation (step map).
+            if self.follow_tempo && !self.song.tempo_map.is_empty() {
+                let m = &self.song.tempo_map;
+                let i = m.partition_point(|p| p.0 <= beat0 + EPS);
+                let bpm = if i == 0 { self.song.base_tempo } else { m[i - 1].1 };
+                if bpm > 0.0 {
+                    self.transport.set_tempo(bpm);
+                }
+            }
+            let bps = self.transport.beats_per_sample(self.config.sample_rate);
             if playing {
                 self.apply_due(beat0);
                 if let Some(next) = self.next_event(beat0) {
@@ -745,6 +924,9 @@ impl Engine {
                     for t in &mut self.tracks {
                         if let Some((_, origin)) = &mut t.playing {
                             *origin -= jump;
+                        }
+                        if let Some(f) = &mut t.follow_at {
+                            *f -= jump;
                         }
                         if let Some(p) = &mut t.pending {
                             p.beat -= jump;

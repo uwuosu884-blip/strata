@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 rtrb.workspace = true
 serde.workspace = true
+realfft = "3"
 
 [dev-dependencies]
 assert_no_alloc.workspace = true

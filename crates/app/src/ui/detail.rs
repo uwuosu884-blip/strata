@@ -628,7 +628,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 let start = snap(beat_at(pt.x)).max(0.0);
                 app.edit(|pr| {
                     if let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(pr, cref) {
-                        notes.push(Note { start, length, pitch, velocity, muted: false });
+                        notes.push(Note { start, length, pitch, velocity, muted: false, mpe: 0 });
                         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
                     }
                 });

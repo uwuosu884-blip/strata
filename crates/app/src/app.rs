@@ -991,6 +991,7 @@ impl DawApp {
                         pitch: n.pitch,
                         velocity: n.velocity,
                         muted: false,
+                        mpe: 0,
                     })
                     .collect()
             };
@@ -1014,15 +1015,19 @@ impl DawApp {
                             && let Some(Some(clip)) = t.slots.get_mut(scene as usize)
                             && let ClipContent::Midi { notes: existing } = &mut clip.content
                         {
-                            let l = clip.length;
+                            // Engine clip_pos is already a content position (markers, loop).
+                            let (ls, le) =
+                                if clip.loop_end > clip.loop_start + 1e-9 { (clip.loop_start, clip.loop_end) } else { (0.0, clip.length) };
                             for n in take.notes.iter().filter(|n| Some(n.track) == rts[i]) {
-                                let start = n.clip_pos.unwrap_or(n.start_beat - take.start_beat).rem_euclid(l);
+                                let u = n.clip_pos.unwrap_or(n.start_beat - take.start_beat);
+                                let start = if u >= le { ls + (u - le).rem_euclid(le - ls) } else { u };
                                 existing.push(Note {
                                     start,
                                     length: (n.end_beat - n.start_beat).max(1.0 / 64.0),
                                     pitch: n.pitch,
                                     velocity: n.velocity,
                                     muted: false,
+                                    mpe: 0,
                                 });
                             }
                             existing.sort_by(|a, b| a.start.total_cmp(&b.start));

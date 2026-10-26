@@ -4,6 +4,7 @@
 //! + undo history. Knows nothing about audio threads.
 
 mod arrange;
+pub mod clipx;
 mod history;
 mod routing;
 mod tracks;
@@ -18,7 +19,7 @@ use std::path::Path;
 
 /// 3: default track names use the `#` index placeholder; clip disable/extent, track height.
 /// 4: per-track routing (inputs/outputs/monitoring), main output channels.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 pub const FILE_EXTENSION: &str = "dawproj";
 /// Prefix for built-in (synthesised) sounds, e.g. `factory:Kick`.
 pub const FACTORY_PREFIX: &str = "factory:";
@@ -65,6 +66,11 @@ pub struct Project {
     pub scenes: Vec<Scene>,
     pub tracks: Vec<Track>,
     pub next_id: u64,
+    /// Groove Pool and its global amount (0..1.3).
+    pub grooves: Vec<clipx::Groove>,
+    pub groove_amount: f32,
+    /// Follow tempo leaders / tempo automation (Live: "Unfollow" when off).
+    pub tempo_follow: bool,
 }
 
 impl Default for Project {
@@ -88,6 +94,9 @@ impl Default for Project {
             scenes: Vec::new(),
             tracks: Vec::new(),
             next_id: 1,
+            grooves: Vec::new(),
+            groove_amount: 1.0,
+            tempo_follow: true,
         }
     }
 }
@@ -271,6 +280,24 @@ pub struct Clip {
     /// MIDI only: total content length from `-head`; 0 = `head + length`.
     /// Bounds how far the clip edges can be dragged back out.
     pub full: f64,
+    // ---- Clip View (v5) — all positions in content beats ----
+    /// Start marker: content position played first.
+    pub start: f64,
+    /// Loop brace (used when `looping`); `loop_end <= loop_start` = unset.
+    pub loop_start: f64,
+    pub loop_end: f64,
+    /// Clip signature (display / grid): numerator, denominator.
+    pub sig: (u8, u8),
+    /// Groove Pool id.
+    pub groove: Option<u64>,
+    pub scale: clipx::ClipScale,
+    pub launch: clipx::LaunchProps,
+    pub program: clipx::MidiProgram,
+    pub info: String,
+    pub audio: clipx::AudioProps,
+    pub envelopes: Vec<clipx::ClipEnvelope>,
+    /// Note expression table (`Note::mpe` is 1-based into it).
+    pub mpe: Vec<clipx::NoteMpe>,
 }
 
 impl Default for Clip {
@@ -285,11 +312,166 @@ impl Default for Clip {
             muted: false,
             head: 0.0,
             full: 0.0,
+            start: 0.0,
+            loop_start: 0.0,
+            loop_end: 0.0,
+            sig: (4, 4),
+            groove: None,
+            scale: Default::default(),
+            launch: Default::default(),
+            program: Default::default(),
+            info: String::new(),
+            audio: Default::default(),
+            envelopes: Vec::new(),
+            mpe: Vec::new(),
         }
     }
 }
 
 impl Clip {
+    /// Unset loop brace → the whole clip (also migrates v4 files, whose
+    /// clips looped over `[0, length)`).
+    pub fn normalize_markers(&mut self) {
+        if !self.loop_start.is_finite() || !self.loop_end.is_finite() {
+            (self.loop_start, self.loop_end) = (0.0, 0.0);
+        }
+        if !self.start.is_finite() {
+            self.start = 0.0;
+        }
+        self.envelopes.retain(|e| !e.points.is_empty());
+        for e in &mut self.envelopes {
+            e.sort();
+        }
+        self.audio.markers.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    }
+
+    /// Effective loop brace: unset (`loop_end <= loop_start`, the default and
+    /// every v4 clip) = `[0, length)`, which follows the clip length.
+    pub fn loop_range(&self) -> (f64, f64) {
+        if self.loop_end > self.loop_start + 1e-9 { (self.loop_start, self.loop_end) } else { (0.0, self.length.max(1e-6)) }
+    }
+
+    /// Pin the loop brace (before edits that must not move it).
+    pub fn fix_loop(&mut self) {
+        (self.loop_start, self.loop_end) = self.loop_range();
+    }
+
+    /// Looping with an explicit loop brace (content is kept whole).
+    pub fn has_loop(&self) -> bool {
+        self.looping && self.loop_end > self.loop_start + 1e-9
+    }
+
+    pub fn loop_len(&self) -> f64 {
+        let (a, b) = self.loop_range();
+        (b - a).max(1e-6)
+    }
+
+    /// Content position `local` beats into playback (start marker, then the
+    /// loop); None past the end of an unlooped clip. Mirrors the engine.
+    pub fn content_at(&self, local: f64) -> Option<f64> {
+        let u = self.start + local;
+        if !self.looping {
+            return (local < self.length + 1e-9).then_some(u);
+        }
+        Some(self.wrap(u))
+    }
+
+    pub fn wrap(&self, u: f64) -> f64 {
+        let (a, b) = self.loop_range();
+        if !self.looping || u < b { u } else { a + (u - b).rem_euclid(b - a) }
+    }
+
+    /// Wrap a (possibly earlier-than-loop) start into the loop going backwards.
+    fn wrap_back(&self, u: f64) -> f64 {
+        let (a, _) = self.loop_range();
+        if self.looping && u < a.min(self.start) { a + (u - a).rem_euclid(self.loop_len()) } else { self.wrap(u) }
+    }
+
+    /// Drop the first `cut` beats of playback (left trim / split tail).
+    /// Looping: the start marker moves. Unlooped: content shifts so the
+    /// start marker keeps its value; markers / envelopes follow the content.
+    pub fn cut_front(&mut self, cut: f64, fpb: f64) {
+        // Explicit loop brace: keep content, move the start marker.
+        // Unset brace (loops over the clip length): trim content as before.
+        if self.looping && self.loop_end > self.loop_start + 1e-9 {
+            self.start = self.wrap_back(self.start + cut);
+            return;
+        }
+        match &mut self.content {
+            ClipContent::Midi { notes } => notes.iter_mut().for_each(|n| n.start -= cut),
+            ClipContent::Audio { offset_frames, .. } => *offset_frames = (*offset_frames + cut * fpb).max(0.0),
+        }
+        self.shift_markers(cut);
+    }
+
+    /// Content moved by `-cut`: move everything pinned to it.
+    pub fn shift_markers(&mut self, cut: f64) {
+        if self.loop_end > self.loop_start + 1e-9 {
+            self.loop_start -= cut;
+            self.loop_end -= cut;
+        }
+        for m in &mut self.audio.markers {
+            m.beat -= cut;
+        }
+        for e in self.envelopes.iter_mut().filter(|e| !e.unlinked) {
+            e.points.iter_mut().for_each(|p| p.beat -= cut);
+        }
+    }
+
+    /// Note expression of `n` (None if it has none).
+    pub fn note_mpe(&self, n: &Note) -> Option<&clipx::NoteMpe> {
+        (n.mpe > 0).then(|| self.mpe.get(n.mpe as usize - 1)).flatten()
+    }
+
+    /// Mutable expression slot for note `i` (MIDI), creating / un-sharing it.
+    pub fn note_mpe_mut(&mut self, i: usize) -> Option<&mut clipx::NoteMpe> {
+        let ClipContent::Midi { notes } = &mut self.content else { return None };
+        let n = notes.get(i)?;
+        let shared = n.mpe > 0 && notes.iter().filter(|m| m.mpe == n.mpe).count() > 1;
+        if n.mpe == 0 || shared || n.mpe as usize > self.mpe.len() {
+            let base = if n.mpe > 0 { self.mpe.get(n.mpe as usize - 1).cloned().unwrap_or_default() } else { Default::default() };
+            self.mpe.push(base);
+            notes[i].mpe = self.mpe.len() as u32;
+        }
+        let k = notes[i].mpe as usize - 1;
+        self.mpe.get_mut(k)
+    }
+
+    /// Drop unreferenced expression entries and renumber.
+    pub fn compact_mpe(&mut self) {
+        let ClipContent::Midi { notes } = &mut self.content else {
+            self.mpe.clear();
+            return;
+        };
+        let mut map = vec![0u32; self.mpe.len() + 1];
+        let mut out = Vec::new();
+        for n in notes.iter_mut() {
+            let k = n.mpe as usize;
+            if k == 0 || k > self.mpe.len() || self.mpe[k - 1].is_empty() {
+                n.mpe = 0;
+                continue;
+            }
+            if map[k] == 0 {
+                out.push(self.mpe[k - 1].clone());
+                map[k] = out.len() as u32;
+            }
+            n.mpe = map[k];
+        }
+        self.mpe = out;
+    }
+
+    pub fn envelope(&self, t: clipx::EnvTarget) -> Option<&clipx::ClipEnvelope> {
+        self.envelopes.iter().find(|e| e.target == t)
+    }
+
+    pub fn envelope_mut(&mut self, t: clipx::EnvTarget) -> &mut clipx::ClipEnvelope {
+        if let Some(i) = self.envelopes.iter().position(|e| e.target == t) {
+            return &mut self.envelopes[i];
+        }
+        self.envelopes.push(clipx::ClipEnvelope { target: t, ..Default::default() });
+        self.envelopes.last_mut().unwrap()
+    }
+
     /// Forget hidden MIDI content bounds (after cutting a clip into pieces).
     pub fn clear_extent(&mut self) {
         self.head = 0.0;
@@ -310,11 +492,14 @@ impl Clip {
                 // Notes parked past the end (inactive) also count as content.
                 let last = notes.iter().map(|n| n.start + n.length).fold(0.0, f64::max);
                 let full = self.content_full().max(self.head + last);
+                if self.has_loop() {
+                    return (f64::INFINITY, f64::INFINITY);
+                }
                 let right = if self.looping { f64::INFINITY } else { (full - self.head - self.length).max(0.0) };
                 (self.head.max(0.0), right)
             }
             ClipContent::Audio { offset_frames, .. } => {
-                let Some(total) = total_frames.filter(|_| fpb > 0.0) else { return (f64::INFINITY, f64::INFINITY) };
+                let Some(total) = total_frames.filter(|_| fpb > 0.0 && !self.has_loop()) else { return (f64::INFINITY, f64::INFINITY) };
                 let left = (offset_frames / fpb).max(0.0);
                 let right = if self.looping { f64::INFINITY } else { ((total - offset_frames) / fpb - self.length).max(0.0) };
                 (left, right)
@@ -612,6 +797,9 @@ impl Project {
         for t in &mut self.tracks {
             t.slots.resize(n, None);
             t.arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
+            for c in t.slots.iter_mut().flatten().chain(t.arrangement.iter_mut().map(|a| &mut a.clip)) {
+                c.normalize_markers();
+            }
         }
         let max_id = self
             .tracks
@@ -802,12 +990,10 @@ impl Project {
                     next_id += 1;
                 }
                 let fpb = frames_per_beat(&tail.clip);
-                match &mut tail.clip.content {
-                    ClipContent::Midi { notes } => {
-                        notes.retain(|n| n.start >= cut);
-                        notes.iter_mut().for_each(|n| n.start -= cut);
-                    }
-                    ClipContent::Audio { offset_frames, .. } => *offset_frames += cut * fpb,
+                let s0 = tail.clip.start;
+                tail.clip.cut_front(cut, fpb);
+                if let (false, ClipContent::Midi { notes }) = (tail.clip.has_loop(), &mut tail.clip.content) {
+                    notes.retain(|n| n.start >= s0);
                 }
                 out.push(tail);
             }
@@ -833,19 +1019,17 @@ impl Project {
         a.clip.length = cut;
         a.clip.clear_extent();
         tail.clip.clear_extent();
-        if let ClipContent::Midi { notes } = &mut a.clip.content {
-            notes.retain(|n| n.start >= 0.0 && n.start < cut);
+        let s0 = a.clip.start;
+        if let (false, ClipContent::Midi { notes }) = (a.clip.has_loop(), &mut a.clip.content) {
+            notes.retain(|n| n.start >= s0 && n.start < s0 + cut);
         }
         tail.start = at;
         tail.clip.length -= cut;
         tail.clip.id = new_id;
         let fpb = frames_per_beat(&tail.clip);
-        match &mut tail.clip.content {
-            ClipContent::Midi { notes } => {
-                notes.retain(|n| n.start >= cut);
-                notes.iter_mut().for_each(|n| n.start -= cut);
-            }
-            ClipContent::Audio { offset_frames, .. } => *offset_frames += cut * fpb,
+        tail.clip.cut_front(cut, fpb);
+        if let (false, ClipContent::Midi { notes }) = (tail.clip.has_loop(), &mut tail.clip.content) {
+            notes.retain(|n| n.start >= s0);
         }
         t.arrangement.insert(i + 1, tail);
         self.next_id += 1;
@@ -927,7 +1111,7 @@ mod tests {
         let mut p = Project::new_default();
         let id = p.new_midi_clip(1, 2, 8.0).unwrap();
         if let Some(Some(Clip { content: ClipContent::Midi { notes }, .. })) = p.tracks[1].slots.get_mut(2) {
-            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false });
+            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false, mpe: 0 });
         }
         p.tracks[3].arrangement.push(ArrangementClip {
             start: 4.0,
@@ -1006,7 +1190,7 @@ mod tests {
         let midi = |len: f64, starts: &[f64]| Clip {
             length: len,
             content: ClipContent::Midi {
-                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false }).collect(),
+                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0 }).collect(),
             },
             ..Default::default()
         };
@@ -1120,8 +1304,8 @@ mod tests {
         let mut p = blank(1);
         let id = p.alloc_id();
         let notes = vec![
-            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false },
-            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false },
+            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false, mpe: 0 },
+            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false, mpe: 0 },
         ];
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,

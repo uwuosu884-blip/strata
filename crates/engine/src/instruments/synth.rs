@@ -1,6 +1,7 @@
 //! Polyphonic subtractive synth: 2 band-limited oscillators → TPT state-variable
 //! low-pass filter with envelope → amp envelope.
 
+use super::Expr;
 use super::adsr::{Adsr, AdsrParams};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
@@ -155,16 +156,27 @@ struct Voice {
     a3: f32,
     k: f32,
     ctl: u32,
+    /// Expression slot (index + 1 into `Synth::expr`), samples since note-on.
+    expr: u8,
+    t: u32,
+    /// Base increments (before bend / MPE pitch), pressure gain.
+    base1: f32,
+    base2: f32,
+    press: f32,
 }
 
 pub struct Synth {
     voices: [Voice; SYNTH_VOICES],
+    expr: [Expr; SYNTH_VOICES],
     clock: u32,
+    /// Track-wide pitch bend (semitones) and mod wheel (0..1, opens the filter).
+    pub bend: f32,
+    pub modw: f32,
 }
 
 impl Default for Synth {
     fn default() -> Self {
-        Self { voices: [Voice::default(); SYNTH_VOICES], clock: 0 }
+        Self { voices: [Voice::default(); SYNTH_VOICES], expr: [Expr::default(); SYNTH_VOICES], clock: 0, bend: 0.0, modw: 0.0 }
     }
 }
 
@@ -173,7 +185,8 @@ fn midi_hz(note: f32) -> f32 {
 }
 
 impl Synth {
-    pub fn note_on(&mut self, p: &SynthParams, pitch: u8, vel: u8, remaining: u32, from_clip: bool, sr: f32) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_on(&mut self, p: &SynthParams, pitch: u8, vel: u8, remaining: u32, from_clip: bool, sr: f32, expr: Option<&Expr>) {
         self.clock = self.clock.wrapping_add(1);
         // Free voice, else the oldest released one, else the oldest.
         let idx = self
@@ -195,6 +208,11 @@ impl Synth {
             vel: vel as f32 / 127.0,
             inc1: (f1 / sr).min(0.49),
             inc2: (f2 / sr).min(0.49),
+            base1: f1 / sr,
+            base2: f2 / sr,
+            press: 1.0,
+            expr: if expr.is_some() { idx as u8 + 1 } else { 0 },
+            t: 0,
             ctl: 0,
             // keep envelope level & filter state when stealing → no click
             amp: v.amp,
@@ -205,6 +223,9 @@ impl Synth {
         };
         v.amp.trigger(&p.amp, sr);
         v.fenv.trigger(&p.filter, sr);
+        if let Some(e) = expr {
+            self.expr[idx] = *e;
+        }
     }
 
     pub fn note_off(&mut self, pitch: u8) {
@@ -246,7 +267,9 @@ impl Synth {
         let gain = p.gain * 0.25;
         let nyq = 0.45 * sr;
         let k_base = 2.0 - 1.95 * p.resonance.clamp(0.0, 1.0);
-        for v in self.voices.iter_mut().filter(|v| v.active) {
+        let (bend, modw) = (self.bend, self.modw);
+        for (vi, v) in self.voices.iter_mut().enumerate().filter(|(_, v)| v.active) {
+            let ex = (v.expr > 0).then(|| &self.expr[vi]);
             for (lo, ro) in l.iter_mut().zip(r.iter_mut()) {
                 if v.remaining != u32::MAX {
                     if v.remaining == 0 {
@@ -259,7 +282,19 @@ impl Synth {
                 }
                 let fe = v.fenv.tick();
                 if v.ctl == 0 {
-                    let fc = (p.cutoff_hz * (p.filter_env_octaves * fe).exp2()).clamp(20.0, nyq);
+                    // Control rate: bend + MPE pitch / slide (filter) / pressure (level).
+                    let (mp, slide) = match ex {
+                        Some(e) => {
+                            let ts = v.t as f32;
+                            v.press = e.press.eval(ts, 1.0);
+                            (e.pitch.eval(ts, 0.0), e.slide.eval(ts, 0.0))
+                        }
+                        None => (0.0, 0.0),
+                    };
+                    let m = ((bend + mp) / 12.0).exp2();
+                    v.inc1 = (v.base1 * m).min(0.49);
+                    v.inc2 = (v.base2 * m).min(0.49);
+                    let fc = (p.cutoff_hz * (p.filter_env_octaves * fe + 3.0 * (slide + modw)).exp2()).clamp(20.0, nyq);
                     let g = (PI * fc / sr).tan();
                     v.k = k_base;
                     v.a1 = 1.0 / (1.0 + g * (g + v.k));
@@ -283,7 +318,8 @@ impl Synth {
                 let v2 = v.ic2 + v.a2 * v.ic1 + v.a3 * v3;
                 v.ic1 = 2.0 * v1 - v.ic1;
                 v.ic2 = 2.0 * v2 - v.ic2;
-                let out = v2 * v.amp.tick() * v.vel * gain;
+                v.t = v.t.saturating_add(1);
+                let out = v2 * v.amp.tick() * v.vel * gain * v.press;
                 *lo += out;
                 *ro += out;
                 if v.amp.is_idle() {

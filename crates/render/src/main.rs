@@ -87,7 +87,7 @@ fn demo_project() -> Project {
     use daw_project::{ArrangementClip, Clip, ClipContent, Note};
     let mut p = Project::new_default();
     p.name = "Demo".into();
-    let n = |start: f64, length: f64, pitch: u8, velocity: u8| Note { start, length, pitch, velocity, muted: false };
+    let n = |start: f64, length: f64, pitch: u8, velocity: u8| Note { start, length, pitch, velocity, muted: false, mpe: 0 };
     let mut drums = Vec::new();
     for bar in 0..2 {
         let o = bar as f64 * 4.0;
