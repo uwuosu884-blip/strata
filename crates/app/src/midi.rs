@@ -114,7 +114,7 @@ impl MidiSystem {
                             if let Ok(mut o) = outs.lock()
                                 && let Some(Some(c)) = o.get_mut(m.port as usize)
                             {
-                                let len = if m.bytes[0] & 0xF0 == 0xC0 || m.bytes[0] & 0xF0 == 0xD0 { 2 } else { 3 };
+                                let len = msg_len(m.bytes[0]);
                                 let _ = c.send(&m.bytes[..len]);
                                 sent = true;
                             }
@@ -237,11 +237,28 @@ impl MidiSystem {
     }
 }
 
+/// Length of a (non-SysEx) MIDI message from its status byte.
+fn msg_len(status: u8) -> usize {
+    match status {
+        0xC0..=0xDF | 0xF1 | 0xF3 => 2,
+        0xF2 | 0x80..=0xEF => 3,
+        _ => 1, // tune request, real-time
+    }
+}
+
 impl Drop for MidiSystem {
     fn drop(&mut self) {
         self.stop.store(true, Relaxed);
         if let Some(t) = self.out_thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn message_lengths() {
+        assert_eq!([0x90, 0x80, 0xB3, 0xE0, 0xC5, 0xD0, 0xF8, 0xF2, 0xF3].map(super::msg_len), [3, 3, 3, 3, 2, 2, 1, 3, 2]);
     }
 }

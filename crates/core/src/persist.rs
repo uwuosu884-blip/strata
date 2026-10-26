@@ -133,8 +133,9 @@ mod tests {
         save_project(&mut p, &path, &mut cache).unwrap();
         let wav = dir.join("My Song Samples").join("Recorded").join("take1.wav");
         assert!(wav.exists());
-        let mono = hound::WavReader::open(dir.join("My Song Samples/Recorded/mono1.wav")).unwrap();
-        assert_eq!(mono.spec().channels, 1, "mono input → mono file");
+        // (Reader closed right away: Windows can't rename a folder with open files.)
+        let mono_ch = hound::WavReader::open(dir.join("My Song Samples/Recorded/mono1.wav")).unwrap().spec().channels;
+        assert_eq!(mono_ch, 1, "mono input → mono file");
         let wav_s = wav.to_string_lossy().into_owned();
         let refs: Vec<String> = p.tracks[3]
             .slots
