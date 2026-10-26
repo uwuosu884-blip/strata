@@ -119,6 +119,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         res_l: vec![0.0; 2 * mb],
         res_r: vec![0.0; 2 * mb],
         res_pos: 0,
+        res_x: StereoBuffer::new(mb),
         song: Box::default(),
         tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr)).collect(),
         rt_to_song: [NONE; MAX_TRACKS],
@@ -173,6 +174,9 @@ pub struct Engine {
     res_l: Vec<f32>,
     res_r: Vec<f32>,
     res_pos: usize,
+    /// Resampling tracks' own output to the main bus this segment: heard,
+    /// but kept out of what Resampling records (no feedback).
+    res_x: StereoBuffer,
     song: Box<Song>,
     tracks: Vec<TrackRt>,
     rt_to_song: [u16; MAX_TRACKS],
@@ -765,9 +769,27 @@ impl Engine {
             sr: self.sr,
             tempo: self.transport.tempo(),
         };
-        let Self { master, metronome, tracks, song, transport, in_ch, out_ch, out_used, res_l, res_r, res_pos, midi_out, auto_arm, .. } =
-            self;
+        let Self {
+            master,
+            metronome,
+            tracks,
+            song,
+            transport,
+            in_ch,
+            out_ch,
+            out_used,
+            res_l,
+            res_r,
+            res_pos,
+            res_x,
+            midi_out,
+            auto_arm,
+            ..
+        } = self;
         let (ml, mr) = master.range_mut(offset, n);
+        let (xl, xr) = res_x.range_mut(0, n);
+        xl.fill(0.0);
+        xr.fill(0.0);
 
         if ctx.playing {
             for i in 0..n {
@@ -901,21 +923,18 @@ impl Engine {
                     }
                     _ => {}
                 }
-                let resampling = st.input == TrackInput::Resampling;
-                let pass = !resampling
-                    && match st.monitor {
-                        Monitor::In => true,
-                        Monitor::Auto => armed && !covered,
-                        Monitor::Off => false,
-                    };
+                let pass = match st.monitor {
+                    Monitor::In => true,
+                    Monitor::Auto => armed && !covered,
+                    Monitor::Off => false,
+                };
                 if pass {
                     tracks[rt].add_input(n);
                 }
             }
             tracks[rt].add_bus(n);
 
-            // Armed resampling tracks stay out of the mix (no feedback).
-            let audible = (!any_solo || up[rt] || down[rt]) && !(st.input == TrackInput::Resampling && st.arm);
+            let audible = !any_solo || up[rt] || down[rt];
             if !tracks[rt].mix(n, audible) {
                 continue;
             }
@@ -925,6 +944,12 @@ impl Engine {
                     for k in 0..n {
                         ml[k] += t.post_l[k];
                         mr[k] += t.post_r[k];
+                    }
+                    if st.input == TrackInput::Resampling {
+                        for k in 0..n {
+                            xl[k] += t.post_l[k];
+                            xr[k] += t.post_r[k];
+                        }
                     }
                 }
                 TrackOutput::Track(d) => {
@@ -958,13 +983,12 @@ impl Engine {
 
         for i in 0..n {
             let g = self.master_gain.next();
-            ml[i] *= g * self.master_pan[0].next();
-            mr[i] *= g * self.master_pan[1].next();
-        }
-        for k in 0..n {
-            res_l[*res_pos] = ml[k];
-            res_r[*res_pos] = mr[k];
+            let (gl, gr) = (g * self.master_pan[0].next(), g * self.master_pan[1].next());
+            res_l[*res_pos] = (ml[i] - xl[i]) * gl;
+            res_r[*res_pos] = (mr[i] - xr[i]) * gr;
             *res_pos = (*res_pos + 1) % rlen;
+            ml[i] *= gl;
+            mr[i] *= gr;
         }
 
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) && self.n_lanes > 0 {

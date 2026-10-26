@@ -19,6 +19,9 @@ use widgets::*;
 /// Deferred work from a dialog button (runs after the dialog closes).
 type DialogAction = Box<dyn FnOnce(&mut DawApp)>;
 
+/// Fixed Device View height.
+const DEVICE_VIEW_H: f32 = 240.0;
+
 impl eframe::App for DawApp {
     /// Take plain (unmodified) key presses before egui sees them, unless a text
     /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
@@ -74,10 +77,13 @@ impl eframe::App for DawApp {
             }
             ctx.data_mut(|d| d.insert_temp(prev_id, self.selected_clip));
         }
-        let detail_rect = egui::Panel::bottom("detail")
-            .resizable(true)
-            .default_size(250.0)
-            .size_range(120.0..=600.0)
+        // Clip View / piano roll: resizable (own remembered size); Device View: fixed.
+        let panel = if self.detail_mode == DetailMode::Device {
+            egui::Panel::bottom("detail_device").resizable(false).exact_size(DEVICE_VIEW_H)
+        } else {
+            egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
+        };
+        let detail_rect = panel
             .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::same(4)))
             .show(ui, |ui| detail::detail_panel(self, ui))
             .response
@@ -439,8 +445,18 @@ impl DawApp {
         let size = egui::vec2(84.0, 20.0);
         if let Some(text) = editing.as_mut() {
             let r = ui.add_sized(size, egui::TextEdit::singleline(text).id(id.with("te")));
-            r.request_focus();
-            if r.lost_focus() {
+            // Focus once when editing starts; a click anywhere else commits.
+            let started = id.with("started");
+            if !ui.data(|d| d.get_temp::<bool>(started).unwrap_or(false)) {
+                r.request_focus();
+                ui.data_mut(|d| d.insert_temp(started, true));
+            }
+            let outside = ui.input(|i| i.pointer.any_pressed()) && !r.hovered();
+            if outside {
+                r.surrender_focus();
+            }
+            if r.lost_focus() || outside {
+                ui.data_mut(|d| d.remove::<bool>(started));
                 if !ui.input(|i| i.key_pressed(Key::Escape))
                     && let Ok(v) = text.trim().trim_end_matches("BPM").trim().parse::<f64>()
                 {

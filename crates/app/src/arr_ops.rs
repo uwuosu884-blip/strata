@@ -121,21 +121,44 @@ impl DawApp {
 
     /// Selected tracks (multi-selection via Shift+click, else the primary one).
     pub fn selected_tracks(&self) -> Vec<usize> {
-        if self.track_sel.is_empty() {
+        if self.sel_hidden() {
+            vec![]
+        } else if self.track_sel.is_empty() {
             if self.selected_track < self.project.tracks.len() { vec![self.selected_track] } else { vec![] }
         } else {
             self.track_sel.clone()
         }
     }
 
+    fn sel_hidden(&self) -> bool {
+        self.track_sel.is_empty() && self.hide_sel == Some(self.selected_track)
+    }
+
+    /// Click on empty space: nothing selected (clips, time, track headers).
+    pub fn deselect_all(&mut self) {
+        self.time_sel = None;
+        self.arr_sel.clear();
+        self.track_sel.clear();
+        self.hide_sel = Some(self.selected_track);
+        self.touched_track = None;
+        self.resync_selected_clip();
+    }
+
     pub fn is_track_selected(&self, t: usize) -> bool {
-        if self.track_sel.is_empty() { self.selected_track == t } else { self.track_sel.contains(&t) }
+        if self.sel_hidden() {
+            false
+        } else if self.track_sel.is_empty() {
+            self.selected_track == t
+        } else {
+            self.track_sel.contains(&t)
+        }
     }
 
     /// Header click: explicit track selection (Del deletes these). Shift selects
     /// every visible track between the anchor and `t`, Ctrl toggles `t`.
     /// The detail panel switches to the track's devices.
     pub fn select_track_header(&mut self, t: usize, mode: SelMode) {
+        self.hide_sel = None;
         match mode {
             SelMode::Range => {
                 let anchor = self.track_anchor.filter(|&a| a < self.project.tracks.len()).unwrap_or(self.selected_track);
@@ -170,6 +193,7 @@ impl DawApp {
     /// Header click: plain selects one track, Shift/Ctrl toggles it in the selection.
     pub fn click_track(&mut self, t: usize, toggle: bool) {
         self.touched_track = Some(t);
+        self.hide_sel = None;
         if toggle {
             if self.track_sel.is_empty() {
                 self.track_sel.push(self.selected_track);

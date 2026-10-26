@@ -88,9 +88,9 @@ pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
     if kind != TrackKind::Group {
         caption(ui, if kind == TrackKind::Audio { "Audio From" } else { "MIDI From" });
         if kind == TrackKind::Audio {
-            audio_from(app, ui, t, cw);
+            audio_from(app, ui, t, cw, true);
         } else {
-            midi_from(app, ui, t, cw);
+            midi_from(app, ui, t, cw, true);
         }
         monitor_radio(app, ui, t, cw);
     } else {
@@ -99,40 +99,58 @@ pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
     let sends_midi = app.project.tracks[t].sends_midi();
     caption(ui, if sends_midi { "MIDI To" } else { "Audio To" });
     if sends_midi {
-        midi_to(app, ui, t, cw);
+        midi_to(app, ui, t, cw, true);
     } else {
-        audio_to(app, ui, t, cw);
+        audio_to(app, ui, t, cw, true);
     }
 }
 
 /// Arrangement header variant: no captions, clipped to the row (shows as many
 /// choosers as the track height allows, Live order).
 pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, clip: Rect) {
-    ui.painter().with_clip_rect(clip).rect_filled(rect.shrink2(vec2(1.0, 0.0)), CornerRadius::ZERO, Color32::from_gray(38));
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
-    child.set_clip_rect(clip);
+    ui.painter().with_clip_rect(clip).rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(38));
+    let Some(track) = app.project.tracks.get(t) else { return };
+    let (kind, collapsed) = (track.kind, track.collapsed);
+    // Rows that fit, by priority: from-type, to-type, monitor, from-channel,
+    // to-channel (shown in Live order). Narrow column: smaller text.
+    let fit = (((rect.height() - 4.0) / 17.0).floor().max(0.0) as usize).min(if collapsed { 1 } else { 5 });
+    if fit == 0 || rect.width() < 24.0 {
+        return;
+    }
+    let group = kind == TrackKind::Group;
+    let (in_t, out_t, mon, in_ch, out_ch) =
+        if group { (false, fit >= 1, false, false, fit >= 2) } else { (true, fit >= 2, fit >= 3, fit >= 4, fit >= 5) };
+    let pad = if rect.width() < 90.0 { 2.0 } else { 4.0 };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(rect.min + vec2(pad, 2.0), rect.max - vec2(pad, 0.0)))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(clip.intersect(rect));
     let ui = &mut child;
     ui.spacing_mut().item_spacing = vec2(2.0, 1.0);
     ui.spacing_mut().interact_size.y = 16.0;
-    let cw = rect.width() - 8.0;
-    let Some(track) = app.project.tracks.get(t) else { return };
-    let (kind, collapsed) = (track.kind, track.collapsed);
-    if kind != TrackKind::Group {
+    ui.spacing_mut().combo_width = 0.0;
+    if rect.width() < 90.0 {
+        ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(9.5));
+    }
+    let cw = rect.width() - 2.0 * pad;
+    if in_t {
         if kind == TrackKind::Audio {
-            audio_from(app, ui, t, cw);
+            audio_from(app, ui, t, cw, in_ch);
         } else {
-            midi_from(app, ui, t, cw);
+            midi_from(app, ui, t, cw, in_ch);
         }
-        if collapsed {
-            return;
-        }
+    }
+    if mon {
         monitor_radio(app, ui, t, cw);
     }
-    if app.project.tracks[t].sends_midi() {
-        midi_to(app, ui, t, cw);
-    } else {
-        audio_to(app, ui, t, cw);
+    if out_t {
+        if app.project.tracks[t].sends_midi() {
+            midi_to(app, ui, t, cw, out_ch);
+        } else {
+            audio_to(app, ui, t, cw, out_ch);
+        }
     }
 }
 
@@ -144,7 +162,7 @@ pub fn master_io_compact(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
     master_out_combo(app, &mut child, rect.width() - 8.0);
 }
 
-fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
+fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let cur = app.project.tracks[t].audio_in;
     let type_text = match cur {
         AudioIn::None => "No Input".to_string(),
@@ -171,6 +189,9 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
             }
         }
     });
+    // Channel row hidden (short track): still run it invisibly so picks apply.
+    let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
+    let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
     // Channel / tap point.
     match cur {
         AudioIn::Ext { ch, stereo } => {
@@ -239,7 +260,7 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
     }
 }
 
-fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
+fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let cur = app.project.tracks[t].midi_in.clone();
     let ports = app.io_map.midi_in.clone();
     let type_text = match &cur {
@@ -284,6 +305,9 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
             app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
         }
     });
+    // Channel row hidden (short track): still run it invisibly so picks apply.
+    let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
+    let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
     // Channel chooser for external ports (and All Ins).
     let port = match &cur {
         MidiIn::Port(n) => ports.iter().position(|p| p == n),
@@ -365,7 +389,7 @@ fn monitor_radio(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
     }
 }
 
-fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
+fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let tr = &app.project.tracks[t];
     let cur = tr.audio_out;
     let parent = tr.group;
@@ -400,6 +424,9 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
             }
         }
     });
+    // Channel row hidden (short track): still run it invisibly so picks apply.
+    let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
+    let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
     match cur {
         AudioOut::Ext { ch, stereo } => {
             let cfg = app.channel_config(false);
@@ -436,7 +463,7 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
     }
 }
 
-fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
+fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let cur = app.project.tracks[t].midi_out.clone();
     let ports = app.io_map.midi_out.clone();
     let type_text = match &cur {
@@ -467,6 +494,9 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
             app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
         }
     });
+    // Channel row hidden (short track): still run it invisibly so picks apply.
+    let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
+    let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
     match &cur {
         MidiOut::Port { name, channel } => {
             let (name, channel) = (name.clone(), *channel);

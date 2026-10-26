@@ -149,7 +149,7 @@ fn drum_pad_output_is_removed_from_the_drum_mix() {
 }
 
 #[test]
-fn resampling_records_main_and_mutes_itself() {
+fn resampling_is_heard_without_feedback() {
     let (mut e, mut h) = engine();
     let mut rec = h.take_recorder().unwrap();
     let src = audio_track(0, dc_clip(0.25));
@@ -157,7 +157,9 @@ fn resampling_records_main_and_mutes_itself() {
     h.set_song(Song::new(vec![src, res])).unwrap();
     send_all(&mut h, &[Command::SetLaunchQuantize(0.0), Command::LaunchScene { scene: 0 }, Command::SetRecording(true)]);
     let out = render(&mut e, 9600, 480);
-    assert!((left(&out)[9000] - 0.25).abs() < 1e-4, "armed resampling track stays out of the main mix");
+    // Monitored: main = source 0.25 + the resampled 0.25; its own output is
+    // not fed back into what it records (would grow without bound).
+    assert!((left(&out)[9000] - 0.5).abs() < 1e-4, "resampling track is audible: {}", left(&out)[9000]);
     match rec.events.pop().unwrap() {
         RecordEvent::Started { n_lanes: 1, lanes, mono: 0, .. } => assert_eq!(lanes[0], 1),
         other => panic!("{other:?}"),

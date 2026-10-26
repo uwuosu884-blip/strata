@@ -143,6 +143,9 @@ pub struct DawApp {
     pub selected_track: usize,
     /// Multi-selection of tracks (Shift+click headers); empty = just `selected_track`.
     pub track_sel: Vec<usize>,
+    /// Empty-area click hid the track selection; stays hidden while
+    /// `selected_track` still equals this value.
+    pub hide_sel: Option<usize>,
     /// Selected arrangement clips (ids are stable across sorting).
     pub arr_sel: Vec<u64>,
     pub time_sel: Option<crate::arr_ops::TimeSel>,
@@ -267,6 +270,7 @@ impl DawApp {
             view: View::Session,
             selected_track: 0,
             track_sel: Vec::new(),
+            hide_sel: None,
             arr_sel: Vec::new(),
             time_sel: None,
             selected_clip: None,

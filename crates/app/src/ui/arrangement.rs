@@ -37,6 +37,8 @@ struct Geo {
     grid: f64,
     /// Grid snapping active (grid not Off and Alt not held).
     snap_on: bool,
+    /// In/Out column width (0 = hidden).
+    io_w: f32,
 }
 
 impl Geo {
@@ -126,7 +128,8 @@ fn gesture_id() -> egui::Id {
 
 pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let full = ui.available_rect_before_wrap();
-    let head_w = HEAD_W + if app.show_io { super::io::IO_W } else { 0.0 };
+    let io_w = if app.show_io { io_width(full.width()) } else { 0.0 };
+    let head_w = HEAD_W + io_w;
     let lanes_x1 = (full.max.x - head_w).max(full.min.x + 40.0);
     let master_h = if app.project.master_collapsed {
         crate::arr_ops::COLLAPSED_H + 2.0
@@ -171,6 +174,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         vscroll: app.arr_vscroll,
         grid,
         snap_on: app.arr_grid.snaps() && !alt,
+        io_w,
     };
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
@@ -233,6 +237,14 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         return;
     }
 
+    // Empty header column below the last track: deselect everything.
+    let y_end = g.lane(g.rows.len()).min.y.max(body.min.y);
+    if y_end < body.max.y {
+        let empty = Rect::from_min_max(pos2(lanes.max.x, y_end), pos2(body.max.x, body.max.y));
+        if ui.interact(empty, ui.scope_id().with("arr_head_empty"), Sense::click()).clicked() {
+            app.deselect_all();
+        }
+    }
     lanes_interaction(app, ui, &g, &lr);
     update_gesture(app, ui, &g);
     master_row(
@@ -240,6 +252,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         ui,
         Rect::from_min_max(pos2(full.min.x, body.max.y), pos2(lanes_x1, full.max.y)),
         Rect::from_min_max(pos2(lanes_x1 + 1.0, body.max.y), full.max),
+        io_w,
     );
     os_file_drop(app, ui, &g);
 
@@ -615,28 +628,26 @@ fn track_drop_target(app: &DawApp, g: &Geo, y: f32) -> (TrackDrop, Rect) {
 }
 
 // Header layout (Live 12): left = track-colour title area with the collapse
-// button and the name; right = two rows of boxes:
-//   [activator #][  S  ][arm]
-//   [ volume    ][ pan ]
+// button and the name; middle = In/Out (Ctrl+Alt+I); right = two rows of boxes:
+//   [activator #][S][arm]
+//   [ volume    ][ pan  ]
+// Pan = volume width; solo + arm (equal) span one knob.
 const BOX_H: f32 = 15.0;
 const ACT_W: f32 = 44.0;
-const SOLO_W: f32 = 36.0;
-const ARM_W: f32 = 20.0;
 const GAP: f32 = 3.0;
-const RIGHT_W: f32 = ACT_W + SOLO_W + ARM_W + 2.0 * GAP + 16.0;
+const SOLO_W: f32 = (ACT_W - GAP) * 0.5;
+const ARM_W: f32 = SOLO_W;
+const PAN_W: f32 = ACT_W;
+const RIGHT_W: f32 = ACT_W + PAN_W + GAP + 16.0;
+
+/// In/Out column width: shrinks with the window (narrow arrangement).
+pub fn io_width(full_w: f32) -> f32 {
+    super::io::IO_W.min(((full_w - HEAD_W) * 0.14).max(64.0))
+}
 
 fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let lane = g.lane(k);
-    let mut head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
-    if app.show_io {
-        // In/Out column at the right of the header (Ctrl+Alt+I).
-        let io = Rect::from_min_max(pos2(head.max.x - super::io::IO_W, head.min.y), head.max);
-        head.max.x = io.min.x;
-        let io_clip = io.intersect(g.body);
-        if io_clip.height() > 0.0 {
-            super::io::io_compact(app, ui, t, io, io_clip);
-        }
-    }
+    let head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
     let clip = head.intersect(g.body);
     if clip.height() <= 0.0 {
         return;
@@ -667,11 +678,13 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         );
     }
     let inner = Rect::from_min_max(pos2(head.min.x + depth as f32 * INDENT, head.min.y), head.max);
-    let split = (inner.max.x - RIGHT_W).max(inner.min.x + 40.0);
-    let left = Rect::from_min_max(inner.min, pos2(split, inner.max.y));
+    let split = (inner.max.x - RIGHT_W).max(inner.min.x + 40.0 + g.io_w);
+    // In/Out sits between the coloured name area and the buttons.
+    let io = Rect::from_min_max(pos2(split - g.io_w, inner.min.y), pos2(split, inner.max.y));
+    let left = Rect::from_min_max(inner.min, pos2(io.min.x, inner.max.y));
     let right = Rect::from_min_max(pos2(split, inner.min.y), inner.max);
     let title_bg = if selected { color } else { shade(color, 0.72) };
-    painter.rect_filled(left, CornerRadius { nw: 2, sw: 2, ne: 0, se: 0 }, title_bg);
+    painter.rect_filled(left, CornerRadius::ZERO, title_bg);
     painter.rect_filled(
         right,
         CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 },
@@ -748,6 +761,12 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if renaming {
         super::rename_editor(app, ui, name_rect.intersect(clip), id, false, false);
     }
+    if g.io_w > 0.0 {
+        super::io::io_compact(app, ui, t, io, io.intersect(clip));
+        if app.project.tracks.len() <= t {
+            return;
+        }
+    }
 
     // Right region, row 1: activator · S · arm (collapsed: activator · S only).
     let bx = right.min.x + 4.0;
@@ -790,7 +809,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     // Row 2: volume under the activator, pan under solo.
     let row2 = row1 + BOX_H + GAP;
     let vr = Rect::from_min_size(pos2(bx, row2), vec2(ACT_W, BOX_H));
-    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row2), vec2(SOLO_W, BOX_H));
+    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row2), vec2(PAN_W, BOX_H));
     if clip.contains_rect(vr) && clip.contains_rect(pr) {
         let mut db = app.project.tracks[t].gain_db;
         let (r, changed) = volume_box(ui, vr, ui.scope_id().with(("hvol", id)), &mut db);
@@ -816,21 +835,22 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
 
 /// Master track row, pinned under the lanes (Live). Collapsed by default; no
 /// activator / solo / arm; volume and pan are always shown.
-fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, mut head: Rect) {
-    if app.show_io {
-        let io = Rect::from_min_max(pos2(head.max.x - super::io::IO_W, head.min.y + 2.0), head.max);
-        head.max.x = io.min.x;
-        super::io::master_io_compact(app, ui, io);
-    }
+fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w: f32) {
     let p = ui.painter();
     p.rect_filled(lanes, CornerRadius::ZERO, Color32::from_gray(22));
     p.line_segment([lanes.left_top(), pos2(head.max.x, lanes.min.y)], Stroke::new(2.0, Color32::from_gray(14)));
     let collapsed = app.project.master_collapsed;
-    let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0);
-    let left = Rect::from_min_max(pos2(head.min.x, head.min.y + 2.0), pos2(split, head.max.y));
+    let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + io_w);
+    let left = Rect::from_min_max(pos2(head.min.x, head.min.y + 2.0), pos2(split - io_w, head.max.y));
     let right = Rect::from_min_max(pos2(split, head.min.y + 2.0), head.max);
     let col = Color32::from_gray(150);
-    p.rect_filled(left, CornerRadius { nw: 2, sw: 2, ne: 0, se: 0 }, col);
+    p.rect_filled(left, CornerRadius::ZERO, col);
+    if io_w > 0.0 {
+        let io = Rect::from_min_max(pos2(left.max.x, head.min.y + 2.0), pos2(split, head.max.y));
+        ui.painter().rect_filled(io, CornerRadius::ZERO, Color32::from_gray(38));
+        super::io::master_io_compact(app, ui, io);
+    }
+    let p = ui.painter();
     p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, Color32::from_gray(50));
     let row1 = left.min.y + if collapsed { ((left.height() - BOX_H) * 0.5).max(0.0) } else { 3.0 };
     let cbtn = Rect::from_min_size(pos2(left.min.x + 3.0, row1 - 1.0), vec2(16.0, BOX_H + 2.0));
@@ -849,7 +869,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, mut head: Rect) 
     p.rect_filled(Rect::from_min_max(pos2(mr.min.x, mr.max.y - mr.height() * lvl(m)), mr.max), CornerRadius::ZERO, PLAY_GREEN);
     let bx = right.min.x + 4.0;
     let vr = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
-    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row1), vec2(SOLO_W, BOX_H));
+    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row1), vec2(PAN_W, BOX_H));
     let mut db = app.project.master_gain_db;
     let (r, changed) = volume_box(ui, vr, ui.scope_id().with("mvol"), &mut db);
     if r.drag_started() || r.double_clicked() {
@@ -908,10 +928,11 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
         match g.track_at(pos.y) {
             Some(t) => {
                 match clip_at(app, t, beat) {
-                    // Clicking a clip selects it and puts the start point at its start.
+                    // Clip body: select it, start point at the clicked spot (Live's insert
+                    // marker). Only the title bar jumps to the clip start.
                     Some(id) => {
                         app.select_arr_clip_mode(id, mode);
-                        app.playhead_to_clip(id);
+                        app.set_playhead(g.snap(beat));
                     }
                     None => {
                         app.set_playhead(g.snap(beat));
@@ -926,12 +947,8 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
                 }
                 app.touched_track = Some(t);
             }
-            None => {
-                app.set_playhead(g.snap(beat));
-                app.arr_sel.clear();
-                app.resync_selected_clip();
-                app.touched_track = None;
-            }
+            // Empty space below the tracks: deselect everything, playhead stays.
+            None => app.deselect_all(),
         }
     }
     if lr.double_clicked()

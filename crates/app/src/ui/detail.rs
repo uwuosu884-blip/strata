@@ -251,7 +251,11 @@ enum NoteDrag {
         grab_pitch: i32,
         orig: Option<(f64, u8)>,
     },
-    Resize,
+    /// Note-end drag; `grab` = the note under the pointer. Every selected note
+    /// keeps its own length and changes by the same delta.
+    Resize {
+        grab: usize,
+    },
     Velocity,
     /// Rubber-band selection; `base` = selection kept when Shift/Ctrl was held.
     Marquee,
@@ -540,6 +544,34 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     {
         app.pr_vel_h = (rect.max.y - pt.y).clamp(24.0, (rect.height() * 0.6).max(24.0));
     }
+    // Piano keys: press / glide to play the pitch (held until release).
+    let keys = Rect::from_min_max(pos2(rect.min.x, grid_area.min.y), pos2(rect.min.x + KEYS_W - 2.0, grid_area.max.y));
+    let kr = ui.interact(keys, ui.scope_id().with("pr_keys"), Sense::click_and_drag());
+    let held_id = ui.scope_id().with("pr_key_held");
+    let held: Option<u8> = ui.data(|d| d.get_temp(held_id)).flatten();
+    let want = if kr.is_pointer_button_down_on() {
+        ui.ctx().pointer_latest_pos().filter(|pt| keys.contains(*pt)).map(|pt| pitch_at(pt.y).clamp(0, 127) as u8).or(held)
+    } else {
+        None
+    };
+    if want != held {
+        if let Some(rt) = app.rt(track) {
+            if let Some(h) = held {
+                app.send_now(daw_engine::Command::NoteOff { track: rt, pitch: h });
+            }
+            if let Some(w) = want {
+                app.send_now(daw_engine::Command::NoteOn { track: rt, pitch: w, velocity: 100 });
+            }
+        }
+        ui.data_mut(|d| d.insert_temp(held_id, want));
+    }
+    if let Some(h) = want {
+        p.rect_filled(
+            Rect::from_min_max(pos2(keys.min.x, y_of(h as i32)), pos2(keys.max.x, y_of(h as i32) + row_h - 1.0)),
+            CornerRadius::ZERO,
+            Color32::from_rgba_unmultiplied(255, 180, 60, 150),
+        );
+    }
     // Headphones (top-left, above the keys): preview notes while editing.
     let hp = Rect::from_min_size(rect.min, vec2(KEYS_W - 2.0, PR_RULER_H));
     let hr = ui.interact(hp, ui.scope_id().with("pr_audition"), Sense::click());
@@ -690,7 +722,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                         app.note_sel = vec![i];
                     }
                     Some(if edge {
-                        NoteDrag::Resize
+                        NoteDrag::Resize { grab: i }
                     } else {
                         NoteDrag::Move {
                             grab_beat: beat_at(pt.x),
@@ -705,7 +737,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             None
         };
         if let Some(m) = mode {
-            if matches!(m, NoteDrag::Move { .. } | NoteDrag::Resize | NoteDrag::Velocity) {
+            if matches!(m, NoteDrag::Move { .. } | NoteDrag::Resize { .. } | NoteDrag::Velocity) {
                 app.begin_gesture();
             }
             let base = if ui.input(|i| i.modifiers.shift || i.modifiers.command) { app.note_sel.clone() } else { Vec::new() };
@@ -768,12 +800,16 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                     }
                 }
             }
-            NoteDrag::Resize => {
-                for &i in &sel {
-                    if let Some(n) = new.get_mut(i) {
-                        let min = if free { 1.0 / 128.0 } else { grid.min(0.25) / 4.0 };
-                        let end = snap_round(beat_at(pt.x)).max(n.start + min);
-                        n.length = (end - n.start).max(1.0 / 128.0);
+            NoteDrag::Resize { grab } => {
+                let min = if free { 1.0 / 128.0 } else { grid.min(0.25) / 4.0 };
+                if let Some(g) = orig.get(grab) {
+                    // The grabbed note's end follows the (snapped) pointer; the rest shift by the same delta.
+                    let end = snap_round(beat_at(pt.x)).max(g.start + min);
+                    let delta = end - (g.start + g.length);
+                    for &i in &sel {
+                        if let (Some(n), Some(o)) = (new.get_mut(i), orig.get(i)) {
+                            n.length = (o.length + delta).max(min).max(1.0 / 128.0);
+                        }
                     }
                 }
                 if let Some(n) = sel.first().and_then(|&i| new.get(i)) {
@@ -849,7 +885,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             d.remove::<Vec<Note>>(drag_id.with("orig"));
             d.remove::<Vec<usize>>(drag_id.with("base"));
         });
-        if matches!(mode, NoteDrag::Move { .. } | NoteDrag::Resize | NoteDrag::Velocity) {
+        if matches!(mode, NoteDrag::Move { .. } | NoteDrag::Resize { .. } | NoteDrag::Velocity) {
             // Re-sort while keeping the selection on the same notes.
             if let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(&mut app.project, cref) {
                 let selected: Vec<Note> = app.note_sel.iter().filter_map(|&i| notes.get(i).copied()).collect();
