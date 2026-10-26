@@ -893,6 +893,7 @@ impl DawApp {
 
     /// ×2 / ÷2: stretch the selected notes (positions from the first selected
     /// note, and lengths) by `factor`.
+    #[cfg_attr(not(test), allow(dead_code))] // Pitch & Time ×2 / ÷2 replaced the buttons
     pub fn scale_selected_notes(&mut self, factor: f64) -> bool {
         self.edit_selected_notes(|notes, idx| {
             let s0 = idx.iter().map(|&i| notes[i].start).fold(f64::MAX, f64::min);

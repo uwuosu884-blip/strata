@@ -3,6 +3,7 @@
 mod app;
 mod arr_ops;
 mod audio;
+mod clip_ops;
 mod midi;
 mod settings;
 mod ui;

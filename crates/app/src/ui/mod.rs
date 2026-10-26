@@ -2,6 +2,7 @@
 
 mod arrangement;
 mod browser;
+pub mod clip;
 mod detail;
 mod io;
 mod session;
@@ -61,6 +62,15 @@ impl eframe::App for DawApp {
         self.begin_frame();
         self.handle_close(&ctx);
         self.shortcuts(&ctx);
+        clip::groove_pool(self, &ctx);
+        // Clip launch button released anywhere → ReleaseClip.
+        let held_id = egui::Id::unique("launch_held");
+        if ctx.input(|i| i.pointer.primary_released())
+            && let Some((t, s)) = ctx.data(|d| d.get_temp::<(usize, usize)>(held_id))
+        {
+            ctx.data_mut(|d| d.remove::<(usize, usize)>(held_id));
+            self.release_clip(t, s);
+        }
 
         egui::Panel::top("transport")
             .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 6)))
@@ -297,6 +307,13 @@ impl DawApp {
                         }
                         continue;
                     }
+                    // Loop brace selected (Clip View): Up/Down move it by its length.
+                    Key::ArrowUp | Key::ArrowDown if self.focus_detail && self.cv.brace_sel && !modifiers.shift => {
+                        if let Some(c) = self.selected_clip {
+                            self.shift_loop(c, if key == Key::ArrowUp { 1.0 } else { -1.0 });
+                        }
+                        continue;
+                    }
                     // Selected notes: Up/Down = semitone, Shift+Up/Down = octave.
                     Key::ArrowUp | Key::ArrowDown if self.focus_detail && !self.note_sel.is_empty() => {
                         let s = if modifiers.shift { 12 } else { 1 };
@@ -339,6 +356,7 @@ impl DawApp {
             ui.menu_button("View", |ui| self.view_menu(ui));
 
             self.tempo_box(ui);
+            self.tempo_extras(ui);
             self.signature_box(ui);
             if icon_button(ui, Icon::Metronome, self.project.metronome, "Metronome").clicked() {
                 let on = !self.project.metronome;
@@ -437,6 +455,54 @@ impl DawApp {
     /// BPM: drag up/down (or wheel) in whole BPM; Shift = 0.01 steps (the only
     /// way to get decimals besides typing). The cursor is hidden and parked while
     /// dragging so it never hits the screen edge. Double-click to type a value.
+    /// Tap Tempo, Phase Nudge −/+ and the tempo-automation Follow switch.
+    fn tempo_extras(&mut self, ui: &mut egui::Ui) {
+        let tap_id = egui::Id::unique("tap_tempo");
+        let now = ui.input(|i| i.time);
+        let tap = ui.small_button("Tap").on_hover_text("Tap Tempo: tap 4+ times on the beat");
+        if tap.clicked() {
+            let mut taps: Vec<f64> = ui.data(|d| d.get_temp(tap_id)).unwrap_or_default();
+            // Restart after a 2 s pause.
+            if taps.last().is_some_and(|&l| now - l > 2.0) {
+                taps.clear();
+            }
+            taps.push(now);
+            if taps.len() > 8 {
+                taps.remove(0);
+            }
+            if taps.len() >= 4 {
+                let iv = (taps[taps.len() - 1] - taps[0]) / (taps.len() - 1) as f64;
+                let bpm = ((60.0 / iv).clamp(20.0, 999.0) * 100.0).round() / 100.0;
+                self.edit(|p| p.tempo_bpm = bpm);
+                self.send_now(Command::SetTempo(bpm));
+            }
+            ui.data_mut(|d| d.insert_temp(tap_id, taps));
+        }
+        // Nudge: rate offset only while held.
+        let held_id = egui::Id::unique("nudge_held");
+        let held: f64 = ui.data(|d| d.get_temp(held_id)).unwrap_or(1.0);
+        let mut want = 1.0;
+        for (label, k, tip) in [("−", 0.95, "Phase Nudge Down (hold)"), ("+", 1.05, "Phase Nudge Up (hold)")] {
+            let r = ui.add(egui::Button::new(label).small().sense(egui::Sense::click_and_drag())).on_hover_text(tip);
+            if r.is_pointer_button_down_on() {
+                want = k;
+            }
+        }
+        if want != held {
+            ui.data_mut(|d| d.insert_temp(held_id, want));
+            self.send_now(Command::Nudge(want));
+        }
+        let follow = self.project.tempo_follow;
+        if ui
+            .add(egui::Button::selectable(follow, "Follow"))
+            .on_hover_text("Follow the tempo of Leader clips / tempo automation (off = Unfollow)")
+            .clicked()
+        {
+            self.edit(|p| p.tempo_follow = !follow);
+            self.send_now(Command::SetTempoFollow(!follow));
+        }
+    }
+
     fn tempo_box(&mut self, ui: &mut egui::Ui) {
         let id = ui.make_persistent_id("tempo_box");
         let edit_id = id.with("editing");

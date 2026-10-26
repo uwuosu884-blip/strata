@@ -6,6 +6,7 @@
 mod arrange;
 pub mod clipx;
 mod history;
+pub mod miditools;
 mod routing;
 mod tracks;
 pub use arrange::{trim_left, trim_right};

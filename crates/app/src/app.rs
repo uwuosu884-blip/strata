@@ -227,6 +227,8 @@ pub struct DawApp {
     pub pr_audition: bool,
     pub browser_dir: PathBuf,
     pub show_browser: bool,
+    /// Clip View state (tabs, MIDI Tools, envelope / MPE lanes).
+    pub cv: crate::ui::clip::ClipView,
 }
 
 const METER_FALL_DB_PER_SEC: f32 = 24.0;
@@ -312,6 +314,7 @@ impl DawApp {
             arr_grid: crate::arr_ops::GridMode::Adaptive(0),
             pr_grid: crate::arr_ops::GridMode::Adaptive(0),
             detail_mode: DetailMode::Device,
+            cv: Default::default(),
             focus_detail: false,
             play_start: 0.0,
             renaming: None,
@@ -359,6 +362,7 @@ impl DawApp {
             Command::SetTempo(p.tempo_bpm),
             Command::SetBeatsPerBar(p.beats_per_bar),
             Command::SetMetronome(p.metronome),
+            Command::SetTempoFollow(p.tempo_follow),
             Command::SetMasterGain(p.master_gain_linear()),
             Command::SetMasterPan(p.master_pan),
             Command::SetLaunchQuantize(p.launch_quantize),
@@ -725,6 +729,13 @@ impl DawApp {
     pub fn launch_clip(&mut self, track: usize, scene: usize) {
         if let Some(rt) = self.rt(track) {
             self.send(Command::LaunchClip { track: rt, scene: scene as u32 });
+        }
+    }
+
+    /// Launch button released (Gate stops, Repeat stops retriggering).
+    pub fn release_clip(&mut self, track: usize, scene: usize) {
+        if let Some(rt) = self.rt(track) {
+            self.send(Command::ReleaseClip { track: rt, scene: scene as u32 });
         }
     }
 

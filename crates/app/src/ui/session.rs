@@ -291,9 +291,18 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
                     Color32::from_black_alpha(140),
                 );
             }
+            // Launch on press (Live); release matters for Gate / Repeat modes.
+            let held_id = egui::Id::unique("launch_held");
+            if resp.hovered()
+                && ui.input(|i| i.pointer.primary_pressed())
+                && ui.ctx().pointer_latest_pos().is_some_and(|p| launch_zone.contains(p))
+            {
+                app.launch_clip(t, s);
+                ui.data_mut(|d| d.insert_temp(held_id, (t, s)));
+            }
             if resp.clicked() {
                 if resp.interact_pointer_pos().is_some_and(|p| launch_zone.contains(p)) {
-                    app.launch_clip(t, s);
+                    // Launched on press.
                 } else {
                     app.selected_clip = Some(ClipRef::Slot { track: t, scene: s });
                     app.selected_track = t;
