@@ -93,15 +93,31 @@ struct MoveDrag {
 
 #[derive(Clone, Debug)]
 enum Gesture {
-    Select { anchor: f64, track: usize },
+    Select {
+        anchor: f64,
+        track: usize,
+    },
     Move(MoveDrag),
     /// Edge trim; `orig` is the clip at drag start (limits come from it).
-    Resize { orig: Box<ArrangementClip>, left: bool, fpb: f64, total: Option<f64> },
-    LoopNew { anchor: f64 },
-    LoopMove { grab: f64 },
-    LoopEdge { start: bool },
+    Resize {
+        orig: Box<ArrangementClip>,
+        left: bool,
+        fpb: f64,
+        total: Option<f64>,
+    },
+    LoopNew {
+        anchor: f64,
+    },
+    LoopMove {
+        grab: f64,
+    },
+    LoopEdge {
+        start: bool,
+    },
     /// Header drag: reorder / regroup these tracks.
-    Tracks { ids: Vec<u64> },
+    Tracks {
+        ids: Vec<u64>,
+    },
 }
 
 fn gesture_id() -> egui::Id {
@@ -133,7 +149,18 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let grid = app.arr_grid.step(zoom, bpb);
     app.grid = grid;
     let alt = ui.input(|i| i.modifiers.alt);
-    let g = Geo { x0, zoom, scroll: app.arr_scroll as f64, body, lanes, rows, ys, vscroll: app.arr_vscroll, grid, snap_on: app.arr_grid.snaps() && !alt };
+    let g = Geo {
+        x0,
+        zoom,
+        scroll: app.arr_scroll as f64,
+        body,
+        lanes,
+        rows,
+        ys,
+        vscroll: app.arr_vscroll,
+        grid,
+        snap_on: app.arr_grid.snaps() && !alt,
+    };
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
@@ -296,18 +323,18 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     p.rect_filled(brace, CornerRadius::same(2), col);
     // Corner handles: drag to adjust the loop start / end.
     for x in [brace.min.x, brace.max.x] {
-        p.rect_filled(Rect::from_center_size(pos2(x, brace.center().y), vec2(3.0, brace.height() + 2.0)), CornerRadius::ZERO, shade(col, 1.3));
+        p.rect_filled(
+            Rect::from_center_size(pos2(x, brace.center().y), vec2(3.0, brace.height() + 2.0)),
+            CornerRadius::ZERO,
+            shade(col, 1.3),
+        );
     }
     let edge_at = |pos: Pos2| -> Option<bool> {
         if !band.expand(2.0).contains(pos) {
             return None;
         }
         let (dl, dr) = ((pos.x - brace.min.x).abs(), (pos.x - brace.max.x).abs());
-        if dl.min(dr) > 5.0 {
-            None
-        } else {
-            Some(dl <= dr)
-        }
+        if dl.min(dr) > 5.0 { None } else { Some(dl <= dr) }
     };
     if let Some(h) = resp.hover_pos()
         && edge_at(h).is_some()
@@ -1068,7 +1095,16 @@ fn sample_key(c: &Clip) -> &str {
 /// Draw a clip with a MIDI or waveform preview (`collapsed`: title bar only).
 /// Deactivated clips are drawn grey.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_clip(p: &egui::Painter, r: Rect, clip: &Clip, selected: bool, sample: Option<&SampleBuffer>, zoom: f64, tempo: f64, collapsed: bool) {
+pub fn draw_clip(
+    p: &egui::Painter,
+    r: Rect,
+    clip: &Clip,
+    selected: bool,
+    sample: Option<&SampleBuffer>,
+    zoom: f64,
+    tempo: f64,
+    collapsed: bool,
+) {
     let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
     if collapsed {
         p.rect_filled(r, CornerRadius::same(3), c);
@@ -1118,7 +1154,11 @@ pub fn draw_clip(p: &egui::Painter, r: Rect, clip: &Clip, selected: bool, sample
                     continue;
                 }
                 let y = body.max.y - ((n.pitch - lo) as f32 + 1.0) / span * body.height();
-                p.rect_filled(Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)), CornerRadius::ZERO, if n.muted { shade(c, 0.7) } else { ink });
+                p.rect_filled(
+                    Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)),
+                    CornerRadius::ZERO,
+                    if n.muted { shade(c, 0.7) } else { ink },
+                );
             }
         }
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {

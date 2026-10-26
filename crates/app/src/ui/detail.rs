@@ -234,7 +234,11 @@ fn playhead(app: &DawApp, p: &egui::Painter, rect: Rect, cref: ClipRef, track: u
 
 #[derive(Clone, Copy, Debug)]
 enum NoteDrag {
-    Move { grab_beat: f64, grab_pitch: i32, orig: Option<(f64, u8)> },
+    Move {
+        grab_beat: f64,
+        grab_pitch: i32,
+        orig: Option<(f64, u8)>,
+    },
     Resize,
     Velocity,
     /// Rubber-band selection; `base` = selection kept when Shift/Ctrl was held.
@@ -375,7 +379,13 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         gp.line_segment([pos2(x, grid_area.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, c));
         if bar {
             gp.line_segment([pos2(x, ruler.min.y + 6.0), pos2(x, ruler.max.y)], Stroke::new(1.0, Color32::from_gray(120)));
-            gp.text(pos2(x + 2.0, ruler.min.y), Align2::LEFT_TOP, format!("{}", (b / bpb) as i64 + 1), FontId::proportional(9.0), Color32::from_gray(170));
+            gp.text(
+                pos2(x + 2.0, ruler.min.y),
+                Align2::LEFT_TOP,
+                format!("{}", (b / bpb) as i64 + 1),
+                FontId::proportional(9.0),
+                Color32::from_gray(170),
+            );
         }
         b += line_step;
     }

@@ -6,8 +6,8 @@
 mod arrange;
 mod history;
 mod tracks;
-pub use history::History;
 pub use arrange::{trim_left, trim_right};
+pub use history::History;
 pub use tracks::TrackDrop;
 
 pub use daw_engine::{AdsrParams, Note, SamplerParams, SynthParams, Wave};
@@ -1018,8 +1018,10 @@ mod tests {
     fn split_clip_shifts_content() {
         let mut p = blank(1);
         let id = p.alloc_id();
-        let notes =
-            vec![Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false }, Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false }];
+        let notes = vec![
+            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false },
+            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false },
+        ];
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,
             clip: Clip { id, length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },

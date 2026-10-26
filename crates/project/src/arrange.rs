@@ -176,7 +176,16 @@ impl Project {
         let id = self.alloc_id();
         let tr = &mut self.tracks[track];
         tr.arrangement.retain(|a| !ids.contains(&a.clip.id));
-        let clip = Clip { id, length: end - start, looping: false, content: ClipContent::Midi { notes }, muted: false, head: 0.0, full: 0.0, ..first };
+        let clip = Clip {
+            id,
+            length: end - start,
+            looping: false,
+            content: ClipContent::Midi { notes },
+            muted: false,
+            head: 0.0,
+            full: 0.0,
+            ..first
+        };
         tr.arrangement.push(ArrangementClip { start, clip });
         tr.arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
         Some(id)
@@ -312,7 +321,10 @@ mod tests {
     fn resize_is_clamped_to_the_material() {
         // MIDI: shrink from both sides, then drag back out: stops at the original edges.
         let notes = vec![Note { start: 0.5, length: 0.5, pitch: 60, velocity: 100, muted: false }];
-        let a = ArrangementClip { start: 4.0, clip: Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() } };
+        let a = ArrangementClip {
+            start: 4.0,
+            clip: Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },
+        };
         assert_eq!(trim_right(&a, 9.0, 0.25, 0.0, None).clip.length, 4.0, "can't grow a fresh clip");
         let short = trim_right(&a, 2.0, 0.25, 0.0, None);
         assert_eq!(short.clip.length, 2.0);

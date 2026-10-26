@@ -180,10 +180,7 @@ impl DawApp {
         if cmd(Key::R) {
             self.start_rename(self.selected_track);
         }
-        if cmd(Key::D)
-            && !self.duplicate_selected_notes()
-            && !(self.view == View::Arrangement && self.duplicate_arrangement_selection())
-        {
+        if cmd(Key::D) && !self.duplicate_selected_notes() && !(self.view == View::Arrangement && self.duplicate_arrangement_selection()) {
             self.duplicate_selected_clip();
         }
         if cmd(Key::B) {
@@ -736,7 +733,8 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, t: u
         return;
     }
     let id = ui.make_persistent_id(("rename", r.id));
-    let resp = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
+    let resp =
+        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
     if r.fresh {
         r.fresh = false;
         resp.request_focus();
@@ -756,4 +754,3 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, t: u
         }
     }
 }
-

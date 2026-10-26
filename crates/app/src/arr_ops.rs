@@ -487,7 +487,6 @@ impl DawApp {
     }
 }
 
-
 impl DawApp {
     // ----- track heights / collapse -------------------------------------------------
 
@@ -812,7 +811,9 @@ mod app_tests {
     fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
         let id = p.alloc_id();
         let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false }];
-        p.tracks[t].arrangement.push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
+        p.tracks[t]
+            .arrangement
+            .push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
         p.tracks[t].arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
         id
     }
@@ -968,4 +969,3 @@ mod app_tests {
         assert_eq!(a.play_start, 8.0);
     }
 }
-
