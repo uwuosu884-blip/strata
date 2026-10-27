@@ -798,8 +798,6 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     // Right region, row 1: activator · S · arm (collapsed: activator · S only).
     let bx = right.min.x + 2.0;
     let act = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
-    let solo_r = Rect::from_min_size(pos2(act.max.x + GAP, row1), vec2(SOLO_W, BOX_H));
-    let arm_r = Rect::from_min_size(pos2(solo_r.max.x + GAP, row1), vec2(ARM_W, BOX_H));
     if !clip.contains_rect(act) {
         return;
     }

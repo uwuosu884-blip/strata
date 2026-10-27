@@ -9,8 +9,6 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, pos2, vec
 
 /// Height of the In/Out block in a mixer column.
 pub const IO_H: f32 = 132.0;
-/// Width of the In/Out column in arrangement headers.
-pub const IO_W: f32 = 124.0;
 const MON_BLUE: Color32 = Color32::from_rgb(70, 150, 240);
 
 fn small(s: impl Into<String>) -> RichText {
@@ -92,9 +90,10 @@ pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
         } else {
             midi_from(app, ui, t, cw, true);
         }
+        caption(ui, "Monitor");
         monitor_radio(app, ui, t, cw);
     } else {
-        ui.add_space(54.0);
+        ui.add_space(68.0);
     }
     let sends_midi = app.project.tracks[t].sends_midi();
     caption(ui, if sends_midi { "MIDI To" } else { "Audio To" });

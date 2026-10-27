@@ -334,6 +334,8 @@ pub fn apply_style(ctx: &egui::Context) {
     st.spacing.combo_height = 300.0;
     st.spacing.icon_width = 11.0;
     st.spacing.icon_width_inner = 6.0;
+    st.spacing.slider_width = 110.0;
+    st.spacing.slider_rail_height = 3.0;
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
     let r0 = CornerRadius::ZERO;
     v.override_text_color = Some(text());
@@ -348,6 +350,8 @@ pub fn apply_style(ctx: &egui::Context) {
     v.selection.bg_fill = SEL_ROW;
     v.selection.stroke = Stroke::new(1.0, text());
     v.hyperlink_color = ORANGE;
+    v.slider_trailing_fill = true;
+    v.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.6 };
     v.window_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(110) };
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(90) };
     let w = &mut v.widgets;

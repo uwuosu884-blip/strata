@@ -254,7 +254,7 @@ fn group_slot(app: &mut DawApp, ui: &mut egui::Ui, g: usize, s: usize) {
     if has {
         painter.rect_filled(rect, CornerRadius::same(2), shade(color, if playing { 0.8 } else { 0.4 }));
         let launch = rect.left_center() + vec2(10.0, 0.0);
-        draw_icon(&painter, Icon::Play, launch, if playing { PLAY_GREEN } else { gray(25) });
+        draw_play(&painter, launch, if playing { PLAY_GREEN } else { gray(25) });
         // Mini overview: one tick per child with a clip.
         let n = kids.len().max(1) as f32;
         for (k, c) in kids.clone().enumerate() {

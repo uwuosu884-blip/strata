@@ -1649,7 +1649,7 @@ pub fn mpe_lane(
 pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, gray(22));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(0x39));
     let ClipContent::Audio { sample, warp_bpm, .. } = &clip.content else { return };
     let Some(buf) = app.cache.peek(sample).cloned() else {
         let msg = app.cache.error(sample).map_or("Loading…".to_string(), |e| format!("Missing sample: {e}"));
@@ -1707,12 +1707,21 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let free = ui.input(|i| i.modifiers.alt);
     let snap = |b: f64| if free { b } else { (b / grid).round() * grid };
     // Ruler + grid lines.
-    p.rect_filled(ruler, CornerRadius::ZERO, gray(44));
+    p.rect_filled(ruler, CornerRadius::ZERO, super::theme::panel());
+    // Live: alternating lighter bar bands.
+    let mut bar = (scroll / bpb).floor();
+    while bar * bpb <= scroll + visible {
+        if (bar as i64).rem_euclid(2) == 0 {
+            let r = Rect::from_min_max(pos2(x_of(bar * bpb), wave.min.y), pos2(x_of((bar + 1.0) * bpb), wave.max.y));
+            p.rect_filled(r, CornerRadius::ZERO, gray(0x3e));
+        }
+        bar += 1.0;
+    }
     let mut b = (scroll / grid).floor() * grid;
     while b <= scroll + visible {
         let x = x_of(b);
         let bar = (b / bpb).fract().abs() < 1e-9;
-        p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, gray(if bar { 60 } else { 36 })));
+        p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, gray(if bar { 0x2c } else { 0x34 })));
         if bar {
             let label = if warped {
                 format!("{}", (b / bpb).floor() as i64 + 1)
@@ -1724,7 +1733,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         b += grid;
     }
     // Waveform: per column, min/max of the peak blocks its beat span covers.
-    let col = rgb(clip.color);
+    let col = gray(0x1a); // Live: dark waveform on the light editor
     let mid = wave.center().y;
     let half = wave.height() * 0.45;
     let pk = &buf.peaks;

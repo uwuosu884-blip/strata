@@ -1,5 +1,6 @@
 //! Detail panel: clip editor (piano roll / audio clip) or the selected track's device.
 
+use super::theme::*;
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem};
 use daw_engine::{DRUM_BASE_NOTE, DRUM_PADS, Wave};
@@ -226,16 +227,20 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             if (pitch - clip.scale.root as i32).rem_euclid(12) == 0 {
                 Color32::from_rgb(52, 50, 40)
             } else if clip.scale.contains(pitch) {
-                gray(40)
+                gray(0x39)
             } else {
-                gray(27)
+                gray(0x2c)
             }
         } else if black {
-            gray(30)
+            gray(0x32)
         } else {
-            gray(36)
+            gray(0x39)
         };
         p.rect_filled(Rect::from_min_max(pos2(grid_area.min.x, y), pos2(grid_area.max.x, y + row_h)), CornerRadius::ZERO, row_c);
+        // Live: 1 px separators between B/C and E/F.
+        if matches!(pitch % 12, 0 | 5) {
+            p.line_segment([pos2(grid_area.min.x, y + row_h - 0.5), pos2(grid_area.max.x, y + row_h - 0.5)], Stroke::new(1.0, gray(0x34)));
+        }
         let key = Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.min.x + KEYS_W - 2.0, y + row_h - 1.0));
         p.rect_filled(key, CornerRadius::ZERO, if black { gray(50) } else { gray(200) });
         let label = match &drums {
@@ -259,18 +264,29 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     }
     // Ruler + beat lines (thinned when the grid gets denser than ~5 px).
     let gp = ui.painter_at(Rect::from_min_max(ruler.min, rect.max));
-    gp.rect_filled(ruler, CornerRadius::ZERO, gray(44));
+    gp.rect_filled(ruler, CornerRadius::ZERO, panel());
+    // Live: every other bar is a lighter band.
+    {
+        let mut bar = (scroll / bpb).floor();
+        while bar * bpb <= (scroll + visible).min(view_len) {
+            if (bar as i64).rem_euclid(2) == 1 {
+                let r = Rect::from_min_max(pos2(x_of(bar * bpb), grid_area.min.y), pos2(x_of((bar + 1.0) * bpb), grid_area.max.y));
+                gp.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(5));
+            }
+            bar += 1.0;
+        }
+    }
     let line_step = if grid * ppb < 5.0 { crate::arr_ops::adaptive_step(ppb, bpb, 8.0) } else { grid };
     let mut b = (scroll / line_step).floor() * line_step;
     let end = (scroll + visible).min(view_len);
     while b <= end + 1e-9 {
         let bar = (b / bpb).fract().abs() < 1e-9;
         let c = if bar {
-            gray(85)
+            gray(0x24)
         } else if b.fract().abs() < 1e-9 {
-            gray(55)
+            gray(0x2c)
         } else {
-            gray(42)
+            gray(0x33)
         };
         let x = x_of(b);
         gp.line_segment([pos2(x, grid_area.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, c));
@@ -799,9 +815,8 @@ fn master_device(app: &mut DawApp, ui: &mut egui::Ui) {
     });
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), (ui.available_height() - 4.0).max(60.0)), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(4), gray(34));
-    p.rect_stroke(rect.shrink(6.0), CornerRadius::same(3), Stroke::new(1.0, gray(60)), egui::StrokeKind::Inside);
-    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", FontId::proportional(14.0), gray(120));
+    p.rect_filled(rect, CornerRadius::ZERO, win_bg());
+    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", font(FS), dim());
 }
 
 fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
@@ -832,9 +847,22 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     }
     let mut inst = track.instrument.clone();
     let mut ed = Edit::default();
-    let frame = egui::Frame::NONE.fill(gray(34)).corner_radius(4).inner_margin(6);
+    // Live device: panel body, 1 px outline, title strip with an activator dot.
+    let title = track.instrument.label().to_string();
+    let frame = egui::Frame::NONE.fill(panel()).stroke(Stroke::new(1.0, outline())).inner_margin(egui::Margin {
+        left: 6,
+        right: 6,
+        top: 2,
+        bottom: 6,
+    });
     let (resp, dropped) = ui.dnd_drop_zone::<DragItem, _>(frame, |ui| {
         ui.set_min_size(vec2(ui.available_width(), 120.0));
+        let (tr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
+        let tp = ui.painter();
+        tp.rect_filled(tr.expand2(vec2(5.0, 1.0)), CornerRadius::ZERO, gray(0x46));
+        tp.circle_filled(tr.left_center() + vec2(5.0, 0.0), 4.5, ORANGE);
+        tp.text(tr.left_center() + vec2(15.0, 0.0), Align2::LEFT_CENTER, &title, bold(FS), text());
+        ui.add_space(4.0);
         match &mut inst {
             InstrumentDef::None => {
                 ui.label("No instrument. Drag one from the browser.");
@@ -994,18 +1022,19 @@ fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8>
                         let bg = if i == sel {
                             ACCENT
                         } else if has {
-                            gray(70)
+                            gray(0x50)
                         } else {
-                            gray(44)
+                            gray(0x3e)
                         };
-                        ui.painter().rect_filled(r, CornerRadius::same(3), bg);
+                        ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
+                        ui.painter().rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
                         let name = pads.get(i).map_or(String::new(), |p| p.name.clone());
                         ui.painter().with_clip_rect(r).text(
                             r.left_top() + vec2(4.0, 3.0),
                             Align2::LEFT_TOP,
                             &name,
-                            FontId::proportional(10.0),
-                            if i == sel { Color32::BLACK } else { Color32::WHITE },
+                            font(FS),
+                            if i == sel { Color32::BLACK } else { text() },
                         );
                         ui.painter().text(
                             r.right_bottom() - vec2(3.0, 2.0),
