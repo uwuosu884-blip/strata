@@ -10,6 +10,7 @@
 //! Headers: click/Shift+click select, drag = reorder / move in or out of groups,
 //! double-click = rename, ⊙ = collapse.
 
+use super::theme::{panel, win_bg};
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use crate::arr_ops::{SelMode, TimeSel};
@@ -179,7 +180,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
-    ui.painter().rect_filled(side, CornerRadius::ZERO, PANEL_BG);
+    ui.painter().rect_filled(side, CornerRadius::ZERO, panel());
     let grid_txt = match app.arr_grid {
         crate::arr_ops::GridMode::Off => "Grid off".to_string(),
         _ => format!("Grid {}", grid_label(grid)),
@@ -190,16 +191,16 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     // ---- Lanes background ------------------------------------------------------
     let p = ui.painter_at(lanes);
-    p.rect_filled(lanes, CornerRadius::ZERO, BG_DARK);
+    p.rect_filled(lanes, CornerRadius::ZERO, win_bg());
     let mut b = (g.scroll / grid).floor() * grid;
     while g.to_x(b) < lanes.max.x {
         let x = g.to_x(b);
         let c = if (b / bpb).fract().abs() < 1e-9 {
-            Color32::from_gray(70)
+            gray(70)
         } else if b.fract().abs() < 1e-9 {
-            Color32::from_gray(48)
+            gray(48)
         } else {
-            Color32::from_gray(38)
+            gray(38)
         };
         p.line_segment([pos2(x, lanes.min.y), pos2(x, lanes.max.y)], Stroke::new(1.0, c));
         b += grid;
@@ -345,11 +346,11 @@ fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, x0: f32) {
 fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     let resp = ui.interact(ruler, ui.scope_id().with("ruler"), Sense::click_and_drag());
     let p = ui.painter_at(ruler);
-    p.rect_filled(ruler, CornerRadius::ZERO, PANEL_BG);
+    p.rect_filled(ruler, CornerRadius::ZERO, panel());
     let band = Rect::from_min_max(ruler.min, pos2(ruler.max.x, ruler.min.y + 12.0));
     let (ls, le) = (app.project.loop_start, app.project.loop_end);
     let brace = Rect::from_min_max(pos2(g.to_x(ls), band.min.y + 2.0), pos2(g.to_x(le).max(g.to_x(ls) + 4.0), band.max.y));
-    let col = if app.project.loop_enabled { shade(ACCENT, 0.9) } else { Color32::from_gray(90) };
+    let col = if app.project.loop_enabled { shade(ACCENT, 0.9) } else { gray(90) };
     p.rect_filled(brace, CornerRadius::same(2), col);
     // Corner handles: drag to adjust the loop start / end.
     for x in [brace.min.x, brace.max.x] {
@@ -381,14 +382,8 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     while g.to_x(bar as f64 * bpb) < ruler.max.x {
         let x = g.to_x(bar as f64 * bpb);
         if bar % label_every == 0 {
-            p.line_segment([pos2(x, ruler.min.y + 14.0), pos2(x, ruler.max.y)], Stroke::new(1.0, Color32::from_gray(140)));
-            p.text(
-                pos2(x + 3.0, ruler.min.y + 14.0),
-                Align2::LEFT_TOP,
-                format!("{}", bar + 1),
-                FontId::proportional(11.0),
-                Color32::from_gray(200),
-            );
+            p.line_segment([pos2(x, ruler.min.y + 14.0), pos2(x, ruler.max.y)], Stroke::new(1.0, gray(140)));
+            p.text(pos2(x + 3.0, ruler.min.y + 14.0), Align2::LEFT_TOP, format!("{}", bar + 1), FontId::proportional(11.0), gray(200));
         }
         bar += 1;
     }
@@ -429,7 +424,7 @@ fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
         Align2::LEFT_CENTER,
         "Drop a sample here to add a track · right-click to add tracks",
         FontId::proportional(11.0),
-        Color32::from_gray(90),
+        gray(90),
     );
 }
 
@@ -465,11 +460,11 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         if selected {
             painter.rect_filled(lane, CornerRadius::ZERO, Color32::from_white_alpha(8));
         }
-        painter.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, Color32::from_gray(20)));
+        painter.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, gray(20)));
         return;
     }
     painter.rect_filled(lane, CornerRadius::ZERO, if selected { Color32::from_white_alpha(10) } else { Color32::from_black_alpha(25) });
-    painter.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, Color32::from_gray(20)));
+    painter.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, gray(20)));
 
     let moving: Vec<u64> = match ui.data(|m| m.get_temp::<Gesture>(gesture_id())) {
         Some(Gesture::Move(d)) => d.clips.iter().map(|c| c.0).collect(),
@@ -668,7 +663,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         cur = pi;
     }
     let depth = chain.len();
-    painter.rect_filled(head, CornerRadius::ZERO, Color32::from_gray(30));
+    painter.rect_filled(head, CornerRadius::ZERO, gray(30));
     for (d, &a) in chain.iter().rev().enumerate() {
         let x = head.min.x + d as f32 * INDENT;
         painter.rect_filled(
@@ -685,11 +680,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let right = Rect::from_min_max(pos2(split, inner.min.y), inner.max);
     let title_bg = if selected { color } else { shade(color, 0.72) };
     painter.rect_filled(left, CornerRadius::ZERO, title_bg);
-    painter.rect_filled(
-        right,
-        CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 },
-        if selected { Color32::from_gray(74) } else { Color32::from_gray(50) },
-    );
+    painter.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, if selected { gray(74) } else { gray(50) });
     let text_col = text_on(title_bg);
 
     // Top-left: ⊙ collapse button, (group fold arrow), name.
@@ -717,7 +708,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let m = app.track_meters.get(t).copied().unwrap_or([0.0; 2]);
     let lvl = ((daw_project::gain_to_db(m[0].max(m[1])) + 60.0) / 60.0).clamp(0.0, 1.0);
     let mr = Rect::from_min_max(pos2(inner.max.x - 4.0, inner.min.y + 2.0), pos2(inner.max.x - 1.0, inner.max.y - 2.0));
-    painter.rect_filled(mr, CornerRadius::ZERO, Color32::from_gray(24));
+    painter.rect_filled(mr, CornerRadius::ZERO, gray(24));
     painter.rect_filled(Rect::from_min_max(pos2(mr.min.x, mr.max.y - mr.height() * lvl), mr.max), CornerRadius::ZERO, PLAY_GREEN);
 
     let hr = ui.interact(clip, ui.scope_id().with(("arr_head", t)), Sense::click_and_drag());
@@ -838,8 +829,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
 /// activator / solo / arm; volume and pan are always shown.
 fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w: f32) {
     let p = ui.painter();
-    p.rect_filled(lanes, CornerRadius::ZERO, Color32::from_gray(22));
-    p.line_segment([lanes.left_top(), pos2(head.max.x, lanes.min.y)], Stroke::new(2.0, Color32::from_gray(14)));
+    p.rect_filled(lanes, CornerRadius::ZERO, gray(22));
+    p.line_segment([lanes.left_top(), pos2(head.max.x, lanes.min.y)], Stroke::new(2.0, gray(14)));
     let collapsed = app.project.master_collapsed;
     let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + io_w);
     let left = Rect::from_min_max(pos2(head.min.x, head.min.y + 2.0), pos2(split - io_w, head.max.y));
@@ -857,11 +848,11 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     hr.context_menu(|ui| super::session::master_menu(app, ui));
     if io_w > 0.0 {
         let io = Rect::from_min_max(pos2(left.max.x, head.min.y + 2.0), pos2(split, head.max.y));
-        ui.painter().rect_filled(io, CornerRadius::ZERO, Color32::from_gray(38));
+        ui.painter().rect_filled(io, CornerRadius::ZERO, gray(38));
         super::io::master_io_compact(app, ui, io);
     }
     let p = ui.painter();
-    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, Color32::from_gray(if sel { 74 } else { 50 }));
+    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, gray(if sel { 74 } else { 50 }));
     let row1 = left.min.y + if collapsed { ((left.height() - BOX_H) * 0.5).max(0.0) } else { 3.0 };
     let cbtn = Rect::from_min_size(pos2(left.min.x + 3.0, row1 - 1.0), vec2(16.0, BOX_H + 2.0));
     let tc = text_on(title_bg);
@@ -875,7 +866,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     // Master meter in the lane (expanded) and at the right edge.
     let lvl = |v: f32| ((daw_project::gain_to_db(v) + 60.0) / 60.0).clamp(0.0, 1.0);
     let mr = Rect::from_min_max(pos2(head.max.x - 4.0, head.min.y + 4.0), pos2(head.max.x - 1.0, head.max.y - 2.0));
-    p.rect_filled(mr, CornerRadius::ZERO, Color32::from_gray(24));
+    p.rect_filled(mr, CornerRadius::ZERO, gray(24));
     let m = app.meter[0].max(app.meter[1]);
     p.rect_filled(Rect::from_min_max(pos2(mr.min.x, mr.max.y - mr.height() * lvl(m)), mr.max), CornerRadius::ZERO, PLAY_GREEN);
     let bx = right.min.x + 4.0;
@@ -1215,6 +1206,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem, at: f64) {
         let t = p.add_track(TrackKind::Audio);
         p.tracks[t].name = format!("# {name}");
         clip.id = p.alloc_id();
+        clip.color = p.new_clip_color(t);
         clip.looping = false;
         let id = clip.id;
         p.tracks[t].arrangement.push(ArrangementClip { start: at, clip });
@@ -1258,6 +1250,9 @@ fn drop_on_lane(app: &mut DawApp, item: &DragItem, t: usize, at: f64) {
         let fpb = app.fpb_fn();
         let id = app.edit(|p| {
             clip.id = p.alloc_id();
+            if matches!(item, DragItem::Sample { .. }) {
+                clip.color = p.new_clip_color(t);
+            }
             clip.looping = false;
             let id = clip.id;
             // Dropped material overwrites what is underneath (Live).

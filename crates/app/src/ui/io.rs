@@ -24,7 +24,7 @@ fn caption(ui: &mut egui::Ui, s: &str) {
 /// Signal / activity bar drawn at the right of a chooser entry.
 fn level_bar(ui: &egui::Ui, row: Rect, level: f32, clip: bool) {
     let r = Rect::from_min_max(pos2(row.max.x - 30.0, row.center().y - 3.0), pos2(row.max.x - 4.0, row.center().y + 3.0));
-    ui.painter().rect_filled(r, CornerRadius::ZERO, Color32::from_gray(25));
+    ui.painter().rect_filled(r, CornerRadius::ZERO, gray(25));
     let w = r.width() * level.clamp(0.0, 1.0);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(w, r.height())), CornerRadius::ZERO, PLAY_GREEN);
     if clip {
@@ -76,7 +76,7 @@ fn track_name(app: &DawApp, id: u64) -> String {
 /// output type + channel. Changes apply to every selected track of the same kind.
 pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(w, IO_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_gray(38));
+    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(38));
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
     let ui = &mut child;
@@ -108,7 +108,7 @@ pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
 /// Arrangement header variant: no captions, clipped to the row (shows as many
 /// choosers as the track height allows, Live order).
 pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, clip: Rect) {
-    ui.painter().with_clip_rect(clip).rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(38));
+    ui.painter().with_clip_rect(clip).rect_filled(rect, CornerRadius::ZERO, gray(38));
     let Some(track) = app.project.tracks.get(t) else { return };
     let (kind, collapsed) = (track.kind, track.collapsed);
     // Rows that fit, by priority: from-type, to-type, monitor, from-channel,
@@ -358,7 +358,7 @@ fn monitor_radio(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
             let fill = match (on, m) {
                 (true, Monitor::In) => MON_BLUE,
                 (true, _) => ACCENT,
-                _ => Color32::from_gray(58),
+                _ => gray(58),
             };
             let txt = RichText::new(label).size(10.0).color(if on { Color32::BLACK } else { Color32::LIGHT_GRAY });
             let b = ui.add(egui::Button::new(txt).fill(fill).min_size(vec2(bw, 15.0)));
@@ -538,7 +538,7 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
 /// Master column In/Out block: the main output's device channels.
 pub fn master_io(app: &mut DawApp, ui: &mut egui::Ui, w: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(w, IO_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_gray(38));
+    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(38));
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
     let ui = &mut child;
@@ -582,30 +582,6 @@ fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {
 
 /// Settings body. Device changes restart the audio engine right away.
 /// Returns true to close.
-pub fn settings_dialog(app: &mut DawApp, ui: &mut egui::Ui, tab: &mut SettingsTab) -> bool {
-    let mut close = false;
-    ui.set_min_width(460.0);
-    ui.horizontal(|ui| {
-        ui.selectable_value(tab, SettingsTab::Audio, "Audio");
-        ui.selectable_value(tab, SettingsTab::Midi, "MIDI");
-    });
-    ui.separator();
-    match tab {
-        SettingsTab::Audio => audio_settings(app, ui),
-        SettingsTab::Midi => midi_settings(app, ui),
-    }
-    ui.separator();
-    ui.horizontal(|ui| {
-        if ui.button("Close").clicked() {
-            close = true;
-        }
-        if let Some(p) = Settings::path() {
-            ui.label(RichText::new(p.display().to_string()).small().color(Color32::GRAY));
-        }
-    });
-    close
-}
-
 fn combo_opt(ui: &mut egui::Ui, id: &str, label: &str, cur: &Option<String>, list: &[String], none: &str) -> Option<Option<String>> {
     let mut out = None;
     ui.label(label);
@@ -623,7 +599,7 @@ fn combo_opt(ui: &mut egui::Ui, id: &str, label: &str, cur: &Option<String>, lis
     out
 }
 
-fn audio_settings(app: &mut DawApp, ui: &mut egui::Ui) {
+pub(super) fn audio_settings(app: &mut DawApp, ui: &mut egui::Ui) {
     if app.device_lists.is_none() {
         let hosts = crate::audio::host_names();
         let (outs, ins) = crate::audio::device_names(app.settings.host.as_deref());
@@ -806,7 +782,7 @@ fn channel_config_editor(app: &mut DawApp, ui: &mut egui::Ui, input: bool) {
     }
 }
 
-fn midi_settings(app: &mut DawApp, ui: &mut egui::Ui) {
+pub(super) fn midi_settings(app: &mut DawApp, ui: &mut egui::Ui) {
     if let Some(e) = &app.midi.error {
         ui.colored_label(Color32::LIGHT_RED, e);
     }
@@ -840,9 +816,9 @@ fn midi_settings(app: &mut DawApp, ui: &mut egui::Ui) {
                 } else if lit {
                     PLAY_GREEN
                 } else if p.open {
-                    Color32::from_gray(110)
+                    gray(110)
                 } else {
-                    Color32::from_gray(50)
+                    gray(50)
                 };
                 ui.painter().circle_filled(rect.center(), 4.0, col);
                 ui.end_row();
@@ -866,7 +842,7 @@ pub fn midi_leds(app: &DawApp, ui: &mut egui::Ui) {
     for (i, age) in [act.age(&act.track_in), act.age(&act.track_out)].into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(rect.min.x + 2.0, rect.min.y + 2.0 + i as f32 * 8.0), vec2(10.0, 6.0));
         let lvl = activity_level(age);
-        let col = Color32::from_gray(50).lerp_to_gamma(Color32::from_rgb(250, 200, 60), lvl);
+        let col = gray(50).lerp_to_gamma(Color32::from_rgb(250, 200, 60), lvl);
         ui.painter().rect_filled(r, CornerRadius::same(1), col);
     }
     resp.on_hover_text("MIDI Track input (top) / output (bottom)");

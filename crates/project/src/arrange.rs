@@ -109,13 +109,14 @@ impl Project {
         }
         let id = self.alloc_id();
         let name = self.next_clip_name(track);
+        let color = self.new_clip_color(track);
         let tr = &mut self.tracks[track];
         tr.arrangement.push(ArrangementClip {
             start,
             clip: Clip {
                 id,
                 name,
-                color: tr.color,
+                color,
                 length: end - start,
                 looping: false,
                 content: ClipContent::Midi { notes: Vec::new() },

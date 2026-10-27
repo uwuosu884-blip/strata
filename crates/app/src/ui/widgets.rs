@@ -6,9 +6,7 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Vec2, pos2,
 pub const ACCENT: Color32 = Color32::from_rgb(255, 160, 40);
 pub const PLAY_GREEN: Color32 = Color32::from_rgb(90, 200, 110);
 pub const REC_RED: Color32 = Color32::from_rgb(230, 70, 60);
-pub const PANEL_BG: Color32 = Color32::from_gray(38);
-pub const BG_DARK: Color32 = Color32::from_gray(28);
-pub const SLOT_BG: Color32 = Color32::from_gray(46);
+pub use super::theme::{gray, grid};
 pub const METER_FLOOR_DB: f32 = -60.0;
 
 pub fn rgb(c: [u8; 3]) -> Color32 {
@@ -38,9 +36,9 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, active: bool, tooltip: &str) -
     let p = ui.painter_at(rect);
     let hovered = response.hovered();
     let bg = match (active, hovered) {
-        (true, _) => Color32::from_gray(72),
-        (false, true) => Color32::from_gray(62),
-        (false, false) => Color32::from_gray(52),
+        (true, _) => gray(72),
+        (false, true) => gray(62),
+        (false, false) => gray(52),
     };
     p.rect_filled(rect, CornerRadius::same(4), bg);
     let c = rect.center();
@@ -48,7 +46,7 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, active: bool, tooltip: &str) -
         Icon::Play if active => PLAY_GREEN,
         Icon::Record if active => REC_RED,
         _ if active => ACCENT,
-        _ => Color32::from_gray(if hovered { 235 } else { 200 }),
+        _ => gray(if hovered { 235 } else { 200 }),
     };
     draw_icon(&p, icon, c, fg);
     response.on_hover_text(tooltip)
@@ -113,13 +111,13 @@ pub fn toggle_box(ui: &mut egui::Ui, text: &str, on: bool, on_color: Color32, to
     let bg = if on {
         on_color
     } else if resp.hovered() {
-        Color32::from_gray(70)
+        gray(70)
     } else {
-        Color32::from_gray(58)
+        gray(58)
     };
     let p = ui.painter_at(rect);
     p.rect_filled(rect, CornerRadius::same(2), bg);
-    let fg = if on { Color32::BLACK } else { Color32::from_gray(210) };
+    let fg = if on { Color32::BLACK } else { gray(210) };
     if text == "REC" {
         // Painted record dot (font-independent).
         p.circle_filled(rect.center(), 4.0, if on { Color32::BLACK } else { REC_RED });
@@ -133,7 +131,7 @@ pub fn toggle_box(ui: &mut egui::Ui, text: &str, on: bool, on_color: Color32, to
 pub fn stereo_meter(ui: &mut egui::Ui, levels: [f32; 2], clipped: bool, size: Vec2) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(22));
+    p.rect_filled(rect, CornerRadius::same(2), gray(22));
     let clip_w = 6.0;
     let bar = Rect::from_min_max(rect.min, pos2(rect.max.x - clip_w - 2.0, rect.max.y));
     let row_h = (bar.height() - 3.0) / 2.0;
@@ -146,7 +144,7 @@ pub fn stereo_meter(ui: &mut egui::Ui, levels: [f32; 2], clipped: bool, size: Ve
         }
     }
     let clip = Rect::from_min_max(pos2(rect.max.x - clip_w, rect.min.y + 1.0), pos2(rect.max.x - 1.0, rect.max.y - 1.0));
-    p.rect_filled(clip, CornerRadius::same(1), if clipped { Color32::RED } else { Color32::from_gray(45) });
+    p.rect_filled(clip, CornerRadius::same(1), if clipped { Color32::RED } else { gray(45) });
     response.on_hover_text(format!("{:.1} / {:.1} dB, click to reset clip", gain_to_db(levels[0]), gain_to_db(levels[1])))
 }
 
@@ -167,7 +165,7 @@ fn meter_color(level: f32) -> Color32 {
 
 /// Vertical stereo meter (mixer strip).
 pub fn vmeter(p: &egui::Painter, rect: Rect, levels: [f32; 2]) {
-    p.rect_filled(rect, CornerRadius::same(1), Color32::from_gray(20));
+    p.rect_filled(rect, CornerRadius::same(1), gray(20));
     let w = (rect.width() - 1.0) / 2.0;
     for (ch, &l) in levels.iter().enumerate() {
         let h = rect.height() * db_frac(l);
@@ -208,14 +206,14 @@ pub fn fader(ui: &mut egui::Ui, db: &mut f32, size: Vec2) -> (egui::Response, bo
     }
     let p = ui.painter_at(rect);
     let cx = rect.center().x;
-    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.max.y)], Stroke::new(3.0, Color32::from_gray(20)));
+    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.max.y)], Stroke::new(3.0, gray(20)));
     let y0 = to_y(0.0);
-    p.line_segment([pos2(rect.min.x, y0), pos2(rect.max.x, y0)], Stroke::new(1.0, Color32::from_gray(80)));
+    p.line_segment([pos2(rect.min.x, y0), pos2(rect.max.x, y0)], Stroke::new(1.0, gray(80)));
     let y = to_y(*db);
     p.rect_filled(
         Rect::from_center_size(pos2(cx, y), vec2(rect.width(), 7.0)),
         CornerRadius::same(2),
-        if resp.hovered() || resp.dragged() { Color32::from_gray(230) } else { Color32::from_gray(190) },
+        if resp.hovered() || resp.dragged() { gray(230) } else { gray(190) },
     );
     let text = if *db <= METER_FLOOR_DB { "-inf dB".to_string() } else { format!("{db:.1} dB") };
     (resp.on_hover_text(text), changed)
@@ -244,7 +242,7 @@ pub fn hslider(
         }
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
+    p.rect_filled(rect, CornerRadius::same(2), gray(30));
     let t = (*v - lo) / (hi - lo);
     let d = ((default - lo) / (hi - lo)).clamp(0.0, 1.0);
     let x0 = rect.min.x + rect.width() * d;
@@ -256,7 +254,7 @@ pub fn hslider(
             shade(ACCENT, 0.8),
         );
     }
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, label(*v), egui::FontId::proportional(10.0), Color32::from_gray(230));
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, label(*v), egui::FontId::proportional(10.0), gray(230));
     (resp, changed)
 }
 
@@ -362,11 +360,11 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
         }
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
+    p.rect_filled(rect, CornerRadius::same(2), gray(30));
     let w = rect.width() * db_to_pos(*db);
     p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::same(2), fill);
     let text = if *db <= METER_FLOOR_DB { "-inf".to_string() } else { format!("{db:.1}") };
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), Color32::from_gray(235));
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), gray(235));
     (resp.on_hover_text(tip), changed)
 }
 
@@ -387,14 +385,14 @@ pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (e
         }
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
+    p.rect_filled(rect, CornerRadius::same(2), gray(30));
     let cx = rect.center().x;
     let x = cx + *pan * rect.width() * 0.5;
     if pan.abs() > 0.005 {
         p.rect_filled(Rect::from_x_y_ranges(cx.min(x)..=cx.max(x), rect.y_range()), CornerRadius::ZERO, shade(ACCENT, 0.55));
     }
-    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, Color32::from_gray(140)));
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), egui::FontId::proportional(10.0), Color32::from_gray(235));
+    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, gray(140)));
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), egui::FontId::proportional(10.0), gray(235));
     (resp.on_hover_text("Pan · drag · double-click: centre"), changed)
 }
 
@@ -451,16 +449,16 @@ pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: 
     let bg = if on {
         on_color
     } else if resp.hovered() {
-        Color32::from_gray(74)
+        gray(74)
     } else {
-        Color32::from_gray(58)
+        gray(58)
     };
     let p = ui.painter_at(rect);
     p.rect_filled(rect, CornerRadius::same(2), bg);
     if text == "REC" {
         p.circle_filled(rect.center(), (rect.height() * 0.28).min(4.0), if on { Color32::BLACK } else { REC_RED });
     } else {
-        let fg = if on { Color32::BLACK } else { Color32::from_gray(210) };
+        let fg = if on { Color32::BLACK } else { gray(210) };
         p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.5), fg);
     }
     resp.on_hover_text(tooltip)

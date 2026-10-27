@@ -1,7 +1,7 @@
 //! v0.6.1 helpers: track insertion point, solo audibility, frame-rate
 //! rescaling and warped-clip stretching.
 
-use crate::{ArrangementClip, AudioOut, ClipContent, PALETTE, Project, Track, TrackKind};
+use crate::{ArrangementClip, AudioOut, ClipContent, Project, Track, TrackKind};
 
 impl Project {
     /// Insert a new track below `after` (Live: below the selected track). A
@@ -21,7 +21,7 @@ impl Project {
         }
         .to_string();
         // New MIDI tracks start empty (drop an instrument from the browser).
-        let t = Track { id, name, kind, group, color: PALETTE[len % PALETTE.len()], ..Default::default() };
+        let t = Track { id, name, kind, group, color: self.auto_track_color(len), ..Default::default() };
         self.tracks.insert(at, t);
         self.normalize();
         self.track_index(id).unwrap_or(at)
@@ -200,5 +200,30 @@ mod tests {
             *warp_bpm = None;
         }
         assert!(stretch_clip(&un, 8.0, false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod color_policy_tests {
+    use crate::{ColorPolicy, PALETTE, Project, TrackKind};
+
+    #[test]
+    fn track_and_clip_colors_follow_policy() {
+        let mut p = Project::default();
+        p.tracks.clear();
+        let a = p.add_track(TrackKind::Midi);
+        let b = p.add_track(TrackKind::Midi);
+        assert_ne!(p.tracks[a].color, p.tracks[b].color, "auto-assign cycles the palette");
+        p.colors = ColorPolicy { manual: Some([1, 2, 3]), ..Default::default() };
+        let c = p.add_track(TrackKind::Audio);
+        assert_eq!(p.tracks[c].color, [1, 2, 3], "auto-assign off uses the default colour");
+        p.colors = ColorPolicy { reduced: true, ..Default::default() };
+        assert!((0..20).all(|n| PALETTE.iter().step_by(2).any(|x| *x == p.auto_track_color(n))));
+        // Clip colour: track colour by default, palette colours when random.
+        p.colors = ColorPolicy::default();
+        assert_eq!(p.new_clip_color(c), [1, 2, 3]);
+        p.colors.random_clips = true;
+        let cols: std::collections::HashSet<_> = (0..40).map(|_| p.new_clip_color(c)).collect();
+        assert!(cols.len() > 3 && cols.iter().all(|x| PALETTE.contains(x)));
     }
 }

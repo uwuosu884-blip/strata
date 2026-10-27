@@ -104,7 +104,7 @@ const PR_RULER_H: f32 = 16.0;
 fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, clip: &Clip, notes: &[Note]) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(26));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(26));
     let drums: Option<Vec<String>> = match &app.project.tracks[track].instrument {
         InstrumentDef::Drums { pads } => Some(pads.iter().map(|d| d.name.clone()).collect()),
         _ => None,
@@ -226,18 +226,18 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             if (pitch - clip.scale.root as i32).rem_euclid(12) == 0 {
                 Color32::from_rgb(52, 50, 40)
             } else if clip.scale.contains(pitch) {
-                Color32::from_gray(40)
+                gray(40)
             } else {
-                Color32::from_gray(27)
+                gray(27)
             }
         } else if black {
-            Color32::from_gray(30)
+            gray(30)
         } else {
-            Color32::from_gray(36)
+            gray(36)
         };
         p.rect_filled(Rect::from_min_max(pos2(grid_area.min.x, y), pos2(grid_area.max.x, y + row_h)), CornerRadius::ZERO, row_c);
         let key = Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.min.x + KEYS_W - 2.0, y + row_h - 1.0));
-        p.rect_filled(key, CornerRadius::ZERO, if black { Color32::from_gray(50) } else { Color32::from_gray(200) });
+        p.rect_filled(key, CornerRadius::ZERO, if black { gray(50) } else { gray(200) });
         let label = match &drums {
             Some(names) if pitch >= DRUM_BASE_NOTE as i32 && ((pitch - DRUM_BASE_NOTE as i32) as usize) < names.len() => {
                 Some(names[(pitch - DRUM_BASE_NOTE as i32) as usize].clone())
@@ -259,29 +259,29 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     }
     // Ruler + beat lines (thinned when the grid gets denser than ~5 px).
     let gp = ui.painter_at(Rect::from_min_max(ruler.min, rect.max));
-    gp.rect_filled(ruler, CornerRadius::ZERO, Color32::from_gray(44));
+    gp.rect_filled(ruler, CornerRadius::ZERO, gray(44));
     let line_step = if grid * ppb < 5.0 { crate::arr_ops::adaptive_step(ppb, bpb, 8.0) } else { grid };
     let mut b = (scroll / line_step).floor() * line_step;
     let end = (scroll + visible).min(view_len);
     while b <= end + 1e-9 {
         let bar = (b / bpb).fract().abs() < 1e-9;
         let c = if bar {
-            Color32::from_gray(85)
+            gray(85)
         } else if b.fract().abs() < 1e-9 {
-            Color32::from_gray(55)
+            gray(55)
         } else {
-            Color32::from_gray(42)
+            gray(42)
         };
         let x = x_of(b);
         gp.line_segment([pos2(x, grid_area.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, c));
         if bar {
-            gp.line_segment([pos2(x, ruler.min.y + 6.0), pos2(x, ruler.max.y)], Stroke::new(1.0, Color32::from_gray(120)));
+            gp.line_segment([pos2(x, ruler.min.y + 6.0), pos2(x, ruler.max.y)], Stroke::new(1.0, gray(120)));
             gp.text(
                 pos2(x + 2.0, ruler.min.y),
                 Align2::LEFT_TOP,
                 format!("{}", (b / bpb) as i64 + 1),
                 FontId::proportional(9.0),
-                Color32::from_gray(170),
+                gray(170),
             );
         }
         b += line_step;
@@ -289,7 +289,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     // Outside the markers (notes there are kept but silent).
     if x_of(w1) < grid_area.max.x {
         gp.rect_filled(Rect::from_min_max(pos2(x_of(w1), ruler.min.y), rect.max), CornerRadius::ZERO, Color32::from_black_alpha(110));
-        gp.line_segment([pos2(x_of(w1), ruler.min.y), pos2(x_of(w1), rect.max.y)], Stroke::new(1.0, Color32::from_gray(120)));
+        gp.line_segment([pos2(x_of(w1), ruler.min.y), pos2(x_of(w1), rect.max.y)], Stroke::new(1.0, gray(120)));
     }
     if x_of(w0) > grid_area.min.x {
         gp.rect_filled(
@@ -379,14 +379,14 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     sp.rect_filled(
         Rect::from_min_max(pos2(rect.min.x, grid_area.max.y), pos2(vel_area.min.x - 2.0, rect.max.y)),
         CornerRadius::ZERO,
-        Color32::from_gray(30),
+        gray(30),
     );
     // Envelope / MPE lanes draw their own scale.
     let vel_scale: &[u8] = if app.cv.tab == super::clip::Tab::Main { &[127, 64, 1] } else { &[] };
     for &v in vel_scale {
         let y = vel_area.max.y - vel_area.height() * v as f32 / 127.0;
-        sp.line_segment([pos2(vel_area.min.x - 6.0, y), pos2(vel_area.min.x - 2.0, y)], Stroke::new(1.0, Color32::from_gray(120)));
-        sp.text(pos2(vel_area.min.x - 8.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::proportional(9.0), Color32::from_gray(150));
+        sp.line_segment([pos2(vel_area.min.x - 6.0, y), pos2(vel_area.min.x - 2.0, y)], Stroke::new(1.0, gray(120)));
+        sp.text(pos2(vel_area.min.x - 8.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::proportional(9.0), gray(150));
         if v == 64 {
             vp.line_segment([pos2(vel_area.min.x, y), pos2(vel_area.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(10)));
         }
@@ -396,10 +396,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     let sr = ui.interact(split, ui.scope_id().with("vel_split"), Sense::drag());
     p.line_segment(
         [pos2(rect.min.x, grid_area.max.y + 1.0), pos2(rect.max.x, grid_area.max.y + 1.0)],
-        Stroke::new(
-            if sr.hovered() || sr.dragged() { 2.0 } else { 1.0 },
-            Color32::from_gray(if sr.hovered() || sr.dragged() { 140 } else { 70 }),
-        ),
+        Stroke::new(if sr.hovered() || sr.dragged() { 2.0 } else { 1.0 }, gray(if sr.hovered() || sr.dragged() { 140 } else { 70 })),
     );
     if sr.hovered() || sr.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -446,12 +443,12 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         if app.pr_audition {
             shade(ACCENT, 0.8)
         } else if hr.hovered() {
-            Color32::from_gray(70)
+            gray(70)
         } else {
-            Color32::from_gray(50)
+            gray(50)
         },
     );
-    draw_headphones(&p, hp.center(), if app.pr_audition { Color32::BLACK } else { Color32::from_gray(170) });
+    draw_headphones(&p, hp.center(), if app.pr_audition { Color32::BLACK } else { gray(170) });
     if hr.on_hover_text("Preview notes while placing / moving them").clicked() {
         app.pr_audition = !app.pr_audition;
     }
@@ -802,9 +799,9 @@ fn master_device(app: &mut DawApp, ui: &mut egui::Ui) {
     });
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), (ui.available_height() - 4.0).max(60.0)), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(4), Color32::from_gray(34));
-    p.rect_stroke(rect.shrink(6.0), CornerRadius::same(3), Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
-    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", FontId::proportional(14.0), Color32::from_gray(120));
+    p.rect_filled(rect, CornerRadius::same(4), gray(34));
+    p.rect_stroke(rect.shrink(6.0), CornerRadius::same(3), Stroke::new(1.0, gray(60)), egui::StrokeKind::Inside);
+    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", FontId::proportional(14.0), gray(120));
 }
 
 fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
@@ -816,7 +813,7 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new(app.project.track_label(t)).strong());
         ui.label(egui::RichText::new(track.instrument.label()).color(Color32::GRAY));
         if track.kind == TrackKind::Midi {
-            ui.label(egui::RichText::new("Drop an instrument from the browser here to replace").small().color(Color32::from_gray(110)));
+            ui.label(egui::RichText::new("Drop an instrument from the browser here to replace").small().color(gray(110)));
         }
     });
     if track.kind == TrackKind::Group {
@@ -835,7 +832,7 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     }
     let mut inst = track.instrument.clone();
     let mut ed = Edit::default();
-    let frame = egui::Frame::NONE.fill(Color32::from_gray(34)).corner_radius(4).inner_margin(6);
+    let frame = egui::Frame::NONE.fill(gray(34)).corner_radius(4).inner_margin(6);
     let (resp, dropped) = ui.dnd_drop_zone::<DragItem, _>(frame, |ui| {
         ui.set_min_size(vec2(ui.available_width(), 120.0));
         match &mut inst {
@@ -997,9 +994,9 @@ fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8>
                         let bg = if i == sel {
                             ACCENT
                         } else if has {
-                            Color32::from_gray(70)
+                            gray(70)
                         } else {
-                            Color32::from_gray(44)
+                            gray(44)
                         };
                         ui.painter().rect_filled(r, CornerRadius::same(3), bg);
                         let name = pads.get(i).map_or(String::new(), |p| p.name.clone());
@@ -1015,7 +1012,7 @@ fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8>
                             Align2::RIGHT_BOTTOM,
                             note_name(DRUM_BASE_NOTE + i as u8),
                             FontId::proportional(8.0),
-                            Color32::from_gray(150),
+                            gray(150),
                         );
                         if resp.clicked() {
                             sel = i;

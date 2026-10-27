@@ -96,9 +96,18 @@ pub struct Settings {
     /// "through" ports, outputs off).
     pub midi_in: HashMap<String, bool>,
     pub midi_out: HashMap<String, bool>,
+    /// Settings > Theme & Colors.
+    pub theme: crate::ui::theme::ThemeSettings,
+    /// Display & Input > Zoom Display in % (0 = 100).
+    pub zoom_pct: u16,
 }
 
 impl Settings {
+    /// Zoom Display in % (50..=200).
+    pub fn zoom(&self) -> u16 {
+        if self.zoom_pct == 0 { 100 } else { self.zoom_pct.clamp(50, 200) }
+    }
+
     pub fn path() -> Option<PathBuf> {
         if let Some(d) = std::env::var_os("DAW_CONFIG_DIR") {
             return Some(PathBuf::from(d).join("settings.ron"));

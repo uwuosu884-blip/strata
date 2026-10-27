@@ -5,7 +5,9 @@ mod browser;
 pub mod clip;
 mod detail;
 mod io;
+mod prefs;
 mod session;
+pub mod theme;
 pub mod widgets;
 
 use crate::app::{DawApp, DetailMode, Dialog, DragItem, PendingAction, View};
@@ -15,6 +17,7 @@ use eframe::egui::{self, Color32, Key, Modifiers};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
+use theme::{panel, win_bg};
 use widgets::*;
 
 /// Deferred work from a dialog button (runs after the dialog closes).
@@ -59,6 +62,20 @@ impl eframe::App for DawApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        theme::update(&ctx, &self.settings.theme);
+        {
+            let t = &self.settings.theme;
+            let manual = (!t.auto_assign_colors).then(|| t.default_track_color.unwrap_or(daw_project::PALETTE[0]));
+            let random = t.clip_color == theme::ClipColorMode::Random;
+            let c = &mut self.project.colors;
+            if c.manual != manual || c.reduced != t.reduced_colors || c.random_clips != random {
+                (c.manual, c.reduced, c.random_clips) = (manual, t.reduced_colors, random);
+            }
+        }
+        let z = self.settings.zoom() as f32 / 100.0;
+        if (ctx.zoom_factor() - z).abs() > 1e-3 {
+            ctx.set_zoom_factor(z);
+        }
         self.begin_frame();
         self.handle_close(&ctx);
         self.shortcuts(&ctx);
@@ -72,11 +89,18 @@ impl eframe::App for DawApp {
             self.release_clip(t, s);
         }
 
+        // Live layout at 100 %: 47 px top bar, panels separated by 9 px gaps of the
+        // window colour, 19 px status bar, 2 px outline around the focused panel.
+        let m = |l: i8, r: i8, t: i8, b: i8| egui::Margin { left: l, right: r, top: t, bottom: b };
         egui::Panel::top("transport")
-            .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 6)))
+            .exact_size(47.0)
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 0)))
             .show(ui, |ui| self.transport_bar(ui));
         egui::Panel::bottom("status")
-            .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::symmetric(8, 3)))
+            .exact_size(28.0)
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 9)))
             .show(ui, |ui| self.status_bar(ui));
         // Selecting a (different) clip switches the detail panel to the clip view.
         let prev_id = egui::Id::unique("prev_selected_clip");
@@ -88,37 +112,43 @@ impl eframe::App for DawApp {
             ctx.data_mut(|d| d.insert_temp(prev_id, self.selected_clip));
         }
         // Clip View / piano roll: resizable (own remembered size); Device View: fixed.
-        let panel = if self.detail_mode == DetailMode::Device || self.master_selected {
+        let dpanel = if self.detail_mode == DetailMode::Device || self.master_selected {
             egui::Panel::bottom("detail_device").resizable(false).exact_size(DEVICE_VIEW_H)
         } else {
             egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
         };
-        let detail_rect = panel
-            .frame(egui::Frame::NONE.fill(BG_DARK).inner_margin(egui::Margin::same(4)))
+        let detail_rect = dpanel
+            .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(9, 9, 9, 0)))
             .show(ui, |ui| detail::detail_panel(self, ui))
             .response
             .rect;
+        let detail_inner = detail_rect - m(9, 9, 9, 0);
         // Keys like Del / Ctrl+D / 0 act on whatever was clicked last: notes or the main view.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
-            self.focus_detail = detail_rect.contains(p);
+            self.focus_detail = detail_inner.contains(p);
         }
         if self.show_browser {
             egui::Panel::left("browser")
                 .resizable(true)
-                .default_size(190.0)
-                .size_range(140.0..=400.0)
-                .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::same(6)))
+                .default_size(344.0)
+                .size_range(200.0..=520.0)
+                .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(9, 9, 0, 0)))
                 .show(ui, |ui| browser::browser(self, ui));
         }
         ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(master_zone_id()));
+        let left = if self.show_browser { 0 } else { 9 };
         let central = egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(BG_DARK))
+            .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(left, 9, 0, 0)))
             .show(ui, |ui| match self.view {
                 View::Session => session::session_view(self, ui),
                 View::Arrangement => arrangement::arrangement_view(self, ui),
             })
             .response
             .rect;
+        let central = central - m(left, 9, 0, 0);
+        // Focus outline (drawn in the gap, like Live).
+        let fr = if self.focus_detail { detail_inner } else { central };
+        ui.painter().rect_stroke(fr, 0.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
         // A press elsewhere in the main view deselects the master.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
             && central.contains(p)
@@ -612,7 +642,7 @@ impl DawApp {
             ui.data_mut(|d| d.insert_temp(edit_id, tempo_text(self.project.tempo_bpm)));
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -664,7 +694,7 @@ impl DawApp {
             self.save_settings();
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
         let db = self.settings.output_gain_db;
         let text = if db <= MIN { "-inf dB".to_string() } else { format!("{db:.1} dB") };
         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), Color32::WHITE);
@@ -705,7 +735,7 @@ impl DawApp {
             }
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -878,6 +908,15 @@ impl DawApp {
             Dialog::About => "About daw",
             Dialog::Settings(_) => "Settings",
         };
+        if let Dialog::Settings(tab) = &mut dialog {
+            let closed = prefs::window(self, ctx, tab);
+            if closed {
+                self.dialog = None;
+            } else if matches!(self.dialog, Some(Dialog::Settings(_))) {
+                self.dialog = Some(dialog);
+            }
+            return;
+        }
         let scenes = self.project.scenes.len();
         let keys = std::mem::take(&mut self.dialog_keys);
         egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -1001,11 +1040,7 @@ impl DawApp {
                         ui.data_mut(|d| d.remove::<usize>(focus_id));
                     }
                 }
-                Dialog::Settings(tab) => {
-                    if io::settings_dialog(self, ui, tab) {
-                        close = true;
-                    }
-                }
+                Dialog::Settings(_) => {}
                 Dialog::About => {
                     ui.label("daw: a small, fast Rust DAW.");
                     ui.label(format!("Engine at {} Hz", self.audio.info.sample_rate));

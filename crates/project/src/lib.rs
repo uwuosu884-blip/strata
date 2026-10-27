@@ -44,9 +44,24 @@ pub const PALETTE: [[u8; 3]; 12] = [
     [240, 240, 240],
 ];
 
+/// Settings > Theme & Colors > Track And Clip Colors (app-wide, never saved
+/// with a project; the app copies it in from its settings).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ColorPolicy {
+    /// Auto-Assign Track Colors off: every new track gets this colour.
+    pub manual: Option<[u8; 3]>,
+    /// Reduced Automatic Colors: cycle through a smaller palette.
+    pub reduced: bool,
+    /// Clip Color = Random (else the track colour).
+    pub random_clips: bool,
+    pub seed: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
+    #[serde(skip)]
+    pub colors: ColorPolicy,
     pub format_version: u32,
     pub name: String,
     pub tempo_bpm: f64,
@@ -86,6 +101,7 @@ pub struct Project {
 impl Default for Project {
     fn default() -> Self {
         Self {
+            colors: ColorPolicy::default(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),
             tempo_bpm: 120.0,
@@ -940,21 +956,39 @@ impl Project {
         self.tracks.iter().position(|t| t.id == id)
     }
 
+    /// Colour for the n-th automatically coloured track.
+    pub fn auto_track_color(&self, n: usize) -> [u8; 3] {
+        if let Some(c) = self.colors.manual {
+            return c;
+        }
+        let step = if self.colors.reduced { 2 } else { 1 };
+        let len = PALETTE.len() / step;
+        PALETTE[(n % len) * step]
+    }
+
+    /// Colour for a newly created / recorded / dropped clip on `track`.
+    pub fn new_clip_color(&mut self, track: usize) -> [u8; 3] {
+        if self.colors.random_clips {
+            // xorshift: deterministic per session, no rand dependency.
+            let mut x = self.colors.seed.wrapping_add(0x9e37_79b9) | 1;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.colors.seed = x;
+            return PALETTE[x as usize % PALETTE.len()];
+        }
+        self.tracks.get(track).map_or(PALETTE[0], |t| t.color)
+    }
+
     /// Create an empty MIDI clip in a session slot. Returns the clip id.
     pub fn new_midi_clip(&mut self, track: usize, scene: usize, length: f64) -> Option<u64> {
         self.tracks.get(track)?.slots.get(scene)?;
         let id = self.alloc_id();
         let name = self.next_clip_name(track);
+        let color = self.new_clip_color(track);
         let t = self.tracks.get_mut(track)?;
-        t.slots[scene] = Some(Clip {
-            id,
-            name,
-            color: t.color,
-            length,
-            looping: true,
-            content: ClipContent::Midi { notes: Vec::new() },
-            ..Default::default()
-        });
+        t.slots[scene] =
+            Some(Clip { id, name, color, length, looping: true, content: ClipContent::Midi { notes: Vec::new() }, ..Default::default() });
         Some(id)
     }
 

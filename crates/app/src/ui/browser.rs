@@ -34,7 +34,7 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Instruments").default_open(true).show(ui, |ui| {
             item(ui, "Drum Rack (Factory Kit)", DragItem::DrumKit, ACCENT);
             for p in daw_engine::SynthParams::PRESETS {
-                item(ui, &format!("Synth: {p}"), DragItem::SynthPreset(p.to_string()), Color32::from_gray(220));
+                item(ui, &format!("Synth: {p}"), DragItem::SynthPreset(p.to_string()), gray(220));
             }
         });
         egui::CollapsingHeader::new("Factory Sounds").default_open(true).show(ui, |ui| {

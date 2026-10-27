@@ -71,8 +71,17 @@ pub enum Dialog {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
+    Display,
+    Theme,
     Audio,
+    Link,
+    /// Tempo & MIDI.
     Midi,
+    Files,
+    Library,
+    Plugins,
+    Record,
+    Licenses,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1112,7 +1121,9 @@ impl DawApp {
                 created += 1;
                 let id = p.next_id;
                 p.next_id += 1;
-                let clip = Clip { id, name: String::new(), color: t.color, length: len, looping: true, content, ..Default::default() };
+                let color =
+                    if p.colors.random_clips { daw_project::PALETTE[(id as usize * 7 + i) % daw_project::PALETTE.len()] } else { t.color };
+                let clip = Clip { id, name: String::new(), color, length: len, looping: true, content, ..Default::default() };
                 let clip = Clip { name: names[i].clone(), ..clip };
                 match session {
                     Some((_, scene)) => {

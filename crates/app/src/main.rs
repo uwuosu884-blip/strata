@@ -125,7 +125,8 @@ fn main() -> ExitCode {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("daw")
             .with_app_id("daw")
-            .with_inner_size([1280.0, 800.0])
+            .with_inner_size([1920.0, 1080.0])
+            .with_maximized(true)
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
     };
@@ -135,6 +136,7 @@ fn main() -> ExitCode {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
+            ui::theme::install_fonts(&cc.egui_ctx);
             Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi, settings, base)))
         }),
     );

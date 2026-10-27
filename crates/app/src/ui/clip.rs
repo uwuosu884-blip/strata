@@ -303,14 +303,14 @@ pub fn panels(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
 }
 
 fn framed(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().fill(Color32::from_gray(34)).inner_margin(4.0).corner_radius(2.0).show(ui, |ui| {
+    egui::Frame::new().fill(gray(34)).inner_margin(4.0).corner_radius(2.0).show(ui, |ui| {
         ui.set_width(BOX_W);
         ui.set_min_height(ui.available_height());
         // Frame inherits the row layout: force a column.
         ui.vertical(|ui| {
             egui::ScrollArea::vertical().id_salt(("cv_box", title)).auto_shrink([false, false]).show(ui, |ui| {
                 if !title.is_empty() {
-                    ui.label(egui::RichText::new(title).small().strong().color(Color32::from_gray(170)));
+                    ui.label(egui::RichText::new(title).small().strong().color(gray(170)));
                 }
                 f(ui)
             });
@@ -1323,7 +1323,7 @@ pub fn marker_strip(
     snap: &dyn Fn(f64) -> f64,
 ) {
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(36));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(36));
     let (ls, le) = clip.loop_range();
     let col = rgb(clip.color);
     let brace = Rect::from_min_max(pos2(x_of(ls), rect.min.y + 2.0), pos2(x_of(le), rect.max.y - 1.0));
@@ -1331,15 +1331,15 @@ pub fn marker_strip(
         let c = if app.cv.brace_sel { col } else { col.gamma_multiply(0.55) };
         p.rect_filled(brace, CornerRadius::same(2), c);
     } else {
-        p.rect_stroke(brace, CornerRadius::same(2), Stroke::new(1.0, Color32::from_gray(90)), egui::StrokeKind::Inside);
+        p.rect_stroke(brace, CornerRadius::same(2), Stroke::new(1.0, gray(90)), egui::StrokeKind::Inside);
     }
     let flag = |x: f32, right: bool, c: Color32| {
         let d = if right { -7.0 } else { 7.0 };
         p.add(egui::Shape::convex_polygon(vec![pos2(x, rect.min.y), pos2(x + d, rect.min.y + 5.0), pos2(x, rect.max.y)], c, Stroke::NONE));
     };
-    flag(x_of(clip.start), false, Color32::from_gray(225));
+    flag(x_of(clip.start), false, gray(225));
     if !clip.looping {
-        flag(x_of(clip.start + clip.length), true, Color32::from_gray(225));
+        flag(x_of(clip.start + clip.length), true, gray(225));
     }
     let id = ui.scope_id().with(("cv_markers", clip.id));
     let r = ui.interact(rect, id, Sense::click_and_drag());
@@ -1473,14 +1473,14 @@ pub fn env_lane(
     let t = app.cv.env_target.filter(|t| list.contains(t)).unwrap_or(list[0]);
     let (lo, hi, neutral) = t.range();
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(24));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(24));
     let y_of = |v: f32| rect.max.y - (v - lo) / (hi - lo) * rect.height();
     let v_at = |y: f32| (lo + (rect.max.y - y) / rect.height() * (hi - lo)).clamp(lo, hi);
     let empty = ClipEnvelope { target: t, ..Default::default() };
     let env = clip.envelope(t).unwrap_or(&empty);
     let col = Color32::from_rgb(230, 80, 80);
     p.line_segment([pos2(rect.min.x, y_of(neutral)), pos2(rect.max.x, y_of(neutral))], Stroke::new(1.0, Color32::from_white_alpha(18)));
-    p.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, t.label(), FontId::proportional(10.0), Color32::from_gray(150));
+    p.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, t.label(), FontId::proportional(10.0), gray(150));
     // Unlinked: the envelope's own loop repeats along the time axis.
     let pts = &env.points;
     if pts.is_empty() {
@@ -1498,7 +1498,7 @@ pub fn env_lane(
     }
     if env.unlinked && env.loop_len > 0.0 {
         let x = x_of(env.loop_len);
-        p.line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, Color32::from_gray(140)));
+        p.line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, gray(140)));
     }
     let r = ui.interact(rect, ui.scope_id().with(("cv_env", clip.id)), Sense::click_and_drag());
     let hit = |pt: egui::Pos2| pts.iter().position(|q| (pos2(x_of(q.beat), y_of(q.value)) - pt).length() < 6.0);
@@ -1579,7 +1579,7 @@ pub fn mpe_lane(
     beat_at: &dyn Fn(f32) -> f64,
 ) {
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(24));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(24));
     let lane = app.cv.mpe_lane;
     let (lo, hi) = if lane == 0 { (-12.0f32, 12.0f32) } else { (0.0, 1.0) };
     let y_of = |v: f32| rect.max.y - (v.clamp(lo, hi) - lo) / (hi - lo) * rect.height();
@@ -1589,7 +1589,7 @@ pub fn mpe_lane(
         Align2::LEFT_TOP,
         ["Pitch (±12 st)", "Slide", "Pressure"][lane],
         FontId::proportional(10.0),
-        Color32::from_gray(150),
+        gray(150),
     );
     let col = Color32::from_rgb(120, 200, 255);
     // Every note's curve faintly; the selected one bright.
@@ -1611,13 +1611,7 @@ pub fn mpe_lane(
         ));
     }
     let Some(i) = sel else {
-        p.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "Select a note to edit its expression",
-            FontId::proportional(11.0),
-            Color32::from_gray(110),
-        );
+        p.text(rect.center(), Align2::CENTER_CENTER, "Select a note to edit its expression", FontId::proportional(11.0), gray(110));
         return;
     };
     let n = notes[i];
@@ -1655,7 +1649,7 @@ pub fn mpe_lane(
 pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(22));
+    p.rect_filled(rect, CornerRadius::ZERO, gray(22));
     let ClipContent::Audio { sample, warp_bpm, .. } = &clip.content else { return };
     let Some(buf) = app.cache.peek(sample).cloned() else {
         let msg = app.cache.error(sample).map_or("Loading…".to_string(), |e| format!("Missing sample: {e}"));
@@ -1713,19 +1707,19 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let free = ui.input(|i| i.modifiers.alt);
     let snap = |b: f64| if free { b } else { (b / grid).round() * grid };
     // Ruler + grid lines.
-    p.rect_filled(ruler, CornerRadius::ZERO, Color32::from_gray(44));
+    p.rect_filled(ruler, CornerRadius::ZERO, gray(44));
     let mut b = (scroll / grid).floor() * grid;
     while b <= scroll + visible {
         let x = x_of(b);
         let bar = (b / bpb).fract().abs() < 1e-9;
-        p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, Color32::from_gray(if bar { 60 } else { 36 })));
+        p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, gray(if bar { 60 } else { 36 })));
         if bar {
             let label = if warped {
                 format!("{}", (b / bpb).floor() as i64 + 1)
             } else {
                 format!("{:.2}s", map.frame_at(b) / buf.sample_rate as f64)
             };
-            p.text(pos2(x + 2.0, ruler.min.y + 1.0), Align2::LEFT_TOP, label, FontId::proportional(9.0), Color32::from_gray(170));
+            p.text(pos2(x + 2.0, ruler.min.y + 1.0), Align2::LEFT_TOP, label, FontId::proportional(9.0), gray(170));
         }
         b += grid;
     }
@@ -1775,7 +1769,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     for &f in &transients {
         let x = x_of(map.beat_at(f));
         if wave.x_range().contains(x) {
-            p.line_segment([pos2(x, wave.min.y), pos2(x, wave.min.y + 6.0)], Stroke::new(1.0, Color32::from_gray(150)));
+            p.line_segment([pos2(x, wave.min.y), pos2(x, wave.min.y + 6.0)], Stroke::new(1.0, gray(150)));
         }
     }
     let warp_col = Color32::from_rgb(240, 200, 60);
@@ -1808,7 +1802,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         Align2::RIGHT_TOP,
         format!("{} · {} Hz · {:.2} s{}", buf.name, buf.sample_rate, buf.duration_secs(), if warped { "" } else { " · unwarped" }),
         FontId::proportional(9.0),
-        Color32::from_gray(150),
+        gray(150),
     );
 }
 

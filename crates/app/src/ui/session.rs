@@ -49,7 +49,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                 ui.painter().rect_stroke(
                     rect.shrink(4.0),
                     CornerRadius::same(4),
-                    Stroke::new(1.0, if hovering { ACCENT } else { Color32::from_gray(60) }),
+                    Stroke::new(1.0, if hovering { ACCENT } else { gray(60) }),
                     egui::StrokeKind::Inside,
                 );
                 ui.painter().text(
@@ -57,7 +57,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     Align2::CENTER_CENTER,
                     "Drop instruments\nor samples here",
                     FontId::proportional(11.0),
-                    Color32::from_gray(110),
+                    gray(110),
                 );
                 if let Some(item) = resp.dnd_release_payload::<DragItem>() {
                     drop_new_track(app, &item);
@@ -92,8 +92,8 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     scene_button(app, ui, s);
                 }
                 let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
-                ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(70) } else { SLOT_BG });
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Stop Clips", FontId::proportional(11.0), Color32::from_gray(210));
+                ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(70) } else { gray(46) });
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Stop Clips", FontId::proportional(11.0), gray(210));
                 if resp.clicked() {
                     app.send(Command::StopAllClips);
                 }
@@ -247,7 +247,7 @@ fn group_slot(app: &mut DawApp, ui: &mut egui::Ui, g: usize, s: usize) {
     if has {
         painter.rect_filled(rect, CornerRadius::same(2), shade(color, if playing { 0.8 } else { 0.4 }));
         let launch = rect.left_center() + vec2(10.0, 0.0);
-        draw_icon(&painter, Icon::Play, launch, if playing { PLAY_GREEN } else { Color32::from_gray(25) });
+        draw_icon(&painter, Icon::Play, launch, if playing { PLAY_GREEN } else { gray(25) });
         // Mini overview: one tick per child with a clip.
         let n = kids.len().max(1) as f32;
         for (k, c) in kids.clone().enumerate() {
@@ -261,7 +261,7 @@ fn group_slot(app: &mut DawApp, ui: &mut egui::Ui, g: usize, s: usize) {
             }
         }
     } else {
-        painter.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(56) } else { shade(SLOT_BG, 0.9) });
+        painter.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(56) } else { shade(gray(46), 0.9) });
     }
     if resp.clicked() {
         app.click_track(g, false);
@@ -295,7 +295,7 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
             if selected {
                 p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
             }
-            let tri = if playing || (pending && blink) { PLAY_GREEN } else { Color32::from_gray(30) };
+            let tri = if playing || (pending && blink) { PLAY_GREEN } else { gray(30) };
             draw_icon(&p, Icon::Play, launch_zone.center() + vec2(0.0, 0.0), tri);
             let name = match &clip.content {
                 ClipContent::Audio { .. } => clip.name.clone(),
@@ -340,12 +340,12 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
             resp.context_menu(|ui| clip_menu(app, ui, t, s));
         }
         None => {
-            p.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(56) } else { SLOT_BG });
+            p.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(56) } else { gray(46) });
             if armed {
-                let col = if recording_here && blink { REC_RED } else { Color32::from_gray(if recording_here { 90 } else { 120 }) };
+                let col = if recording_here && blink { REC_RED } else { gray(if recording_here { 90 } else { 120 }) };
                 p.circle_filled(rect.center(), 4.5, col);
             } else {
-                p.rect_filled(Rect::from_center_size(rect.center(), vec2(7.0, 7.0)), CornerRadius::ZERO, Color32::from_gray(75));
+                p.rect_filled(Rect::from_center_size(rect.center(), vec2(7.0, 7.0)), CornerRadius::ZERO, gray(75));
             }
             if pending && blink {
                 p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, PLAY_GREEN), egui::StrokeKind::Inside);
@@ -429,6 +429,7 @@ pub fn drop_on_slot(app: &mut DawApp, item: &DragItem, t: usize, s: usize, copy:
                 if let Some(mut clip) = app.audio_clip_for(key, name) {
                     app.edit(|p| {
                         clip.id = p.alloc_id();
+                        clip.color = p.new_clip_color(t);
                         p.tracks[t].slots[s] = Some(clip);
                     });
                     app.selected_clip = Some(ClipRef::Slot { track: t, scene: s });
@@ -469,6 +470,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem) {
                 let t = p.add_track(TrackKind::Audio);
                 p.tracks[t].name = format!("# {name}");
                 clip.id = p.alloc_id();
+                clip.color = p.new_clip_color(t);
                 if p.scenes.is_empty() {
                     p.add_scene();
                 }
@@ -501,13 +503,13 @@ fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     } else {
         st.playing_scene.is_some()
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(66) } else { Color32::from_gray(40) });
+    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(66) } else { gray(40) });
     let c = if st.pending == Some(PendingLaunch::Stop) {
         ACCENT
     } else if active {
-        Color32::from_gray(210)
+        gray(210)
     } else {
-        Color32::from_gray(90)
+        gray(90)
     };
     ui.painter().rect_filled(Rect::from_center_size(rect.center(), vec2(8.0, 8.0)), CornerRadius::ZERO, c);
     if resp.clicked() {
@@ -521,14 +523,14 @@ fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
 
 fn scene_button(app: &mut DawApp, ui: &mut egui::Ui, s: usize) {
     let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
-    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { Color32::from_gray(72) } else { Color32::from_gray(54) });
-    draw_icon(&ui.painter_at(rect), Icon::Play, rect.left_center() + vec2(11.0, 0.0), Color32::from_gray(200));
+    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(72) } else { gray(54) });
+    draw_icon(&ui.painter_at(rect), Icon::Play, rect.left_center() + vec2(11.0, 0.0), gray(200));
     ui.painter().text(
         rect.left_center() + vec2(24.0, 0.0),
         Align2::LEFT_CENTER,
         &app.project.scenes[s].name,
         FontId::proportional(11.0),
-        Color32::from_gray(220),
+        gray(220),
     );
     if resp.clicked() {
         app.launch_scene(s);
@@ -557,11 +559,7 @@ fn scene_button(app: &mut DawApp, ui: &mut egui::Ui, s: usize) {
 fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let (rect, _) = ui.allocate_exact_size(vec2(COL_W, MIXER_H), Sense::hover());
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Center)));
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(3),
-        if app.is_track_selected(t) { Color32::from_gray(52) } else { Color32::from_gray(42) },
-    );
+    ui.painter().rect_filled(rect, CornerRadius::same(3), if app.is_track_selected(t) { gray(52) } else { gray(42) });
     let ui = &mut child;
     ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
 
@@ -630,7 +628,7 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
     if resp.clicked() {
         app.select_master();
     }
-    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_gray(if app.master_selected { 52 } else { 42 }));
+    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(if app.master_selected { 52 } else { 42 }));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Center)));
     let ui = &mut child;
     ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
