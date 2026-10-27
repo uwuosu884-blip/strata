@@ -96,8 +96,6 @@ pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> 
     level_box(ui, rect, id, db, super::theme::VOL_TEAL, "Track volume (dB) · drag · double-click: 0 dB")
 }
 
-/// Cue colour (Live's blue preview/cue knob).
-
 /// Master Cue volume: metronome + browser preview level (blue).
 pub fn cue_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
     level_box(ui, rect, id, db, super::theme::CUE_BLUE, "Cue volume: metronome + browser preview (dB) · drag · double-click: 0 dB")

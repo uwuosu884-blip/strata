@@ -10,6 +10,46 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.0] - 2026-10-27
+
+### Changed
+- **Ableton Live 12 look**, measured from Live screenshots at 1920×1080 and
+  matched pixel for pixel at 100 % zoom. The UI font is now Inter (bundled,
+  OFL).
+  - **Top bar**: Live's layout with tap/tempo, signature, metronome, quantize,
+    transport, position/loop fields, Follow switch, CPU and output level.
+    Live controls the DAW doesn't have yet (Link, Key/MIDI map, scale chooser,
+    H/W, overview) are shown greyed out.
+  - **Browser**: search box, Collections, places sidebar and a Live item list.
+    Collections and search are greyed out.
+  - **Arrangement**: ruler rows (scale/loop/locators, bars, time), alternating
+    bar shading, Live 290 px track headers (name · I/O · mixer), dot meters,
+    the master row and the time ruler.
+  - **Clips**: coloured title strip over a body of almost the same colour with
+    dark notes or waveform, and grid lines visible through it. Selected clips
+    get a dark title and a light-blue body.
+  - **Session**: 94 px columns with coloured headers, 17 px slots with stop
+    squares, scene launchers on the right ("Main"), a "Stop Clips" row, I/O
+    (From / Monitor / To), and mixer strips with a volume pill, pan knob,
+    activator/solo/arm and a fader beside a meter with a 0–60 dB scale.
+  - **Clip View / piano roll / sample editor**: Live's row, bar-band and grid
+    colours, plus the dark waveform on a light editor.
+  - **Devices**: Live device frames with a title strip and activator.
+  - **Status bar**: Live's layout.
+- New tracks and clips follow the colour policy below.
+
+### Added
+- **Settings window** in Live style (Ctrl+,) with a tab list.
+- **Theme & Colors** tab:
+  - **Theme**: Default / Dark / Mid Dark / Mid Light / Light, Appearance
+    (Follow System / Light / Dark), Tone (Neutral / Cool / Warm), High Contrast.
+  - **Customization**: Grid Line Intensity, Brightness, Color Intensity, Color
+    Hue.
+  - **Track and Clip Colors**: Auto-Assign Track Colors, Default Track Color,
+    Reduced Automatic Colors, Clip Color (Track Color / Random).
+  - All settings apply live and are saved in `settings.ron`.
+- **Zoom Display** (Settings > Display & Input): 50–200 %.
+
 ## [0.6.1] - 2026-10-27
 
 ### Added
@@ -389,7 +429,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...v0.5.0

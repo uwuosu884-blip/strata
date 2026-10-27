@@ -15,6 +15,10 @@ from source (see below).
 
 ## Features
 
+- **Ableton Live 12 look**: Live's layout and colours pixel-matched at 100 %,
+  Inter font, Zoom Display 50–200 %, and Live's Theme & Colors settings
+  (themes, tone, high contrast, grid/brightness/colour customization, track
+  and clip colour policy).
 - **Session view**: clip grid, scene launching with launch quantization, and
   mixer strips (fader, pan, mute, solo, arm, monitor).
 - **Master**: device view (click its header), colour, pan, blue Cue volume for
