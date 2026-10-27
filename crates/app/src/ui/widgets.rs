@@ -3,9 +3,9 @@
 use daw_project::gain_to_db;
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
-pub const ACCENT: Color32 = Color32::from_rgb(255, 160, 40);
+pub const ACCENT: Color32 = super::theme::ORANGE;
 pub const PLAY_GREEN: Color32 = Color32::from_rgb(90, 200, 110);
-pub const REC_RED: Color32 = Color32::from_rgb(230, 70, 60);
+pub const REC_RED: Color32 = Color32::from_rgb(0xff, 0x55, 0x48);
 pub use super::theme::{gray, grid};
 pub const METER_FLOOR_DB: f32 = -60.0;
 
@@ -107,24 +107,8 @@ pub fn draw_icon(p: &egui::Painter, icon: Icon, c: egui::Pos2, fg: Color32) {
 
 /// Small square text toggle (mute/solo/arm style).
 pub fn toggle_box(ui: &mut egui::Ui, text: &str, on: bool, on_color: Color32, tooltip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 18.0), Sense::click());
-    let bg = if on {
-        on_color
-    } else if resp.hovered() {
-        gray(70)
-    } else {
-        gray(58)
-    };
-    let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), bg);
-    let fg = if on { Color32::BLACK } else { gray(210) };
-    if text == "REC" {
-        // Painted record dot (font-independent).
-        p.circle_filled(rect.center(), 4.0, if on { Color32::BLACK } else { REC_RED });
-    } else {
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(11.0), fg);
-    }
-    resp.on_hover_text(tooltip)
+    let (rect, _) = ui.allocate_exact_size(vec2(21.0, 13.0), Sense::hover());
+    rect_toggle(ui, rect, ui.next_auto_id(), text, on, on_color, tooltip)
 }
 
 /// Horizontal two-channel peak meter, -60…0 dBFS. Click resets the clip LED.
@@ -328,7 +312,7 @@ pub fn pos_to_db(t: f32) -> f32 {
 
 /// Live-style track volume box: shows dB, drag up/down (Shift = fine), double-click = 0 dB.
 pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
-    level_box(ui, rect, id, db, shade(ACCENT, 0.55), "Track volume (dB) · drag · double-click: 0 dB")
+    level_box(ui, rect, id, db, super::theme::VOL_TEAL, "Track volume (dB) · drag · double-click: 0 dB")
 }
 
 /// Cue colour (Live's blue preview/cue knob).
@@ -336,7 +320,7 @@ pub const CUE_BLUE: Color32 = Color32::from_rgb(70, 130, 220);
 
 /// Master Cue volume: metronome + browser preview level (blue).
 pub fn cue_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
-    level_box(ui, rect, id, db, shade(CUE_BLUE, 0.8), "Cue volume: metronome + browser preview (dB) · drag · double-click: 0 dB")
+    level_box(ui, rect, id, db, super::theme::CUE_BLUE, "Cue volume: metronome + browser preview (dB) · drag · double-click: 0 dB")
 }
 
 /// Activator colour while another track's solo silences this one.
@@ -359,12 +343,20 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
             changed = true;
         }
     }
+    // Live number slider: dark box, coloured fill up to the value, 1 px outline.
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), gray(30));
+    p.rect_filled(rect, CornerRadius::ZERO, super::theme::off_fill());
     let w = rect.width() * db_to_pos(*db);
-    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::same(2), fill);
-    let text = if *db <= METER_FLOOR_DB { "-inf".to_string() } else { format!("{db:.1}") };
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), gray(235));
+    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::ZERO, fill);
+    p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+    let text = if *db <= METER_FLOOR_DB {
+        "-inf".to_string()
+    } else if db.abs() < 0.05 {
+        "0".to_string()
+    } else {
+        format!("{db:.1}")
+    };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), Color32::from_gray(0xe0));
     (resp.on_hover_text(tip), changed)
 }
 
@@ -385,20 +377,21 @@ pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (e
         }
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), gray(30));
+    p.rect_filled(rect, CornerRadius::ZERO, super::theme::off_fill());
     let cx = rect.center().x;
     let x = cx + *pan * rect.width() * 0.5;
     if pan.abs() > 0.005 {
-        p.rect_filled(Rect::from_x_y_ranges(cx.min(x)..=cx.max(x), rect.y_range()), CornerRadius::ZERO, shade(ACCENT, 0.55));
+        p.rect_filled(Rect::from_x_y_ranges(cx.min(x)..=cx.max(x), rect.y_range()), CornerRadius::ZERO, super::theme::VOL_TEAL);
     }
-    p.line_segment([pos2(cx, rect.min.y), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, gray(140)));
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), egui::FontId::proportional(10.0), gray(235));
+    p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+    p.line_segment([pos2(cx, rect.min.y + 1.0), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, gray(0x8a)));
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), super::theme::font(super::theme::FS), Color32::from_gray(0xe0));
     (resp.on_hover_text("Pan · drag · double-click: centre"), changed)
 }
 
 /// ⊳ / ⊽ in a circle: collapse button at the left of arrangement track headers.
 pub fn draw_collapse_button(p: &egui::Painter, c: egui::Pos2, collapsed: bool, col: Color32) {
-    p.circle_stroke(c, 6.0, Stroke::new(1.2, col));
+    p.circle_stroke(c, 5.5, Stroke::new(1.1, col));
     let pts = if collapsed {
         vec![c + vec2(-1.8, -3.2), c + vec2(3.0, 0.0), c + vec2(-1.8, 3.2)]
     } else {
@@ -445,21 +438,29 @@ pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode) {
 /// Header toggle painted into `rect` (arrangement headers: activator, S, arm).
 /// `text == "REC"` paints the record dot.
 pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: bool, on_color: Color32, tooltip: &str) -> egui::Response {
+    // Live switch: coloured with dark text when on, near-black with a 1 px outline when off.
     let resp = ui.interact(rect, id, Sense::click());
     let bg = if on {
-        on_color
+        if resp.hovered() { shade(on_color, 1.1) } else { on_color }
     } else if resp.hovered() {
-        gray(74)
+        gray(0x2c)
     } else {
-        gray(58)
+        super::theme::off_fill()
     };
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::same(2), bg);
+    p.rect_filled(rect, CornerRadius::ZERO, bg);
+    p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
     if text == "REC" {
-        p.circle_filled(rect.center(), (rect.height() * 0.28).min(4.0), if on { Color32::BLACK } else { REC_RED });
+        let r = (rect.height() * 0.3).min(4.0);
+        if on {
+            p.circle_filled(rect.center(), r, Color32::from_gray(0x16));
+        } else {
+            p.circle_stroke(rect.center(), r, Stroke::new(1.2, gray(0x9a)));
+            p.circle_filled(rect.center(), r * 0.45, gray(0x9a));
+        }
     } else {
-        let fg = if on { Color32::BLACK } else { gray(210) };
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.5), fg);
+        let fg = if on { Color32::from_gray(0x16) } else { super::theme::text() };
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);
     }
     resp.on_hover_text(tooltip)
 }

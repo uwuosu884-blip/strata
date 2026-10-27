@@ -179,6 +179,8 @@ pub struct DawApp {
     pub input_clip: [bool; MAX_IO_CHANNELS],
     /// Mixer In/Out section visible (Ctrl+Alt+I).
     pub show_io: bool,
+    /// Top-bar Follow: the arrangement scrolls with the playhead.
+    pub follow: bool,
     /// Monitor radio under the pointer (Delete returns it to the default).
     pub hover_monitor: Option<usize>,
     /// Device names for the settings dialog (listed when it opens).
@@ -317,7 +319,8 @@ impl DawApp {
             allow_close: false,
             arr_zoom: 28.0,
             arr_scroll: 0.0,
-            arr_row_h: 58.0,
+            follow: true,
+            arr_row_h: 88.0,
             arr_vscroll: 0.0,
             pr_low_note: 48,
             pr_zoom: 0.0,

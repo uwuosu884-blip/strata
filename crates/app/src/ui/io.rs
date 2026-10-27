@@ -108,7 +108,8 @@ pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
 /// Arrangement header variant: no captions, clipped to the row (shows as many
 /// choosers as the track height allows, Live order).
 pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, clip: Rect) {
-    ui.painter().with_clip_rect(clip).rect_filled(rect, CornerRadius::ZERO, gray(38));
+    let bg = if app.is_track_selected(t) { super::theme::sel() } else { super::theme::panel() };
+    ui.painter().with_clip_rect(clip).rect_filled(rect, CornerRadius::ZERO, bg);
     let Some(track) = app.project.tracks.get(t) else { return };
     let (kind, collapsed) = (track.kind, track.collapsed);
     // Rows that fit, by priority: from-type, to-type, monitor, from-channel,
@@ -120,7 +121,7 @@ pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, cli
     let group = kind == TrackKind::Group;
     let (in_t, out_t, mon, in_ch, out_ch) =
         if group { (false, fit >= 1, false, false, fit >= 2) } else { (true, fit >= 2, fit >= 3, fit >= 4, fit >= 5) };
-    let pad = if rect.width() < 90.0 { 2.0 } else { 4.0 };
+    let pad = 2.0;
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(rect.min + vec2(pad, 2.0), rect.max - vec2(pad, 0.0)))
@@ -128,12 +129,12 @@ pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, cli
     );
     child.set_clip_rect(clip.intersect(rect));
     let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(2.0, 1.0);
-    ui.spacing_mut().interact_size.y = 16.0;
+    // Live: 13 px controls on a 17 px pitch.
+    ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
+    ui.spacing_mut().interact_size.y = 13.0;
+    ui.spacing_mut().button_padding = vec2(3.0, 0.0);
     ui.spacing_mut().combo_width = 0.0;
-    if rect.width() < 90.0 {
-        ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(9.5));
-    }
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
     let cw = rect.width() - 2.0 * pad;
     if in_t {
         if kind == TrackKind::Audio {
@@ -172,23 +173,28 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
     };
     let sources = other_tracks(app, t, |x| x.kind != TrackKind::Midi || !x.sends_midi());
     let mut pick: Option<AudioIn> = None;
-    egui::ComboBox::from_id_salt(("ain", t)).width(cw).height(420.0).selected_text(small(type_text)).show_ui(ui, |ui| {
-        if entry(ui, matches!(cur, AudioIn::Ext { .. }), "Ext. In", None) {
-            pick = Some(if matches!(cur, AudioIn::Ext { .. }) { cur } else { AudioIn::default() });
-        }
-        if entry(ui, cur == AudioIn::Resampling, "Resampling", None) {
-            pick = Some(AudioIn::Resampling);
-        }
-        if entry(ui, cur == AudioIn::None, "No Input", None) {
-            pick = Some(AudioIn::None);
-        }
-        ui.separator();
-        for (id, name) in &sources {
-            if entry(ui, matches!(cur, AudioIn::Track { id: i, .. } if i == *id), name, None) {
-                pick = Some(AudioIn::Track { id: *id, tap: Tap::PostFx });
+    egui::ComboBox::from_id_salt(("ain", t))
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .width(cw)
+        .height(420.0)
+        .selected_text(small(type_text))
+        .show_ui(ui, |ui| {
+            if entry(ui, matches!(cur, AudioIn::Ext { .. }), "Ext. In", None) {
+                pick = Some(if matches!(cur, AudioIn::Ext { .. }) { cur } else { AudioIn::default() });
             }
-        }
-    });
+            if entry(ui, cur == AudioIn::Resampling, "Resampling", None) {
+                pick = Some(AudioIn::Resampling);
+            }
+            if entry(ui, cur == AudioIn::None, "No Input", None) {
+                pick = Some(AudioIn::None);
+            }
+            ui.separator();
+            for (id, name) in &sources {
+                if entry(ui, matches!(cur, AudioIn::Track { id: i, .. } if i == *id), name, None) {
+                    pick = Some(AudioIn::Track { id: *id, tap: Tap::PostFx });
+                }
+            }
+        });
     // Channel row hidden (short track): still run it invisibly so picks apply.
     let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
     let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
@@ -199,9 +205,12 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
             let n = app.audio.info.input_channels;
             let entries = cfg.entries(n);
             let mut configure = false;
-            egui::ComboBox::from_id_salt(("ainch", t)).width(cw).height(420.0).selected_text(small(ext_label(&cfg, ch, stereo))).show_ui(
-                ui,
-                |ui| {
+            egui::ComboBox::from_id_salt(("ainch", t))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(cw)
+                .height(420.0)
+                .selected_text(small(ext_label(&cfg, ch, stereo)))
+                .show_ui(ui, |ui| {
                     if n == 0 {
                         ui.label(small("No input device"));
                     }
@@ -215,8 +224,7 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
                     if entry(ui, false, "Configure…", None) {
                         configure = true;
                     }
-                },
-            );
+                });
             if configure {
                 app.open_settings(SettingsTab::Audio);
             }
@@ -232,22 +240,27 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
                 Tap::PostMixer => "Post Mixer".into(),
                 Tap::Pad(i) => format!("{} {}", i + 1, pads.get(i as usize).map_or("", |s| s.as_str())),
             };
-            egui::ComboBox::from_id_salt(("ainch", t)).width(cw).height(420.0).selected_text(small(tap_text(tap))).show_ui(ui, |ui| {
-                for tp in [Tap::PreFx, Tap::PostFx, Tap::PostMixer] {
-                    if entry(ui, tap == tp, &tap_text(tp), None) {
-                        pick = Some(AudioIn::Track { id, tap: tp });
-                    }
-                }
-                if !pads.is_empty() {
-                    ui.separator();
-                    for i in 0..pads.len().min(u8::MAX as usize) {
-                        let tp = Tap::Pad(i as u8);
+            egui::ComboBox::from_id_salt(("ainch", t))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(cw)
+                .height(420.0)
+                .selected_text(small(tap_text(tap)))
+                .show_ui(ui, |ui| {
+                    for tp in [Tap::PreFx, Tap::PostFx, Tap::PostMixer] {
                         if entry(ui, tap == tp, &tap_text(tp), None) {
                             pick = Some(AudioIn::Track { id, tap: tp });
                         }
                     }
-                }
-            });
+                    if !pads.is_empty() {
+                        ui.separator();
+                        for i in 0..pads.len().min(u8::MAX as usize) {
+                            let tp = Tap::Pad(i as u8);
+                            if entry(ui, tap == tp, &tap_text(tp), None) {
+                                pick = Some(AudioIn::Track { id, tap: tp });
+                            }
+                        }
+                    }
+                });
         }
         _ => {
             ui.add_space(17.0);
@@ -278,33 +291,38 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     };
     let sources = other_tracks(app, t, |x| x.kind == TrackKind::Midi);
     let mut pick: Option<MidiIn> = None;
-    egui::ComboBox::from_id_salt(("min", t)).width(cw).height(420.0).selected_text(small(type_text)).show_ui(ui, |ui| {
-        if entry(ui, cur == MidiIn::AllIns, "All Ins", Some((activity_level(any_port(None, None)), false))) {
-            pick = Some(MidiIn::AllIns);
-        }
-        if entry(ui, cur == MidiIn::Keyboard, "Computer Keyboard", None) {
-            pick = Some(MidiIn::Keyboard);
-        }
-        for (i, n) in ports.iter().enumerate() {
-            if entry(ui, cur == MidiIn::Port(n.clone()), n, Some((activity_level(any_port(Some(i), None)), false))) {
-                pick = Some(MidiIn::Port(n.clone()));
+    egui::ComboBox::from_id_salt(("min", t))
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .width(cw)
+        .height(420.0)
+        .selected_text(small(type_text))
+        .show_ui(ui, |ui| {
+            if entry(ui, cur == MidiIn::AllIns, "All Ins", Some((activity_level(any_port(None, None)), false))) {
+                pick = Some(MidiIn::AllIns);
             }
-        }
-        if entry(ui, cur == MidiIn::None, "No Input", None) {
-            pick = Some(MidiIn::None);
-        }
-        ui.separator();
-        for (id, name) in &sources {
-            if entry(ui, cur == MidiIn::Track(*id), name, None) {
-                pick = Some(MidiIn::Track(*id));
+            if entry(ui, cur == MidiIn::Keyboard, "Computer Keyboard", None) {
+                pick = Some(MidiIn::Keyboard);
             }
-        }
-        ui.separator();
-        if entry(ui, false, "Configure…", None) {
-            pick = None;
-            app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
-        }
-    });
+            for (i, n) in ports.iter().enumerate() {
+                if entry(ui, cur == MidiIn::Port(n.clone()), n, Some((activity_level(any_port(Some(i), None)), false))) {
+                    pick = Some(MidiIn::Port(n.clone()));
+                }
+            }
+            if entry(ui, cur == MidiIn::None, "No Input", None) {
+                pick = Some(MidiIn::None);
+            }
+            ui.separator();
+            for (id, name) in &sources {
+                if entry(ui, cur == MidiIn::Track(*id), name, None) {
+                    pick = Some(MidiIn::Track(*id));
+                }
+            }
+            ui.separator();
+            if entry(ui, false, "Configure…", None) {
+                pick = None;
+                app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
+            }
+        });
     // Channel row hidden (short track): still run it invisibly so picks apply.
     let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
     let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
@@ -317,18 +335,23 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
         let ch = app.project.tracks[t].midi_channel;
         let label = |c: u8| if c == 0 { "All Channels".to_string() } else { format!("Ch. {c}") };
         let mut new_ch = None;
-        egui::ComboBox::from_id_salt(("minch", t)).width(cw).height(420.0).selected_text(small(label(ch))).show_ui(ui, |ui| {
-            for c in 0..=16u8 {
-                let lv = if cur == MidiIn::Keyboard {
-                    None
-                } else {
-                    Some((activity_level(any_port(port, if c == 0 { None } else { Some(c - 1) })), false))
-                };
-                if entry(ui, ch == c, &label(c), lv) {
-                    new_ch = Some(c);
+        egui::ComboBox::from_id_salt(("minch", t))
+            .wrap_mode(egui::TextWrapMode::Truncate)
+            .width(cw)
+            .height(420.0)
+            .selected_text(small(label(ch)))
+            .show_ui(ui, |ui| {
+                for c in 0..=16u8 {
+                    let lv = if cur == MidiIn::Keyboard {
+                        None
+                    } else {
+                        Some((activity_level(any_port(port, if c == 0 { None } else { Some(c - 1) })), false))
+                    };
+                    if entry(ui, ch == c, &label(c), lv) {
+                        new_ch = Some(c);
+                    }
                 }
-            }
-        });
+            });
         if let Some(c) = new_ch
             && c != ch
         {
@@ -401,29 +424,34 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     };
     let targets = other_tracks(app, t, |x| x.kind != TrackKind::Midi || !x.sends_midi());
     let mut pick: Option<AudioOut> = None;
-    egui::ComboBox::from_id_salt(("aout", t)).width(cw).height(420.0).selected_text(small(type_text)).show_ui(ui, |ui| {
-        if let Some(g) = parent
-            && entry(ui, cur == AudioOut::Default, &format!("{} (Group)", track_name(app, g)), None)
-        {
-            pick = Some(AudioOut::Default);
-        }
-        let master_sel = cur == AudioOut::Master || (cur == AudioOut::Default && parent.is_none());
-        if entry(ui, master_sel, "Master", None) {
-            pick = Some(if parent.is_some() { AudioOut::Master } else { AudioOut::Default });
-        }
-        if entry(ui, matches!(cur, AudioOut::Ext { .. }), "Ext. Out", None) {
-            pick = Some(if matches!(cur, AudioOut::Ext { .. }) { cur } else { AudioOut::Ext { ch: 0, stereo: true } });
-        }
-        ui.separator();
-        for (id, name) in &targets {
-            if Some(*id) == parent {
-                continue;
+    egui::ComboBox::from_id_salt(("aout", t))
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .width(cw)
+        .height(420.0)
+        .selected_text(small(type_text))
+        .show_ui(ui, |ui| {
+            if let Some(g) = parent
+                && entry(ui, cur == AudioOut::Default, &format!("{} (Group)", track_name(app, g)), None)
+            {
+                pick = Some(AudioOut::Default);
             }
-            if entry(ui, cur == AudioOut::Track(*id), name, None) {
-                pick = Some(AudioOut::Track(*id));
+            let master_sel = cur == AudioOut::Master || (cur == AudioOut::Default && parent.is_none());
+            if entry(ui, master_sel, "Master", None) {
+                pick = Some(if parent.is_some() { AudioOut::Master } else { AudioOut::Default });
             }
-        }
-    });
+            if entry(ui, matches!(cur, AudioOut::Ext { .. }), "Ext. Out", None) {
+                pick = Some(if matches!(cur, AudioOut::Ext { .. }) { cur } else { AudioOut::Ext { ch: 0, stereo: true } });
+            }
+            ui.separator();
+            for (id, name) in &targets {
+                if Some(*id) == parent {
+                    continue;
+                }
+                if entry(ui, cur == AudioOut::Track(*id), name, None) {
+                    pick = Some(AudioOut::Track(*id));
+                }
+            }
+        });
     // Channel row hidden (short track): still run it invisibly so picks apply.
     let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
     let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
@@ -431,9 +459,12 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
         AudioOut::Ext { ch, stereo } => {
             let cfg = app.channel_config(false);
             let mut configure = false;
-            egui::ComboBox::from_id_salt(("aoutch", t)).width(cw).height(420.0).selected_text(small(ext_label(&cfg, ch, stereo))).show_ui(
-                ui,
-                |ui| {
+            egui::ComboBox::from_id_salt(("aoutch", t))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(cw)
+                .height(420.0)
+                .selected_text(small(ext_label(&cfg, ch, stereo)))
+                .show_ui(ui, |ui| {
                     for e in cfg.entries(app.audio.info.channels) {
                         if entry(ui, e.ch == ch && e.stereo == stereo, &cfg.label(e), None) {
                             pick = Some(AudioOut::Ext { ch: e.ch, stereo: e.stereo });
@@ -443,8 +474,7 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
                     if entry(ui, false, "Configure…", None) {
                         configure = true;
                     }
-                },
-            );
+                });
             if configure {
                 app.open_settings(SettingsTab::Audio);
             }
@@ -474,55 +504,67 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     };
     let targets = other_tracks(app, t, |x| x.kind == TrackKind::Midi);
     let mut pick: Option<MidiOut> = None;
-    egui::ComboBox::from_id_salt(("mout", t)).width(cw).height(420.0).selected_text(small(type_text)).show_ui(ui, |ui| {
-        if entry(ui, cur == MidiOut::None, "No Output", None) {
-            pick = Some(MidiOut::None);
-        }
-        for n in &ports {
-            if entry(ui, matches!(&cur, MidiOut::Port { name, .. } if name == n), n, None) {
-                pick = Some(MidiOut::Port { name: n.clone(), channel: 1 });
+    egui::ComboBox::from_id_salt(("mout", t))
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .width(cw)
+        .height(420.0)
+        .selected_text(small(type_text))
+        .show_ui(ui, |ui| {
+            if entry(ui, cur == MidiOut::None, "No Output", None) {
+                pick = Some(MidiOut::None);
             }
-        }
-        ui.separator();
-        for (id, name) in &targets {
-            if entry(ui, matches!(cur, MidiOut::Track { id: i, .. } if i == *id), name, None) {
-                pick = Some(MidiOut::Track { id: *id, instrument: false });
+            for n in &ports {
+                if entry(ui, matches!(&cur, MidiOut::Port { name, .. } if name == n), n, None) {
+                    pick = Some(MidiOut::Port { name: n.clone(), channel: 1 });
+                }
             }
-        }
-        ui.separator();
-        if entry(ui, false, "Configure…", None) {
-            app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
-        }
-    });
+            ui.separator();
+            for (id, name) in &targets {
+                if entry(ui, matches!(cur, MidiOut::Track { id: i, .. } if i == *id), name, None) {
+                    pick = Some(MidiOut::Track { id: *id, instrument: false });
+                }
+            }
+            ui.separator();
+            if entry(ui, false, "Configure…", None) {
+                app.dialog = Some(crate::app::Dialog::Settings(SettingsTab::Midi));
+            }
+        });
     // Channel row hidden (short track): still run it invisibly so picks apply.
     let mut hidden = ui.new_child(egui::UiBuilder::new().invisible().max_rect(ui.max_rect()));
     let ui: &mut egui::Ui = if ch { ui } else { &mut hidden };
     match &cur {
         MidiOut::Port { name, channel } => {
             let (name, channel) = (name.clone(), *channel);
-            egui::ComboBox::from_id_salt(("moutch", t)).width(cw).height(420.0).selected_text(small(format!("Ch. {channel}"))).show_ui(
-                ui,
-                |ui| {
+            egui::ComboBox::from_id_salt(("moutch", t))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(cw)
+                .height(420.0)
+                .selected_text(small(format!("Ch. {channel}")))
+                .show_ui(ui, |ui| {
                     for c in 1..=16u8 {
                         if entry(ui, c == channel, &format!("Ch. {c}"), None) {
                             pick = Some(MidiOut::Port { name: name.clone(), channel: c });
                         }
                     }
-                },
-            );
+                });
         }
         MidiOut::Track { id, instrument } => {
             let (id, instrument) = (*id, *instrument);
             let inst = app.project.tracks.iter().find(|x| x.id == id).map_or("", |x| x.instrument.label());
             let text = |i: bool| if i { inst.to_string() } else { "Track In".to_string() };
-            egui::ComboBox::from_id_salt(("moutch", t)).width(cw).height(420.0).selected_text(small(text(instrument))).show_ui(ui, |ui| {
-                if entry(ui, !instrument, "Track In", None) {
-                    pick = Some(MidiOut::Track { id, instrument: false });
-                }
-                if !inst.is_empty() && inst != "None" && entry(ui, instrument, inst, None) {
-                    pick = Some(MidiOut::Track { id, instrument: true });
-                }
-            });
+            egui::ComboBox::from_id_salt(("moutch", t))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(cw)
+                .height(420.0)
+                .selected_text(small(text(instrument)))
+                .show_ui(ui, |ui| {
+                    if entry(ui, !instrument, "Track In", None) {
+                        pick = Some(MidiOut::Track { id, instrument: false });
+                    }
+                    if !inst.is_empty() && inst != "None" && entry(ui, instrument, inst, None) {
+                        pick = Some(MidiOut::Track { id, instrument: true });
+                    }
+                });
         }
         MidiOut::None => {
             ui.add_space(17.0);
@@ -553,9 +595,12 @@ fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {
     let (ch, stereo) = (app.project.master_out_ch, app.project.master_out_stereo);
     let mut pick = None;
     let mut configure = false;
-    egui::ComboBox::from_id_salt("master_out").width(cw).height(420.0).selected_text(small(ext_label(&cfg, ch, stereo))).show_ui(
-        ui,
-        |ui| {
+    egui::ComboBox::from_id_salt("master_out")
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .width(cw)
+        .height(420.0)
+        .selected_text(small(ext_label(&cfg, ch, stereo)))
+        .show_ui(ui, |ui| {
             for e in cfg.entries(app.audio.info.channels) {
                 if entry(ui, e.ch == ch && e.stereo == stereo, &cfg.label(e), None) {
                     pick = Some(e);
@@ -565,8 +610,7 @@ fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {
             if entry(ui, false, "Configure…", None) {
                 configure = true;
             }
-        },
-    );
+        });
     if configure {
         app.open_settings(SettingsTab::Audio);
     }

@@ -185,13 +185,16 @@ impl DawApp {
 
         // ---- Transport (centre) ----
         let r = g.c(716.0, 736.0);
-        tb_box(ui, r, "follow", false, false, "Follow");
-        let y = r.center().y;
-        p.line_segment([pos2(r.left() + 4.0, y), pos2(r.left() + 11.0, y)], Stroke::new(1.2, fg(false, false)));
-        tri(&p, [pos2(r.left() + 9.0, y - 3.5), pos2(r.left() + 13.0, y), pos2(r.left() + 9.0, y + 3.5)], fg(false, false));
+        let fol = self.follow;
+        if tb_box(ui, r, "follow", fol, true, "Follow: scroll the Arrangement with the playhead (Ctrl+F)").clicked() {
+            self.follow = !fol;
+        }
+        let (y, f) = (r.center().y, fg(fol, true));
+        p.line_segment([pos2(r.left() + 4.0, y), pos2(r.left() + 11.0, y)], Stroke::new(1.2, f));
+        tri(&p, [pos2(r.left() + 9.0, y - 3.5), pos2(r.left() + 13.0, y), pos2(r.left() + 9.0, y + 3.5)], f);
         for k in 0..2 {
             let x = r.left() + 15.0 + k as f32 * 3.0;
-            p.line_segment([pos2(x, y), pos2(x + 1.5, y)], Stroke::new(1.2, fg(false, false)));
+            p.line_segment([pos2(x, y), pos2(x + 1.5, y)], Stroke::new(1.2, f));
         }
         let pos = self.status.position;
         let r = g.c(739.0, 820.0);
