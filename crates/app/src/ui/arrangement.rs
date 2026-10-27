@@ -508,12 +508,23 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             continue;
         }
         let id = a.clip.id;
-        let r = Rect::from_min_max(pos2(x1, lane.min.y + 1.0), pos2(x2.max(x1 + 3.0), lane.max.y - 1.0));
+        let r = Rect::from_min_max(pos2(x1, lane.min.y), pos2(x2.max(x1 + 3.0), lane.max.y - 2.0));
         let sel = app.arr_sel.contains(&id) || app.selected_clip == Some(ClipRef::Arr { track: t, index: i });
         let p = &painter;
         draw_clip(p, r, &a.clip, sel, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm, collapsed);
+        if !collapsed && g.grid * g.zoom >= 4.0 {
+            // Grid lines show through the clip body (Live).
+            let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max).intersect(lane);
+            let pc = p.with_clip_rect(body.intersect(p.clip_rect()));
+            let mut v = (g.beat_at(body.min.x).max(0.0) / g.grid).ceil() * g.grid;
+            while g.to_x(v) < body.max.x {
+                let x = g.to_x(v).round() + 0.5;
+                pc.line_segment([pos2(x, body.min.y), pos2(x, body.max.y)], Stroke::new(1.0, Color32::from_black_alpha(26)));
+                v += g.grid;
+            }
+        }
         if moving.contains(&id) {
-            p.rect_filled(r, CornerRadius::same(3), Color32::from_black_alpha(110));
+            p.rect_filled(r, CornerRadius::ZERO, Color32::from_black_alpha(110));
         }
 
         // Title bar = move, edges = trim. The body belongs to the lane (time selection).
@@ -1325,40 +1336,41 @@ pub fn draw_clip(
     tempo: f64,
     collapsed: bool,
 ) {
+    // Live 12: coloured title + body with dark contents; selected = dark title
+    // with light text over a light-blue body.
     let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
+    let (title_bg, title_fg, body_bg) =
+        if selected { (gray(0x4a), Color32::from_gray(0xe6), SEL_BLUE) } else { (c, text_on(c), shade(c, 0.9)) };
     if collapsed {
-        p.rect_filled(r, CornerRadius::same(3), c);
+        p.rect_filled(r, CornerRadius::ZERO, title_bg);
         p.with_clip_rect(r.intersect(p.clip_rect())).text(
-            r.left_center() + vec2(4.0, 0.0),
+            r.left_center() + vec2(3.0, 0.0),
             Align2::LEFT_CENTER,
             &clip.name,
-            FontId::proportional(10.0),
-            Color32::BLACK,
+            font(FS),
+            title_fg,
         );
-        if selected {
-            p.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
-        }
         return;
     }
-    p.rect_filled(r, CornerRadius::same(3), shade(c, 0.45));
-    let title = Rect::from_min_size(r.min, vec2(r.width(), 14.0));
-    p.rect_filled(title, CornerRadius::same(3), c);
+    p.rect_filled(r, CornerRadius::ZERO, body_bg);
+    let title = Rect::from_min_size(r.min, vec2(r.width(), 15.0_f32.min(r.height())));
+    p.rect_filled(title, CornerRadius::ZERO, title_bg);
+    if selected {
+        p.line_segment([title.left_top() + vec2(0.0, 0.5), title.right_top() + vec2(0.0, 0.5)], Stroke::new(1.0, SEL_BLUE));
+    }
     p.with_clip_rect(title.intersect(p.clip_rect())).text(
-        title.left_center() + vec2(4.0, 0.0),
+        title.left_center() + vec2(3.0, 0.0),
         Align2::LEFT_CENTER,
         &clip.name,
-        FontId::proportional(10.0),
-        Color32::BLACK,
+        font(FS),
+        title_fg,
     );
-    if selected {
-        p.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
-    }
-    let body = Rect::from_min_max(pos2(r.min.x + 1.0, title.max.y + 2.0), pos2(r.max.x - 1.0, r.max.y - 2.0));
+    let body = Rect::from_min_max(pos2(r.min.x, title.max.y + 1.0), pos2(r.max.x, r.max.y - 1.0));
     let visible = body.intersect(p.clip_rect());
     if visible.width() <= 0.0 {
         return;
     }
-    let ink = shade(c, 1.25);
+    let ink = if selected { Color32::from_gray(0x22) } else { shade(c, 0.28) };
     match &clip.content {
         ClipContent::Midi { notes } => {
             if notes.is_empty() {
@@ -1384,7 +1396,7 @@ pub fn draw_clip(
                     p.rect_filled(
                         Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)),
                         CornerRadius::ZERO,
-                        if n.muted { shade(c, 0.7) } else { ink },
+                        if n.muted { shade(body_bg, 0.7) } else { ink },
                     );
                 }
             }

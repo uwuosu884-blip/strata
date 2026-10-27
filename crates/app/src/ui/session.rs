@@ -1,21 +1,24 @@
 //! Session view: clip-slot grid (tracks × scenes), scene launchers, mixer strips.
 
+use super::theme::*;
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use daw_engine::{Command, PendingLaunch};
 use daw_project::{ClipContent, TrackKind};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, pos2, vec2};
 
-const COL_W: f32 = 112.0;
-const SLOT_H: f32 = 22.0;
-const HEADER_H: f32 = 22.0;
-const MIXER_H: f32 = 190.0;
+// Live 12 Session metrics at 100 %: 94 px columns, 17 px header, 17 px slots
+// on an 18 px pitch, ~128 px mixer section.
+const COL_W: f32 = 94.0;
+const SLOT_H: f32 = 17.0;
+const HEADER_H: f32 = 17.0;
+const MIXER_H: f32 = 128.0;
 
 pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let blink = (app.status.beat_position * 2.0).fract() < 0.5 || !app.status.playing;
     let avail = ui.available_size();
     egui::ScrollArea::both().id_salt("session").auto_shrink([false, false]).show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+        ui.spacing_mut().item_spacing = vec2(1.0, 1.0);
         ui.horizontal_top(|ui| {
             let n0 = app.project.tracks.len();
             for t in app.project.visible_tracks() {
@@ -80,10 +83,9 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                 // Master header: click = master device view, right-click = colour.
                 let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, HEADER_H), Sense::click());
                 super::add_master_zone(ui, rect);
-                let col = rgb(app.project.master_color);
-                let bg = if app.master_selected { col } else { shade(col, 0.6) };
-                ui.painter().rect_filled(rect, CornerRadius::same(2), bg);
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Master", FontId::proportional(12.0), text_on(bg));
+                let bg = if app.master_selected { gray(0x5a) } else { gray(0x46) };
+                ui.painter().rect_filled(rect, CornerRadius::ZERO, bg);
+                ui.painter().text(rect.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, "Main", bold(FS), text());
                 if resp.clicked() {
                     app.select_master();
                 }
@@ -92,8 +94,13 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     scene_button(app, ui, s);
                 }
                 let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
-                ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(70) } else { gray(46) });
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Stop Clips", FontId::proportional(11.0), gray(210));
+                ui.painter().rect_filled(rect, CornerRadius::ZERO, if resp.hovered() { gray(0x40) } else { panel() });
+                ui.painter().rect_filled(
+                    Rect::from_center_size(rect.left_center() + vec2(10.0, 0.0), vec2(8.0, 8.0)),
+                    CornerRadius::ZERO,
+                    gray(0x1e),
+                );
+                ui.painter().text(rect.left_center() + vec2(20.0, 0.0), Align2::LEFT_CENTER, "Stop Clips", font(FS), text());
                 if resp.clicked() {
                     app.send(Command::StopAllClips);
                 }
@@ -116,8 +123,8 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let folded = track.folded;
     let parent_color = app.project.parent_index(t).map(|p| rgb(app.project.tracks[p].color));
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(2), if selected { color } else { shade(color, 0.55) });
-    let mut x = rect.min.x + 5.0;
+    p.rect_filled(rect, CornerRadius::ZERO, if selected { shade(color, 1.12) } else { color });
+    let mut x = rect.min.x + 4.0;
     if let Some(pc) = parent_color {
         // Child of a group: group colour strip on the left.
         p.rect_filled(Rect::from_min_size(rect.min, vec2(4.0, rect.height())), CornerRadius::ZERO, pc);
@@ -134,8 +141,8 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
             pos2(x, rect.center().y),
             Align2::LEFT_CENTER,
             app.project.track_label(t),
-            FontId::proportional(12.0),
-            Color32::BLACK,
+            bold(FS),
+            text_on(color),
         );
     }
     if resp.clicked() {
@@ -286,27 +293,26 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
     let armed = track.arm;
     let recording_here = app.session_rec.is_some_and(|(id, sc)| id == track.id && sc == s);
     let p = ui.painter_at(rect);
-    let launch_zone = Rect::from_min_size(rect.min, vec2(20.0, rect.height()));
+    let launch_zone = Rect::from_min_size(rect.min, vec2(16.0, rect.height()));
 
     match track.slots.get(s).and_then(|c| c.as_ref()) {
         Some(clip) => {
             let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
-            p.rect_filled(rect, CornerRadius::same(2), if playing { c } else { shade(c, 0.75) });
-            if selected {
-                p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
-            }
-            let tri = if playing || (pending && blink) { PLAY_GREEN } else { gray(30) };
-            draw_icon(&p, Icon::Play, launch_zone.center() + vec2(0.0, 0.0), tri);
+            let bg = if selected { SEL_BLUE } else { c };
+            p.rect_filled(rect, CornerRadius::ZERO, bg);
+            let tri = if playing || (pending && blink) { PLAY_GREEN } else { Color32::from_gray(0x1c) };
+            let lc = launch_zone.center();
+            p.add(egui::Shape::convex_polygon(vec![lc + vec2(-3.5, -4.5), lc + vec2(4.5, 0.0), lc + vec2(-3.5, 4.5)], tri, Stroke::NONE));
             let name = match &clip.content {
                 ClipContent::Audio { .. } => clip.name.clone(),
                 ClipContent::Midi { .. } => clip.name.clone(),
             };
             p.with_clip_rect(rect.shrink(2.0)).text(
-                pos2(rect.min.x + 22.0, rect.center().y),
+                pos2(rect.min.x + 18.0, rect.center().y),
                 Align2::LEFT_CENTER,
                 name,
-                FontId::proportional(11.0),
-                Color32::BLACK,
+                font(FS),
+                text_on(bg),
             );
             if playing && clip.length > 0.0 {
                 let f = (st.clip_pos / clip.length).clamp(0.0, 1.0) as f32;
@@ -340,12 +346,13 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, blink: bool) {
             resp.context_menu(|ui| clip_menu(app, ui, t, s));
         }
         None => {
-            p.rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(56) } else { gray(46) });
+            p.rect_filled(rect, CornerRadius::ZERO, if resp.hovered() { gray(0x40) } else { panel() });
+            p.line_segment([rect.left_bottom() + vec2(0.0, 0.5), rect.right_bottom() + vec2(0.0, 0.5)], Stroke::new(1.0, gray(0x2a)));
             if armed {
                 let col = if recording_here && blink { REC_RED } else { gray(if recording_here { 90 } else { 120 }) };
-                p.circle_filled(rect.center(), 4.5, col);
+                p.circle_filled(rect.left_center() + vec2(10.0, 0.0), 4.5, col);
             } else {
-                p.rect_filled(Rect::from_center_size(rect.center(), vec2(7.0, 7.0)), CornerRadius::ZERO, gray(75));
+                p.rect_filled(Rect::from_center_size(rect.left_center() + vec2(10.0, 0.0), vec2(8.0, 8.0)), CornerRadius::ZERO, gray(0x1e));
             }
             if pending && blink {
                 p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, PLAY_GREEN), egui::StrokeKind::Inside);
@@ -495,7 +502,7 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem) {
 }
 
 fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H - 4.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
     let is_group = app.project.tracks[t].kind == TrackKind::Group;
     let st = app.track_status.get(t).copied().unwrap_or_default();
     let active = if is_group {
@@ -503,15 +510,15 @@ fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     } else {
         st.playing_scene.is_some()
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(66) } else { gray(40) });
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, if resp.hovered() { gray(0x40) } else { panel() });
     let c = if st.pending == Some(PendingLaunch::Stop) {
         ACCENT
     } else if active {
-        gray(210)
+        gray(0xc8)
     } else {
-        gray(90)
+        gray(0x1e)
     };
-    ui.painter().rect_filled(Rect::from_center_size(rect.center(), vec2(8.0, 8.0)), CornerRadius::ZERO, c);
+    ui.painter().rect_filled(Rect::from_center_size(rect.left_center() + vec2(10.0, 0.0), vec2(8.0, 8.0)), CornerRadius::ZERO, c);
     if resp.clicked() {
         if is_group {
             app.stop_group(t);
@@ -523,15 +530,15 @@ fn stop_button(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
 
 fn scene_button(app: &mut DawApp, ui: &mut egui::Ui, s: usize) {
     let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, SLOT_H), Sense::click());
-    ui.painter().rect_filled(rect, CornerRadius::same(2), if resp.hovered() { gray(72) } else { gray(54) });
-    draw_icon(&ui.painter_at(rect), Icon::Play, rect.left_center() + vec2(11.0, 0.0), gray(200));
-    ui.painter().text(
-        rect.left_center() + vec2(24.0, 0.0),
-        Align2::LEFT_CENTER,
-        &app.project.scenes[s].name,
-        FontId::proportional(11.0),
-        gray(220),
-    );
+    // Live scene launcher: ▶ at the left, scene name right-aligned.
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, if resp.hovered() { gray(0x46) } else { gray(0x3c) });
+    let c = rect.left_center() + vec2(9.0, 0.0);
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![c + vec2(-3.5, -4.5), c + vec2(4.5, 0.0), c + vec2(-3.5, 4.5)],
+        gray(0x1c),
+        Stroke::NONE,
+    ));
+    ui.painter().text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, &app.project.scenes[s].name, font(FS), text());
     if resp.clicked() {
         app.launch_scene(s);
     }
@@ -558,68 +565,67 @@ fn scene_button(app: &mut DawApp, ui: &mut egui::Ui, s: usize) {
 
 fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let (rect, _) = ui.allocate_exact_size(vec2(COL_W, MIXER_H), Sense::hover());
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Center)));
-    ui.painter().rect_filled(rect, CornerRadius::same(3), if app.is_track_selected(t) { gray(52) } else { gray(42) });
-    let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
-
-    // Pan
+    let sel = app.is_track_selected(t);
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, if sel { gray(0x46) } else { panel() });
+    let o = rect.min;
+    // Volume pill · pan knob · fader with dB scale (Live).
+    let mut db = app.project.tracks[t].gain_db;
+    let (r, changed) =
+        vol_pill(ui, Rect::from_min_size(o + vec2(8.0, 6.0), vec2(30.0, 11.0)), ui.scope_id().with(("svol_pill", t)), &mut db);
+    let (r2, changed2) = fader_meter(
+        ui,
+        Rect::from_min_size(o + vec2(44.0, 6.0), vec2(46.0, MIXER_H - 12.0)),
+        ui.scope_id().with(("sfader", t)),
+        &mut db,
+        app.track_meters.get(t).copied().unwrap_or([0.0; 2]),
+    );
+    if r.drag_started() || r.double_clicked() || r2.drag_started() || r2.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed || changed2 {
+        app.set_track_gain(t, db);
+    }
     let mut pan = app.project.tracks[t].pan;
-    let (r, changed) = hslider(ui, &mut pan, -1.0..=1.0, 0.0, vec2(COL_W - 16.0, 14.0), pan_label);
+    let (r, changed) = knob(ui, o + vec2(23.0, 36.0), 12.0, ui.scope_id().with(("span", t)), &mut pan);
     if r.drag_started() || r.double_clicked() {
         app.begin_gesture();
     }
     if changed {
         app.set_track_pan(t, pan);
     }
-    // Meter + fader
-    ui.horizontal(|ui| {
-        ui.add_space(14.0);
-        let (mrect, _) = ui.allocate_exact_size(vec2(14.0, 110.0), Sense::hover());
-        vmeter(ui.painter(), mrect, app.track_meters.get(t).copied().unwrap_or([0.0; 2]));
-        let mut db = app.project.tracks[t].gain_db;
-        let (r, changed) = fader(ui, &mut db, vec2(22.0, 110.0));
-        if r.drag_started() || r.double_clicked() {
-            app.begin_gesture();
-        }
-        if changed {
-            app.set_track_gain(t, db);
-        }
-        ui.label(egui::RichText::new(if db <= -60.0 { "-inf".into() } else { format!("{db:.1}") }).small());
-    });
-    // Buttons
+    // Activator / S / arm stacked (Live).
     let track = &app.project.tracks[t];
     let (mute, solo, arm, kind, has_input) = (track.mute, track.solo, track.arm, track.kind, track.has_input());
     let ctrl = ui.input(|i| i.modifiers.command);
-    let excl = !ctrl;
-    ui.horizontal(|ui| {
-        ui.add_space(6.0);
-        let act_col = if app.solo_silenced.get(t).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
-        if toggle_box(ui, &format!("{}", t + 1), !mute, act_col, "Track activator (mute)").clicked() {
-            app.toggle_track_flag(t, TrackFlag::Mute, false);
-        }
-        if toggle_box(ui, "S", solo, Color32::from_rgb(80, 160, 255), "Solo (Ctrl: add)").clicked() {
-            app.toggle_track_flag(t, TrackFlag::Solo, excl);
-        }
-        // "No Input" hides Arm.
-        if kind != TrackKind::Group
-            && has_input
-            && toggle_box(ui, "REC", arm, REC_RED, "Arm for recording (all selected tracks; Ctrl: just this one)").clicked()
-        {
-            app.click_arm(t, ctrl);
-        }
-    });
-    let label = app.project.tracks[t].instrument.label();
+    let act_col = if app.solo_silenced.get(t).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
+    let act = Rect::from_min_size(o + vec2(13.0, 63.0), vec2(21.0, 15.0));
+    if rect_toggle(ui, act, ui.scope_id().with(("sact", t)), &format!("{}", t + 1), !mute, act_col, "Track activator (mute)").clicked() {
+        app.toggle_track_flag(t, TrackFlag::Mute, false);
+    }
+    let sr = Rect::from_min_size(o + vec2(13.0, 82.0), vec2(21.0, 13.0));
+    if rect_toggle(ui, sr, ui.scope_id().with(("ssolo", t)), "S", solo, Color32::from_rgb(0x5a, 0xa8, 0xff), "Solo (Ctrl: add)").clicked() {
+        app.toggle_track_flag(t, TrackFlag::Solo, !ctrl);
+    }
+    let ar = Rect::from_min_size(o + vec2(13.0, 99.0), vec2(21.0, 13.0));
+    if kind != TrackKind::Group
+        && has_input
+        && rect_toggle(
+            ui,
+            ar,
+            ui.scope_id().with(("sarm", t)),
+            "REC",
+            arm,
+            REC_RED,
+            "Arm for recording (all selected tracks; Ctrl: just this one)",
+        )
+        .clicked()
+    {
+        app.click_arm(t, ctrl);
+    }
     let voices = app.track_status.get(t).map_or(0, |s| s.voices);
-    ui.label(
-        egui::RichText::new(match kind {
-            TrackKind::Audio => "Audio".to_string(),
-            TrackKind::Group => "Group bus".to_string(),
-            TrackKind::Midi => format!("{label} · {voices}v"),
-        })
-        .small()
-        .color(Color32::GRAY),
-    );
+    if kind == TrackKind::Midi && voices > 0 {
+        ui.painter().text(o + vec2(23.0, MIXER_H - 6.0), Align2::CENTER_CENTER, format!("{voices}v"), font(FS_SMALL), dim());
+    }
 }
 
 fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
@@ -628,12 +634,27 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
     if resp.clicked() {
         app.select_master();
     }
-    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(if app.master_selected { 52 } else { 42 }));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Center)));
-    let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
+    let o = rect.min;
+    let mut db = app.project.master_gain_db;
+    let (r, changed) = vol_pill(ui, Rect::from_min_size(o + vec2(8.0, 6.0), vec2(30.0, 11.0)), ui.scope_id().with("mvol_pill"), &mut db);
+    let (r2, changed2) = fader_meter(
+        ui,
+        Rect::from_min_size(o + vec2(44.0, 6.0), vec2(46.0, MIXER_H - 12.0)),
+        ui.scope_id().with("mfader"),
+        &mut db,
+        app.meter,
+    );
+    if r.drag_started() || r.double_clicked() || r2.drag_started() || r2.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed || changed2 {
+        app.project.master_gain_db = db;
+        app.dirty = true;
+        app.send_now(Command::SetMasterGain(daw_project::db_to_gain(db)));
+    }
     let mut pan = app.project.master_pan;
-    let (r, changed) = hslider(ui, &mut pan, -1.0..=1.0, 0.0, vec2(COL_W - 16.0, 14.0), pan_label);
+    let (r, changed) = knob(ui, o + vec2(23.0, 36.0), 12.0, ui.scope_id().with("mpan_knob"), &mut pan);
     if r.drag_started() || r.double_clicked() {
         app.begin_gesture();
     }
@@ -642,31 +663,23 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
         app.dirty = true;
         app.send_now(Command::SetMasterPan(pan));
     }
-    ui.horizontal(|ui| {
-        ui.add_space(14.0);
-        let (mrect, _) = ui.allocate_exact_size(vec2(14.0, 110.0), Sense::hover());
-        vmeter(ui.painter(), mrect, app.meter);
-        let mut db = app.project.master_gain_db;
-        let (r, changed) = fader(ui, &mut db, vec2(22.0, 110.0));
-        if r.drag_started() || r.double_clicked() {
-            app.begin_gesture();
-        }
-        if changed {
-            app.project.master_gain_db = db;
-            app.send_now(Command::SetMasterGain(daw_project::db_to_gain(db)));
-        }
-        ui.label(egui::RichText::new(if db <= -60.0 { "-inf".into() } else { format!("{db:.1}") }).small());
-    });
-    // Blue Cue volume (metronome + browser preview).
-    let (cr, _) = ui.allocate_exact_size(vec2(COL_W - 16.0, 15.0), Sense::hover());
+    // Blue Cue volume knob (metronome + browser preview), like Live's Cue knob.
     let mut cue = app.project.cue_gain_db;
-    let (r, changed) = cue_box(ui, cr, ui.scope_id().with("scue"), &mut cue);
+    let mut cv = (db_to_pos(cue) * 2.0 - 1.0).clamp(-1.0, 1.0);
+    let (r, changed) = knob(ui, o + vec2(23.0, 80.0), 10.0, ui.scope_id().with("mcue_knob"), &mut cv);
     if r.drag_started() || r.double_clicked() {
         app.begin_gesture();
     }
     if changed {
+        cue = if r.double_clicked() { 0.0 } else { pos_to_db((cv + 1.0) * 0.5) };
         app.project.cue_gain_db = cue;
         app.dirty = true;
         app.send_now(Command::SetCueGain(daw_project::db_to_gain(cue)));
     }
+    let _ = cue_box;
+    ui.painter().circle_stroke(o + vec2(23.0, 80.0), 10.0, Stroke::new(1.5, CUE_BLUE));
+    r.on_hover_text(format!(
+        "Cue volume {} dB (metronome + preview)",
+        if cue <= METER_FLOOR_DB { "-inf".into() } else { format!("{cue:.1}") }
+    ));
 }
