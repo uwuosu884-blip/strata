@@ -26,6 +26,7 @@ OPTIONS:
         --host <NAME>     Audio backend: ALSA, JACK, PipeWire, PulseAudio (Linux),
                           WASAPI, ASIO (Windows), CoreAudio (macOS)
         --buffer <FRAMES> Request an audio buffer size, e.g. 128 or 256
+        --sample-rate <HZ> Request a sample rate, e.g. 44100 or 48000
         --output-device <NAME>  Audio output device (see --list-devices)
         --input-device <NAME>   Audio input device
         --null-audio      Run without a sound card (silent, for testing)
@@ -48,6 +49,14 @@ fn parse_args() -> Result<Option<Args>, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--host" => opts.host = Some(args.next().ok_or("--host needs a name")?),
+            "--sample-rate" => {
+                let v = args.next().ok_or("--sample-rate needs a number")?;
+                let hz: u32 = v.parse().map_err(|_| format!("invalid sample rate: {v}"))?;
+                if !(8_000..=384_000).contains(&hz) {
+                    return Err("--sample-rate must be between 8000 and 384000".into());
+                }
+                opts.sample_rate = Some(hz);
+            }
             "--buffer" => {
                 let v = args.next().ok_or("--buffer needs a number")?;
                 let frames: u32 = v.parse().map_err(|_| format!("invalid buffer size: {v}"))?;
@@ -103,6 +112,7 @@ fn main() -> ExitCode {
     let opts = audio::AudioOptions {
         host: args.audio.host.clone().or(settings.host.clone()),
         buffer_frames: args.audio.buffer_frames.or(settings.buffer_frames),
+        sample_rate: args.audio.sample_rate.or(settings.sample_rate),
         no_input: args.audio.no_input || settings.no_input,
         output_device: args.audio.output_device.clone().or(settings.output_device.clone()),
         input_device: args.audio.input_device.clone().or(settings.input_device.clone()),

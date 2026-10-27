@@ -16,6 +16,12 @@ pub enum Command {
     SetMetronome(bool),
     /// Linear gain, clamped to 0–4.
     SetMasterGain(f32),
+    /// Cue / preview volume (metronome + browser preview), linear.
+    SetCueGain(f32),
+    /// Device monitoring level, linear (not part of renders).
+    SetMonitorGain(f32),
+    /// Stop the browser preview.
+    StopPreview,
     /// Master pan / balance (-1..1, equal power, unity at centre).
     SetMasterPan(f32),
     /// Clip launch quantization in beats (0 = immediate).

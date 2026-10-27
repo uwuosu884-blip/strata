@@ -776,7 +776,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if !clip.contains_rect(act) {
         return;
     }
-    if rect_toggle(ui, act, ui.scope_id().with(("hact", id)), &format!("{}", t + 1), !mute, ACCENT, "Track activator (mute)").clicked() {
+    let act_col = if app.solo_silenced.get(t).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
+    if rect_toggle(ui, act, ui.scope_id().with(("hact", id)), &format!("{}", t + 1), !mute, act_col, "Track activator (mute)").clicked() {
         app.toggle_track_flag(t, TrackFlag::Mute, false);
     }
     let excl = !ui.input(|i| i.modifiers.command);
@@ -843,19 +844,29 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + io_w);
     let left = Rect::from_min_max(pos2(head.min.x, head.min.y + 2.0), pos2(split - io_w, head.max.y));
     let right = Rect::from_min_max(pos2(split, head.min.y + 2.0), head.max);
-    let col = Color32::from_gray(150);
-    p.rect_filled(left, CornerRadius::ZERO, col);
+    // Name area: click selects the master (device view), right-click = colour.
+    let sel = app.master_selected;
+    let col = rgb(app.project.master_color);
+    let title_bg = if sel { col } else { shade(col, 0.72) };
+    p.rect_filled(left, CornerRadius::ZERO, title_bg);
+    super::add_master_zone(ui, head);
+    let hr = ui.interact(left, ui.scope_id().with("master_head"), Sense::click());
+    if hr.clicked() {
+        app.select_master();
+    }
+    hr.context_menu(|ui| super::session::master_menu(app, ui));
     if io_w > 0.0 {
         let io = Rect::from_min_max(pos2(left.max.x, head.min.y + 2.0), pos2(split, head.max.y));
         ui.painter().rect_filled(io, CornerRadius::ZERO, Color32::from_gray(38));
         super::io::master_io_compact(app, ui, io);
     }
     let p = ui.painter();
-    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, Color32::from_gray(50));
+    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, Color32::from_gray(if sel { 74 } else { 50 }));
     let row1 = left.min.y + if collapsed { ((left.height() - BOX_H) * 0.5).max(0.0) } else { 3.0 };
     let cbtn = Rect::from_min_size(pos2(left.min.x + 3.0, row1 - 1.0), vec2(16.0, BOX_H + 2.0));
-    draw_collapse_button(p, cbtn.center(), collapsed, Color32::BLACK);
-    p.text(pos2(cbtn.max.x + 2.0, row1 + BOX_H * 0.5), Align2::LEFT_CENTER, "Master", FontId::proportional(12.0), Color32::BLACK);
+    let tc = text_on(title_bg);
+    draw_collapse_button(p, cbtn.center(), collapsed, tc);
+    p.text(pos2(cbtn.max.x + 2.0, row1 + BOX_H * 0.5), Align2::LEFT_CENTER, "Master", FontId::proportional(12.0), tc);
     let r = ui.interact(cbtn, ui.scope_id().with("master_collapse"), Sense::click());
     if r.clicked() {
         app.project.master_collapsed = !collapsed;
@@ -868,8 +879,20 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     let m = app.meter[0].max(app.meter[1]);
     p.rect_filled(Rect::from_min_max(pos2(mr.min.x, mr.max.y - mr.height() * lvl(m)), mr.max), CornerRadius::ZERO, PLAY_GREEN);
     let bx = right.min.x + 4.0;
+    // Row 1: volume · blue Cue; pan below them once the row is tall enough.
     let vr = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
-    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row1), vec2(PAN_W, BOX_H));
+    let cr = Rect::from_min_size(pos2(vr.max.x + GAP, row1), vec2(PAN_W, BOX_H));
+    let pr = Rect::from_min_size(pos2(bx, row1 + BOX_H + GAP), vec2(ACT_W, BOX_H));
+    let mut cue = app.project.cue_gain_db;
+    let (r, changed) = cue_box(ui, cr, ui.scope_id().with("mcue"), &mut cue);
+    if r.drag_started() || r.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed {
+        app.project.cue_gain_db = cue;
+        app.dirty = true;
+        app.send_now(daw_engine::Command::SetCueGain(daw_project::db_to_gain(cue)));
+    }
     let mut db = app.project.master_gain_db;
     let (r, changed) = volume_box(ui, vr, ui.scope_id().with("mvol"), &mut db);
     if r.drag_started() || r.double_clicked() {
@@ -879,6 +902,9 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
         app.project.master_gain_db = db;
         app.dirty = true;
         app.send_now(daw_engine::Command::SetMasterGain(daw_project::db_to_gain(db)));
+    }
+    if collapsed || pr.max.y > head.max.y - 2.0 {
+        return;
     }
     let mut pan = app.project.master_pan;
     let (r, changed) = pan_box(ui, pr, ui.scope_id().with("mpan"), &mut pan);
@@ -1058,7 +1084,17 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
         Gesture::Resize { orig, left, fpb, total } => {
             let min_len = if g.snap_on { g.grid.min(orig.clip.length) } else { 1.0 / 64.0 };
             let b = g.snap(g.beat_at(pos.x));
-            let new = if *left {
+            // Shift on a warped audio clip: stretch sample and clip together.
+            let end = orig.start + orig.clip.length;
+            let stretched = if ui.input(|i| i.modifiers.shift) {
+                let len = if *left { end - b.min(end - min_len) } else { b.max(orig.start + min_len) - orig.start };
+                daw_project::stretch_clip(orig, len.max(min_len), *left)
+            } else {
+                None
+            };
+            let new = if let Some(st) = stretched {
+                st
+            } else if *left {
                 daw_project::trim_left(orig, b, min_len, *fpb, *total)
             } else {
                 daw_project::trim_right(orig, b - orig.start, min_len, *fpb, *total)

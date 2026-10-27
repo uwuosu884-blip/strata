@@ -330,6 +330,23 @@ pub fn pos_to_db(t: f32) -> f32 {
 
 /// Live-style track volume box: shows dB, drag up/down (Shift = fine), double-click = 0 dB.
 pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
+    level_box(ui, rect, id, db, shade(ACCENT, 0.55), "Track volume (dB) · drag · double-click: 0 dB")
+}
+
+/// Cue colour (Live's blue preview/cue knob).
+pub const CUE_BLUE: Color32 = Color32::from_rgb(70, 130, 220);
+
+/// Master Cue volume: metronome + browser preview level (blue).
+pub fn cue_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
+    level_box(ui, rect, id, db, shade(CUE_BLUE, 0.8), "Cue volume: metronome + browser preview (dB) · drag · double-click: 0 dB")
+}
+
+/// Activator colour while another track's solo silences this one.
+pub fn solo_dimmed(c: Color32) -> Color32 {
+    shade(c, 0.42)
+}
+
+fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Color32, tip: &str) -> (egui::Response, bool) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut changed = false;
     let d = endless_drag(ui, &resp);
@@ -347,10 +364,10 @@ pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> 
     let p = ui.painter_at(rect);
     p.rect_filled(rect, CornerRadius::same(2), Color32::from_gray(30));
     let w = rect.width() * db_to_pos(*db);
-    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::same(2), shade(ACCENT, 0.55));
+    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::same(2), fill);
     let text = if *db <= METER_FLOOR_DB { "-inf".to_string() } else { format!("{db:.1}") };
     p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), Color32::from_gray(235));
-    (resp.on_hover_text("Track volume (dB) · drag · double-click: 0 dB"), changed)
+    (resp.on_hover_text(tip), changed)
 }
 
 /// Live-style pan box: 50L … C … 50R, drag up/down (Shift = fine), double-click = centre.

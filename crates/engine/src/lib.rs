@@ -50,6 +50,8 @@ const GARBAGE_QUEUE: usize = 64;
 const MIDI_QUEUE: usize = 1024;
 const RECORD_EVENT_QUEUE: usize = 8192;
 const MIDI_OUT_QUEUE: usize = 2048;
+const PREVIEW_QUEUE: usize = 8;
+const PREVIEW_GC_QUEUE: usize = 32;
 /// Depth limit for live MIDI forwarded between tracks.
 const MAX_MIDI_HOPS: u8 = 8;
 const NONE: u16 = u16::MAX;
@@ -88,6 +90,8 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
     let (gc_tx, gc_rx) = RingBuffer::new(GARBAGE_QUEUE);
     let (midi_tx, midi_rx) = RingBuffer::new(MIDI_QUEUE);
     let (mout_tx, mout_rx) = RingBuffer::new(MIDI_OUT_QUEUE);
+    let (pv_tx, pv_rx) = RingBuffer::new(PREVIEW_QUEUE);
+    let (pvgc_tx, pvgc_rx) = RingBuffer::new(PREVIEW_GC_QUEUE);
     // ~0.7 s of input buffering, ~10 s of (stereo) recording buffering.
     let (in_tx, in_rx) = RingBuffer::new((sr as usize).max(8192) * ich * 7 / 10);
     let (rec_ev_tx, rec_ev_rx) = RingBuffer::new(RECORD_EVENT_QUEUE);
@@ -114,6 +118,13 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         transport,
         metronome: Metronome::new(sr),
         master_gain: Smoothed::new(1.0, sr, 0.02),
+        cue_gain: Smoothed::new(1.0, sr, 0.02),
+        monitor_gain: Smoothed::new(1.0, sr, 0.02),
+        cue: StereoBuffer::new(mb),
+        previews: pv_rx,
+        preview_gc: pvgc_tx,
+        preview: None,
+        preview_pos: 0.0,
         master_pan: [Smoothed::new(1.0, sr, 0.02), Smoothed::new(1.0, sr, 0.02)],
         master: StereoBuffer::new(mb),
         in_ch: bufs(MAX_IO_CHANNELS),
@@ -147,6 +158,9 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         midi: Some(midi_tx),
         midi_out: Some(mout_rx),
         recorder: Some(RecorderPorts { events: rec_ev_rx, audio: rec_au_rx }),
+        previews: pv_tx,
+        preview_gc: pvgc_rx,
+        preview_keep: None,
     };
     (engine, handle)
 }
@@ -167,6 +181,17 @@ pub struct Engine {
     transport: Transport,
     metronome: Metronome,
     master_gain: Smoothed,
+    /// Cue (Live's Preview/Cue volume): metronome + browser preview, mixed
+    /// after the master gain so it never reaches Resampling.
+    cue_gain: Smoothed,
+    /// Monitoring level of the device output only (renders ignore it).
+    monitor_gain: Smoothed,
+    cue: StereoBuffer,
+    previews: Consumer<Arc<SampleBuffer>>,
+    /// Finished previews go back so the audio thread never frees them.
+    preview_gc: Producer<Arc<SampleBuffer>>,
+    preview: Option<Arc<SampleBuffer>>,
+    preview_pos: f64,
     /// Left/right pan gains of the master bus.
     master_pan: [Smoothed; 2],
     master: StereoBuffer,
@@ -228,6 +253,7 @@ impl Engine {
             return;
         }
         self.receive_songs();
+        self.receive_previews();
         self.drain_commands();
         self.drain_midi();
 
@@ -244,9 +270,46 @@ impl Engine {
             self.render(frames);
             let p = self.master.peak(frames);
             block_peak = [block_peak[0].max(p[0]), block_peak[1].max(p[1])];
+            self.apply_monitor_gain(frames);
             self.write_output(chunk, channels, frames);
         }
         self.publish(block_peak);
+    }
+
+    /// Monitoring level on everything that goes to the device (meters and
+    /// offline renders stay at the mix level).
+    fn apply_monitor_gain(&mut self, frames: usize) {
+        if !self.monitor_gain.is_settled_at(1.0) {
+            let used = self.out_used;
+            let (l, r) = self.master.channels_mut(frames);
+            for k in 0..frames {
+                let g = self.monitor_gain.next();
+                l[k] *= g;
+                r[k] *= g;
+                let mut u = used;
+                while u != 0 {
+                    let c = u.trailing_zeros() as usize;
+                    u &= u - 1;
+                    self.out_ch[c][k] *= g;
+                }
+            }
+        }
+    }
+
+    /// Next browser preview (replacing the current one).
+    fn receive_previews(&mut self) {
+        while let Ok(buf) = self.previews.pop() {
+            if let Some(old) = self.preview.replace(buf) {
+                self.recycle_preview(old);
+            }
+            self.preview_pos = 0.0;
+        }
+    }
+
+    fn recycle_preview(&mut self, old: Arc<SampleBuffer>) {
+        if let Err(rtrb::PushError::Full(old)) = self.preview_gc.push(old) {
+            std::mem::forget(old); // never free on the audio thread
+        }
     }
 
     /// Main bus into its output channel(s), plus tracks routed to Ext. Out.
@@ -482,6 +545,13 @@ impl Engine {
                 Command::SetBeatsPerBar(n) => self.transport.beats_per_bar = n.clamp(1, 32),
                 Command::SetMetronome(on) => self.metronome.enabled = on,
                 Command::SetMasterGain(g) => self.master_gain.set_target(clamp_gain(g)),
+                Command::SetCueGain(g) => self.cue_gain.set_target(clamp_gain(g)),
+                Command::SetMonitorGain(g) => self.monitor_gain.set_target(clamp_gain(g)),
+                Command::StopPreview => {
+                    if let Some(old) = self.preview.take() {
+                        self.recycle_preview(old);
+                    }
+                }
                 Command::SetMasterPan(pan) => {
                     let a = (if pan.is_finite() { pan.clamp(-1.0, 1.0) } else { 0.0 } + 1.0) * std::f32::consts::FRAC_PI_4;
                     self.master_pan[0].set_target(a.cos() * std::f32::consts::SQRT_2);
@@ -891,6 +961,7 @@ impl Engine {
 
     fn render(&mut self, frames: usize) {
         self.master.clear(frames);
+        self.cue.clear(frames);
         let mut done = 0;
         while done < frames {
             let mut n = frames - done;
@@ -953,6 +1024,9 @@ impl Engine {
         };
         let Self {
             master,
+            cue,
+            preview,
+            preview_pos,
             metronome,
             tracks,
             song,
@@ -972,18 +1046,36 @@ impl Engine {
         let (xl, xr) = res_x.range_mut(0, n);
         xl.fill(0.0);
         xr.fill(0.0);
+        let (cl, cr) = cue.range_mut(offset, n);
 
         if ctx.playing {
             for i in 0..n {
                 let s = metronome.next_sample(ctx.beat0 + i as f64 * bps, bps, transport.beats_per_bar);
-                ml[i] += s;
-                mr[i] += s;
+                cl[i] += s;
+                cr[i] += s;
             }
         } else {
             for i in 0..n {
                 let s = metronome.tail_sample();
-                ml[i] += s;
-                mr[i] += s;
+                cl[i] += s;
+                cr[i] += s;
+            }
+        }
+        // Browser preview (linear interpolation to the engine rate).
+        let mut preview_done = false;
+        if let Some(buf) = preview.as_deref() {
+            let step = buf.sample_rate as f64 / ctx.sr as f64;
+            let len = buf.len();
+            for i in 0..n {
+                let k = *preview_pos as usize;
+                if k + 1 >= len {
+                    preview_done = true;
+                    break;
+                }
+                let f = (*preview_pos - k as f64) as f32;
+                cl[i] += buf.left[k] + (buf.left[k + 1] - buf.left[k]) * f;
+                cr[i] += buf.right[k] + (buf.right[k + 1] - buf.right[k]) * f;
+                *preview_pos += step;
             }
         }
 
@@ -1163,14 +1255,19 @@ impl Engine {
             }
         }
 
+        let (cl, cr) = self.cue.range_mut(offset, n);
         for i in 0..n {
             let g = self.master_gain.next();
             let (gl, gr) = (g * self.master_pan[0].next(), g * self.master_pan[1].next());
             res_l[*res_pos] = (ml[i] - xl[i]) * gl;
             res_r[*res_pos] = (mr[i] - xr[i]) * gr;
             *res_pos = (*res_pos + 1) % rlen;
-            ml[i] *= gl;
-            mr[i] *= gr;
+            let c = self.cue_gain.next();
+            ml[i] = ml[i] * gl + cl[i] * c;
+            mr[i] = mr[i] * gr + cr[i] * c;
+        }
+        if preview_done && let Some(old) = self.preview.take() {
+            self.recycle_preview(old);
         }
 
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) && self.n_lanes > 0 {
@@ -1212,9 +1309,20 @@ pub struct EngineHandle {
     midi: Option<Producer<MidiInput>>,
     midi_out: Option<Consumer<MidiOutput>>,
     recorder: Option<RecorderPorts>,
+    previews: Producer<Arc<SampleBuffer>>,
+    preview_gc: Consumer<Arc<SampleBuffer>>,
+    /// Keeps the playing preview alive here too (the audio thread never drops the last ref).
+    preview_keep: Option<Arc<SampleBuffer>>,
 }
 
 impl EngineHandle {
+    /// Play a sample on the Cue bus (browser preview), replacing any current one.
+    pub fn preview(&mut self, buf: Arc<SampleBuffer>) -> bool {
+        self.collect_garbage();
+        self.preview_keep = Some(Arc::clone(&buf));
+        self.previews.push(buf).is_ok()
+    }
+
     /// Queue a command. Returns it back if the queue is full.
     pub fn send(&mut self, cmd: Command) -> Result<(), Command> {
         self.commands.push(cmd).map_err(|rtrb::PushError::Full(c)| c)
@@ -1231,6 +1339,10 @@ impl EngineHandle {
     pub fn collect_garbage(&mut self) -> usize {
         let mut n = 0;
         while let Ok(old) = self.garbage.pop() {
+            drop(old);
+            n += 1;
+        }
+        while let Ok(old) = self.preview_gc.pop() {
             drop(old);
             n += 1;
         }

@@ -88,7 +88,7 @@ impl eframe::App for DawApp {
             ctx.data_mut(|d| d.insert_temp(prev_id, self.selected_clip));
         }
         // Clip View / piano roll: resizable (own remembered size); Device View: fixed.
-        let panel = if self.detail_mode == DetailMode::Device {
+        let panel = if self.detail_mode == DetailMode::Device || self.master_selected {
             egui::Panel::bottom("detail_device").resizable(false).exact_size(DEVICE_VIEW_H)
         } else {
             egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
@@ -110,10 +110,22 @@ impl eframe::App for DawApp {
                 .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin::same(6)))
                 .show(ui, |ui| browser::browser(self, ui));
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG_DARK)).show(ui, |ui| match self.view {
-            View::Session => session::session_view(self, ui),
-            View::Arrangement => arrangement::arrangement_view(self, ui),
-        });
+        ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(master_zone_id()));
+        let central = egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(BG_DARK))
+            .show(ui, |ui| match self.view {
+                View::Session => session::session_view(self, ui),
+                View::Arrangement => arrangement::arrangement_view(self, ui),
+            })
+            .response
+            .rect;
+        // A press elsewhere in the main view deselects the master.
+        if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
+            && central.contains(p)
+            && !ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(master_zone_id())).is_some_and(|z| z.iter().any(|r| r.contains(p)))
+        {
+            self.master_selected = false;
+        }
 
         self.dialogs(&ctx);
         drag_preview(&ctx);
@@ -187,6 +199,16 @@ impl DawApp {
         }
         if cmd_shift(Key::R) {
             self.dialog = Some(Dialog::Export { path: self.default_path("wav"), scene: None, bits: 24 });
+        }
+        // Alt+Plus / Alt+Minus: track height (Live).
+        let alt = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::ALT, k));
+        if !typing {
+            if alt(Key::Plus) || alt(Key::Equals) {
+                self.zoom_heights_key(1.25);
+            }
+            if alt(Key::Minus) {
+                self.zoom_heights_key(0.8);
+            }
         }
         // Shift variants first: consume_key(COMMAND, k) also matches Ctrl+Shift+k.
         if cmd_shift(Key::T) {
@@ -436,18 +458,8 @@ impl DawApp {
                 if stereo_meter(ui, self.meter, self.clipped, egui::vec2(120.0, 18.0)).clicked() {
                     self.clipped = false;
                 }
-                let mut db = self.project.master_gain_db;
-                let r = ui
-                    .add(egui::DragValue::new(&mut db).range(-60.0..=6.0).speed(0.2).fixed_decimals(1).suffix(" dB"))
-                    .on_hover_text("Master volume");
-                if r.drag_started() {
-                    self.begin_gesture();
-                }
-                if r.changed() {
-                    self.project.master_gain_db = db;
-                    self.send_now(Command::SetMasterGain(db_to_gain(db)));
-                }
-                ui.label("Master");
+                self.output_box(ui);
+                ui.label("Out");
                 ui.separator();
                 if icon_button(ui, Icon::Arrangement, self.view == View::Arrangement, "Arrangement view (Tab)").clicked() {
                     self.view = View::Arrangement;
@@ -609,6 +621,56 @@ impl DawApp {
             Color32::WHITE,
         );
         resp.on_hover_text("Tempo: drag up/down or wheel (Shift = 0.01 steps), double-click to type");
+    }
+
+    /// DAW output (monitoring) level: added on top of the master on the device
+    /// only, never in renders / Resampling. Endless drag like the tempo box.
+    fn output_box(&mut self, ui: &mut egui::Ui) {
+        const MIN: f32 = -70.0; // shown as -inf
+        let id = ui.make_persistent_id("output_box");
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(66.0, 20.0), egui::Sense::click_and_drag());
+        let delta = endless_drag(ui, &resp);
+        let shift = ui.input(|i| i.modifiers.shift);
+        let cur = self.settings.output_gain_db;
+        if resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(id, cur));
+        }
+        let mut target = None;
+        if delta != egui::Vec2::ZERO {
+            let k = if shift { 0.01 } else { 0.1 };
+            let acc: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(cur) + (delta.x - delta.y) * k;
+            let acc = acc.clamp(MIN, 6.0);
+            ui.data_mut(|d| d.insert_temp(id, acc));
+            target = Some(if shift { acc } else { (acc * 10.0).round() / 10.0 });
+        }
+        if resp.hovered() {
+            let notch = wheel_notch(ui);
+            if notch != 0.0 {
+                target = Some(cur + notch * if shift { 0.1 } else { 0.5 });
+                ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            }
+        }
+        if resp.double_clicked() {
+            target = Some(0.0);
+        }
+        if let Some(t) = target {
+            let t = t.clamp(MIN, 6.0);
+            if t != cur {
+                self.settings.output_gain_db = t;
+                self.send_now(Command::SetMonitorGain(if t <= MIN { 0.0 } else { db_to_gain(t) }));
+            }
+        }
+        if resp.drag_stopped() || (target.is_some() && !resp.dragged()) {
+            self.save_settings();
+        }
+        let active = resp.hovered() || resp.dragged();
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { Color32::from_gray(60) } else { Color32::from_gray(48) });
+        let db = self.settings.output_gain_db;
+        let text = if db <= MIN { "-inf dB".to_string() } else { format!("{db:.1} dB") };
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), Color32::WHITE);
+        resp.on_hover_text(
+            "Output level (monitoring only, not part of renders): drag up/down or wheel (Shift = fine), double-click = 0 dB",
+        );
     }
 
     /// Time signature (N/4): drag up/down or wheel; double-click resets to 4/4.
@@ -962,6 +1024,15 @@ impl DawApp {
 
 /// -1 / 0 / +1 from this frame's mouse-wheel events (either axis: Shift turns
 /// the wheel into horizontal scroll).
+/// Screen area of the master header / strip this frame (presses there keep it selected).
+pub fn master_zone_id() -> egui::Id {
+    egui::Id::unique("master_zone")
+}
+
+pub fn add_master_zone(ui: &egui::Ui, r: egui::Rect) {
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Rect>>(master_zone_id()).push(r));
+}
+
 fn wheel_notch(ui: &egui::Ui) -> f32 {
     let d: f32 = ui.input(|i| {
         i.events

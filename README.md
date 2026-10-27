@@ -17,6 +17,9 @@ from source (see below).
 
 - **Session view**: clip grid, scene launching with launch quantization, and
   mixer strips (fader, pan, mute, solo, arm, monitor).
+- **Master**: device view (click its header), colour, pan, blue Cue volume for
+  metronome + browser preview, and a top-bar output level that only affects
+  monitoring, never renders.
 - **Arrangement view**: timeline with loop brace. Clips can be moved,
   resized and duplicated, and recording replaces what was in that region.
 - **Instruments**: 2-oscillator synth with filter and presets, sampler, and a
@@ -108,7 +111,7 @@ cargo build --profile dist -p daw-app -p daw-render   # fat LTO, output in targe
 ## Running
 
 ```
-daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
+daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--sample-rate HZ] [--list-devices]
     [--output-device NAME] [--input-device NAME]
     [--null-audio] [--no-input] [--no-midi]
 ```
@@ -131,7 +134,8 @@ daw [PROJECT.dawproj] [--host NAME] [--buffer FRAMES] [--list-devices]
 | Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) | Undo / redo |
 | Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N | Save / save as / open / new |
 | Ctrl+Shift+R | Export audio |
-| Ctrl+T / Ctrl+Shift+T | Add audio / MIDI track |
+| Ctrl+T / Ctrl+Shift+T | Add audio / MIDI track (below the selected track) |
+| Alt+Plus / Alt+Minus | Taller / shorter selected tracks (or the master) |
 | Ctrl+G / Ctrl+Shift+G | Group selected tracks / ungroup |
 | Ctrl+L | Loop the selected region (or clips); again: loop off; nothing selected: previous loop back on |
 | Ctrl+J | Consolidate clips (audio is rendered to a new sample) |
@@ -158,7 +162,8 @@ or use the ⊳ header button, to collapse a
 track to clip title bars. Drag headers to reorder tracks or move them into
 or out of groups. Drag in the ruler to set the loop range, drag the loop
 brace or its edges to adjust it, and click it to switch looping on or off. Hold
-Alt to ignore the grid. Right-click → Grid sets the grid size.
+Alt to ignore the grid. Right-click → Grid sets the grid size. Shift+drag a
+warped audio clip's edge to stretch the sample with the clip.
 
 Piano roll: double-click adds or removes notes (new notes use the last length
 and velocity you set), drag on empty space to select with a rubber band

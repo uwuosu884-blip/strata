@@ -19,6 +19,10 @@ pub fn detail_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     let full = ui.max_rect().size();
     ui.set_min_size(full);
     ui.set_max_size(full);
+    if app.master_selected {
+        master_device(app, ui);
+        return;
+    }
     if app.project.tracks.is_empty() {
         ui.centered_and_justified(|ui| {
             ui.label(egui::RichText::new("Add a track: Ctrl+T (audio) or Ctrl+Shift+T (MIDI)").color(Color32::GRAY))
@@ -787,6 +791,21 @@ fn c_or(c: Color32) -> Color32 {
 }
 
 // ============================ Devices ============================
+
+/// Master track device view: an (empty) audio effect chain, ready for effects.
+fn master_device(app: &mut DawApp, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
+        ui.painter().rect_filled(r, CornerRadius::same(2), rgb(app.project.master_color));
+        ui.label(egui::RichText::new("Master").strong());
+        ui.label(egui::RichText::new("Audio effect chain").color(Color32::GRAY));
+    });
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), (ui.available_height() - 4.0).max(60.0)), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(4), Color32::from_gray(34));
+    p.rect_stroke(rect.shrink(6.0), CornerRadius::same(3), Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
+    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", FontId::proportional(14.0), Color32::from_gray(120));
+}
 
 fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     let t = app.selected_track;

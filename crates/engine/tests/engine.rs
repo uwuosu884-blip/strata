@@ -138,8 +138,14 @@ fn metronome_off_and_zero_gain_are_silent() {
     h.send(Command::Play).unwrap();
     assert!(render(&mut e, 48_000, 512).iter().all(|&s| s == 0.0));
 
+    // The metronome sits on the Cue bus: master gain doesn't touch it, Cue does.
     let (mut e, mut h) = engine();
     h.send(Command::SetMasterGain(0.0)).unwrap();
+    h.send(Command::Play).unwrap();
+    assert!(render(&mut e, 48_000, 512).iter().any(|&s| s.abs() > 0.05), "click survives master = 0");
+
+    let (mut e, mut h) = engine();
+    h.send(Command::SetCueGain(0.0)).unwrap();
     h.send(Command::Play).unwrap();
     let out = render(&mut e, 48_000, 512);
     // The gain glides to zero (≈14 time constants of 20 ms ≈ 280 ms), so only the
@@ -184,4 +190,34 @@ fn full_command_queue_returns_command() {
         assert!(sent <= 100_000, "queue never filled");
     }
     assert_eq!(h.send(Command::Stop), Err(Command::Stop));
+}
+
+#[test]
+fn monitor_gain_scales_device_output_only_and_preview_plays_on_cue() {
+    use daw_engine::SampleBuffer;
+    use std::sync::Arc;
+    let (mut e, mut h) = engine();
+    h.send(Command::Play).unwrap();
+    let a = render(&mut e, 4_800, 480);
+    let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    let p0 = peak(&a);
+    assert!(p0 > 0.05);
+    // -6 dB monitor: device output halves; the meter (status peak) is pre-monitor.
+    let (mut e, mut h) = engine();
+    h.send(Command::SetMonitorGain(0.5)).unwrap();
+    render(&mut e, 48_000, 480); // settle
+    h.send(Command::Rewind).unwrap();
+    h.send(Command::Play).unwrap();
+    let b = render(&mut e, 4_800, 480);
+    assert!((peak(&b) - p0 * 0.5).abs() < 0.02, "{} vs {}", peak(&b), p0);
+    assert!(h.snapshot().peak[0] > p0 * 0.9, "meters show the mix level");
+
+    // Preview: plays once while stopped, then ends and is handed back.
+    let (mut e, mut h) = engine();
+    let buf = Arc::new(SampleBuffer::new("dc", 24_000, vec![0.25; 2_400], vec![0.25; 2_400]));
+    assert!(h.preview(buf));
+    let out = render(&mut e, 9_600, 480);
+    assert!((out[200] - 0.25).abs() < 1e-4);
+    assert!(out[2 * 5_000..].iter().all(|&s| s == 0.0), "2 400 frames at 24 kHz = 4 800 at 48 kHz");
+    assert!(h.collect_garbage() >= 1);
 }

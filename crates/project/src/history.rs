@@ -61,6 +61,11 @@ impl History {
         !self.redo.is_empty()
     }
 
+    /// Apply `f` to every stored snapshot (e.g. a sample-rate change).
+    pub fn for_each_snapshot(&mut self, mut f: impl FnMut(&mut Project)) {
+        self.undo.iter_mut().chain(self.redo.iter_mut()).for_each(&mut f);
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();

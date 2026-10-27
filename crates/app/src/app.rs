@@ -227,6 +227,13 @@ pub struct DawApp {
     pub pr_audition: bool,
     pub browser_dir: PathBuf,
     pub show_browser: bool,
+    /// Master track selected (its device view shows in the detail panel).
+    pub master_selected: bool,
+    /// Per track: silenced only by another track's solo (dimmed activator).
+    pub solo_silenced: Vec<bool>,
+    /// Browser preview: on/off and the key currently playing.
+    pub preview_on: bool,
+    pub preview: Option<String>,
     /// Clip View state (tabs, MIDI Tools, envelope / MPE lanes).
     pub cv: crate::ui::clip::ClipView,
 }
@@ -328,7 +335,12 @@ impl DawApp {
             pr_audition: true,
             browser_dir,
             show_browser: true,
+            master_selected: false,
+            solo_silenced: Vec::new(),
+            preview_on: true,
+            preview: None,
         };
+        app.adopt_project_rate();
         app.sync_globals();
         app
     }
@@ -365,6 +377,8 @@ impl DawApp {
             Command::SetTempoFollow(p.tempo_follow),
             Command::SetMasterGain(p.master_gain_linear()),
             Command::SetMasterPan(p.master_pan),
+            Command::SetCueGain(daw_project::db_to_gain(p.cue_gain_db)),
+            Command::SetMonitorGain(daw_project::db_to_gain(self.settings.output_gain_db)),
             Command::SetLaunchQuantize(p.launch_quantize),
             Command::SetLoop { enabled: p.loop_enabled, start: p.loop_start, end: p.loop_end },
         ];
@@ -373,8 +387,38 @@ impl DawApp {
         }
     }
 
+    /// Browser preview on the Cue bus (starts once the sample has loaded).
+    pub fn preview_sample(&mut self, key: &str) {
+        self.preview = Some(key.to_string());
+        self.poll_preview();
+    }
+
+    pub fn stop_preview(&mut self) {
+        self.preview = None;
+        self.send_now(Command::StopPreview);
+    }
+
+    fn poll_preview(&mut self) {
+        let Some(key) = self.preview.clone() else { return };
+        if let Some(buf) = self.cache.get(&key) {
+            self.preview = None;
+            self.engine.preview(buf);
+        } else if self.cache.error(&key).is_some() {
+            self.preview = None;
+        }
+    }
+
+    /// Select the master track: its device view opens in the detail panel.
+    pub fn select_master(&mut self) {
+        self.clear_structure_selection();
+        self.master_selected = true;
+        self.detail_mode = DetailMode::Device;
+    }
+
     /// Per-frame housekeeping before drawing.
     pub fn begin_frame(&mut self) {
+        self.solo_silenced = self.project.solo_silenced();
+        self.poll_preview();
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
@@ -499,6 +543,7 @@ impl DawApp {
         self.audio = audio;
         self.engine = engine;
         self.audio_opts = opts;
+        self.adopt_engine_rate();
         self.slots = RtSlots::default();
         self.needs_compile = true;
         self.auto_arm = u16::MAX - 1;
@@ -536,6 +581,7 @@ impl DawApp {
         AudioOptions {
             host: s.host.clone(),
             buffer_frames: s.buffer_frames,
+            sample_rate: s.sample_rate,
             force_null: self.audio_opts.force_null,
             no_input: s.no_input,
             output_device: s.output_device.clone(),
@@ -630,8 +676,15 @@ impl DawApp {
         }
     }
 
+    /// New tracks go below the selected track (the end when the master is selected).
     pub fn add_track(&mut self, kind: TrackKind) {
-        let at = self.edit(|p| p.add_track(kind));
+        let after = if self.master_selected || self.project.tracks.is_empty() {
+            None
+        } else {
+            Some(self.track_sel.iter().copied().max().unwrap_or(self.selected_track))
+        };
+        self.master_selected = false;
+        let at = self.edit(|p| p.insert_track(kind, after));
         self.clear_structure_selection();
         self.selected_track = at;
     }
@@ -1150,11 +1203,39 @@ impl DawApp {
         }
     }
 
+    /// Device rate changed: resample the cache and move every stored sample
+    /// position (project + undo history) to the new rate.
+    pub fn adopt_engine_rate(&mut self) {
+        let (old, sr) = (self.cache.sample_rate(), self.audio.info.sample_rate);
+        if old == sr {
+            return;
+        }
+        self.cache.change_rate(sr);
+        let fix = |p: &mut Project| {
+            p.rescale_frames(old, sr);
+            p.frame_rate = sr;
+        };
+        fix(&mut self.project);
+        self.history.for_each_snapshot(fix);
+        self.preview = None;
+    }
+
+    /// Project positions were saved at `frame_rate`: bring them to the cache rate.
+    fn adopt_project_rate(&mut self) {
+        let sr = self.cache.sample_rate();
+        let p = &mut self.project;
+        if p.frame_rate != 0 && p.frame_rate != sr {
+            p.rescale_frames(p.frame_rate, sr);
+        }
+        p.frame_rate = sr;
+    }
+
     fn replace_project(&mut self, p: Project, path: Option<PathBuf>) {
         self.send_now(Command::Stop);
         self.send_now(Command::StopAllClips);
         self.send_now(Command::Rewind);
         self.project = p;
+        self.adopt_project_rate();
         self.path = path;
         self.history.clear();
         self.dirty = false;

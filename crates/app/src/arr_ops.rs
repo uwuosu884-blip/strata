@@ -145,7 +145,7 @@ impl DawApp {
     }
 
     pub fn is_track_selected(&self, t: usize) -> bool {
-        if self.sel_hidden() {
+        if self.sel_hidden() || self.master_selected {
             false
         } else if self.track_sel.is_empty() {
             self.selected_track == t
@@ -628,6 +628,32 @@ impl DawApp {
     /// selection when it is part of it), or all tracks when none is touched.
     /// Zooming out past the minimum collapses lanes to their clip title bars;
     /// zooming in expands them again.
+    /// Alt+Plus / Alt+Minus: zoom the selected tracks (all when none), or the
+    /// master row when the master is selected.
+    pub fn zoom_heights_key(&mut self, factor: f32) {
+        if self.master_selected {
+            let p = &mut self.project;
+            let h = if p.master_height > 0.0 { p.master_height } else { self.arr_row_h };
+            if p.master_collapsed {
+                if factor > 1.0 {
+                    p.master_collapsed = false;
+                    p.master_height = ROW_MIN;
+                }
+            } else if h * factor < ROW_MIN {
+                p.master_collapsed = true;
+            } else {
+                p.master_height = (h * factor).min(ROW_MAX);
+            }
+            self.dirty = true;
+            return;
+        }
+        let sel: Vec<usize> = if self.track_sel.is_empty() { vec![self.selected_track] } else { self.track_sel.clone() };
+        let saved = (self.touched_track, std::mem::replace(&mut self.track_sel, sel.clone()));
+        self.touched_track = sel.first().copied().filter(|_| !self.project.tracks.is_empty());
+        self.zoom_track_heights(factor);
+        (self.touched_track, self.track_sel) = saved;
+    }
+
     pub fn zoom_track_heights(&mut self, factor: f32) {
         let all = self.touched_track.is_none_or(|t| t >= self.project.tracks.len());
         let targets: Vec<usize> = match self.touched_track {
@@ -1071,6 +1097,54 @@ mod app_tests {
             a.project.add_track(TrackKind::Midi);
         }
         a
+    }
+
+    #[test]
+    fn new_tracks_go_below_the_selection_master_selects_alone() {
+        let mut a = tracks(3);
+        a.selected_track = 0;
+        a.add_track(TrackKind::Audio);
+        assert_eq!(a.selected_track, 1);
+        assert_eq!(a.project.tracks[1].kind, TrackKind::Audio);
+        a.select_master();
+        assert!(a.master_selected && !a.is_track_selected(a.selected_track));
+        a.add_track(TrackKind::Midi); // master selected: appended
+        assert_eq!(a.selected_track, 4);
+        assert!(!a.master_selected);
+        // Alt+Plus on the master expands its row; on tracks it grows the selection.
+        a.select_master();
+        a.zoom_heights_key(1.25);
+        assert!(!a.project.master_collapsed);
+        a.master_selected = false;
+        let h = a.track_height(2);
+        a.selected_track = 2;
+        a.zoom_heights_key(1.25);
+        assert!(a.track_height(2) > h && (a.track_height(1) - h).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sample_rate_change_moves_sample_positions() {
+        let mut a = tracks(1);
+        assert_eq!((a.cache.sample_rate(), a.project.frame_rate), (48_000, 48_000));
+        let mut c = Clip {
+            length: 4.0,
+            content: ClipContent::Audio { sample: "factory:Kick".into(), offset_frames: 4_800.0, warp_bpm: Some(120.0), gain_db: 0.0 },
+            ..Default::default()
+        };
+        c.audio.markers = vec![daw_project::clipx::WarpMarker { beat: 1.0, frame: 48_000.0 }];
+        a.project.tracks[0].arrangement.push(ArrangementClip { start: 0.0, clip: c });
+        a.edit(|p| p.tracks[0].name = "x".into()); // an undo snapshot at 48 kHz
+        a.restart_audio(crate::audio::AudioOptions { force_null: true, no_input: true, sample_rate: Some(44_100), ..Default::default() });
+        assert_eq!((a.audio.info.sample_rate, a.cache.sample_rate(), a.project.frame_rate), (44_100, 44_100, 44_100));
+        let off = |a: &DawApp| match a.project.tracks[0].arrangement[0].clip.content {
+            ClipContent::Audio { offset_frames, .. } => offset_frames,
+            _ => unreachable!(),
+        };
+        assert!((off(&a) - 4_410.0).abs() < 1e-9);
+        assert!((a.project.tracks[0].arrangement[0].clip.audio.markers[0].frame - 44_100.0).abs() < 1e-9);
+        a.undo();
+        assert!((off(&a) - 4_410.0).abs() < 1e-9, "undo history was rescaled too");
+        assert_eq!(a.project.frame_rate, 44_100);
     }
 
     #[test]

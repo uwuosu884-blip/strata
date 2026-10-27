@@ -177,6 +177,23 @@ impl SampleCache {
         self.sample_rate
     }
 
+    /// Switch to a new rate: in-memory recordings are resampled, everything
+    /// else reloads lazily from its source at the new rate.
+    pub fn change_rate(&mut self, sr: u32) {
+        if sr == self.sample_rate || sr == 0 {
+            return;
+        }
+        let mut new = SampleCache::new(sr);
+        for (k, b) in self.map.drain() {
+            if k.starts_with(RECORDING_PREFIX)
+                && let Ok(nb) = resample((*b).clone(), sr)
+            {
+                new.map.insert(k, Arc::new(nb));
+            }
+        }
+        *self = new;
+    }
+
     /// Get a sample, starting a background load if needed. Factory sounds
     /// are generated synchronously (they take < 1 ms).
     pub fn get(&mut self, key: &str) -> Option<Arc<SampleBuffer>> {

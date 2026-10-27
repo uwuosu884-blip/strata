@@ -68,6 +68,17 @@ pub fn render_project(p: &Project, opts: &ExportOptions) -> Result<Rendered, Str
 
 /// Render using an existing cache (the app passes its own; recordings live there).
 pub fn render_with_cache(p: &Project, cache: &mut SampleCache, opts: &ExportOptions) -> Result<Rendered, String> {
+    // Sample positions follow the cache's (= sample buffers') rate.
+    let scaled;
+    let p = if p.frame_rate != 0 && p.frame_rate != cache.sample_rate() {
+        let mut q = p.clone();
+        q.rescale_frames(p.frame_rate, cache.sample_rate());
+        q.frame_rate = cache.sample_rate();
+        scaled = q;
+        &scaled
+    } else {
+        p
+    };
     let mut warnings = Vec::new();
     for key in sample_refs(p) {
         if cache.peek(&key).is_none()

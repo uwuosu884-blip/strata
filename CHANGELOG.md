@@ -10,6 +10,42 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.6.1] - 2026-10-27
+
+### Added
+- **Master device view**: clicking the master header (Arrangement) or the
+  master column header / strip (Session) selects the master and shows its
+  (empty) audio effect chain, ready for effects.
+- **Cue volume** (Live's Preview/Cue): a blue knob right of the master volume
+  controls the metronome and browser preview. The Cue bus is mixed after the
+  master gain, so it never reaches Resampling. The master pan sits under the
+  two knobs once the master row is expanded; the Session master strip has pan,
+  fader and Cue.
+- **Browser preview**: with "Preview" on, clicking a factory sound or a file
+  plays it on the Cue bus (loads in the background, resampled on the fly).
+- **Output level** in the top bar: a monitoring gain on top of the master that
+  only changes what you hear and never what gets rendered (master -0.1 dB plus
+  output -6 dB = -6.1 dB heard, -0.1 dB exported). Endless drag like the
+  tempo box (hidden cursor), wheel, double-click = 0 dB. Saved in Settings.
+- **Sample rate** in Settings > Audio (Default / 44.1–192 kHz) and
+  `--sample-rate HZ`. On a change, recordings still in memory are resampled,
+  every sample position (clip offsets, warp markers, transients, undo history)
+  moves to the new rate, and projects store their `frame_rate` so they open
+  correctly at any rate (also in `daw-render`).
+- **Alt+Plus / Alt+Minus** zoom the selected tracks' height (all tracks when
+  none are selected, the master row when the master is selected).
+- **Master colour**: right-click the master header to pick a colour.
+- **Shift+drag of a clip edge** on a warped audio clip stretches the sample
+  together with the clip (warp markers, loop, start and envelopes scale too).
+
+### Changed
+- Soloing dims the orange activators of the tracks the solo silences (their
+  group buses and sources stay lit, matching what the engine plays).
+- New tracks (Ctrl+T / Ctrl+Shift+T, menus) are inserted below the selected
+  track, inside its group; a selected group gets the new track after its
+  last child.
+- The metronome now follows the Cue volume instead of the master volume.
+
 ## [0.6.0] - 2026-10-26
 
 ### Added
@@ -353,7 +389,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/uwuosu884-blip/strata/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/uwuosu884-blip/strata/compare/v0.3.0...v0.4.0

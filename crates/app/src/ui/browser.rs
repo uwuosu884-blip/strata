@@ -20,6 +20,15 @@ fn item(ui: &mut egui::Ui, label: &str, payload: DragItem, color: Color32) -> eg
 pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new("Browser").strong());
     ui.label(egui::RichText::new("Drag items onto tracks, slots or devices").small().color(Color32::GRAY));
+    ui.horizontal(|ui| {
+        let r = ui.selectable_label(app.preview_on, "Preview").on_hover_text("Click a sound to hear it on the Cue bus (master Cue volume)");
+        if r.clicked() {
+            app.preview_on = !app.preview_on;
+            if !app.preview_on {
+                app.stop_preview();
+            }
+        }
+    });
     ui.separator();
     egui::ScrollArea::vertical().id_salt("browser").auto_shrink([false, false]).show(ui, |ui| {
         egui::CollapsingHeader::new("Instruments").default_open(true).show(ui, |ui| {
@@ -30,12 +39,11 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
         });
         egui::CollapsingHeader::new("Factory Sounds").default_open(true).show(ui, |ui| {
             for n in daw_core::factory::NAMES {
-                item(
-                    ui,
-                    n,
-                    DragItem::Sample { key: format!("{}{n}", daw_project::FACTORY_PREFIX), name: n.to_string() },
-                    Color32::from_rgb(150, 200, 255),
-                );
+                let key = format!("{}{n}", daw_project::FACTORY_PREFIX);
+                let r = item(ui, n, DragItem::Sample { key: key.clone(), name: n.to_string() }, Color32::from_rgb(150, 200, 255));
+                if r.clicked() && app.preview_on {
+                    app.preview_sample(&key);
+                }
             }
         });
         egui::CollapsingHeader::new("Files").default_open(true).show(ui, |ui| files(app, ui));
@@ -99,6 +107,9 @@ fn files(app: &mut DawApp, ui: &mut egui::Ui) {
             let key = path.to_string_lossy().into_owned();
             let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name.clone());
             let r = item(ui, &name, DragItem::Sample { key: key.clone(), name: stem }, Color32::from_rgb(150, 200, 255));
+            if r.clicked() && app.preview_on {
+                app.preview_sample(&key);
+            }
             if let Some(e) = app.cache.error(&key) {
                 r.on_hover_text(format!("Failed: {e}"));
             }

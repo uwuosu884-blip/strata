@@ -77,9 +77,17 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
             let _ = avail;
             ui.vertical(|ui| {
                 ui.set_width(COL_W);
-                let (rect, _) = ui.allocate_exact_size(vec2(COL_W, HEADER_H), Sense::hover());
-                ui.painter().rect_filled(rect, CornerRadius::same(2), Color32::from_gray(60));
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Master", FontId::proportional(12.0), Color32::WHITE);
+                // Master header: click = master device view, right-click = colour.
+                let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, HEADER_H), Sense::click());
+                super::add_master_zone(ui, rect);
+                let col = rgb(app.project.master_color);
+                let bg = if app.master_selected { col } else { shade(col, 0.6) };
+                ui.painter().rect_filled(rect, CornerRadius::same(2), bg);
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Master", FontId::proportional(12.0), text_on(bg));
+                if resp.clicked() {
+                    app.select_master();
+                }
+                resp.context_menu(|ui| master_menu(app, ui));
                 for s in 0..app.project.scenes.len() {
                     scene_button(app, ui, s);
                 }
@@ -169,6 +177,23 @@ pub fn draw_fold_arrow(p: &egui::Painter, c: egui::Pos2, folded: bool, col: Colo
         vec![c + vec2(-4.5, -3.0), c + vec2(4.5, -3.0), c + vec2(0.0, 4.0)]
     };
     p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+}
+
+/// Master header right-click: colour (Live lets the Main track be recoloured).
+pub fn master_menu(app: &mut DawApp, ui: &mut egui::Ui) {
+    ui.label(egui::RichText::new("Master colour").small().color(Color32::GRAY));
+    ui.horizontal(|ui| {
+        for c in daw_project::PALETTE.into_iter().chain([[150, 150, 150]]) {
+            let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::click());
+            ui.painter().rect_filled(rect, CornerRadius::same(2), rgb(c));
+            if app.project.master_color == c {
+                ui.painter().rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
+            }
+            if resp.clicked() {
+                app.edit(|p| p.master_color = c);
+            }
+        }
+    });
 }
 
 pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
@@ -571,7 +596,8 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     let excl = !ctrl;
     ui.horizontal(|ui| {
         ui.add_space(6.0);
-        if toggle_box(ui, &format!("{}", t + 1), !mute, ACCENT, "Track activator (mute)").clicked() {
+        let act_col = if app.solo_silenced.get(t).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
+        if toggle_box(ui, &format!("{}", t + 1), !mute, act_col, "Track activator (mute)").clicked() {
             app.toggle_track_flag(t, TrackFlag::Mute, false);
         }
         if toggle_box(ui, "S", solo, Color32::from_rgb(80, 160, 255), "Solo (Ctrl: add)").clicked() {
@@ -599,11 +625,25 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
 }
 
 fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(vec2(COL_W, MIXER_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_gray(42));
+    let (rect, resp) = ui.allocate_exact_size(vec2(COL_W, MIXER_H), Sense::click());
+    super::add_master_zone(ui, rect);
+    if resp.clicked() {
+        app.select_master();
+    }
+    ui.painter().rect_filled(rect, CornerRadius::same(3), Color32::from_gray(if app.master_selected { 52 } else { 42 }));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Center)));
     let ui = &mut child;
-    ui.add_space(17.0);
+    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+    let mut pan = app.project.master_pan;
+    let (r, changed) = hslider(ui, &mut pan, -1.0..=1.0, 0.0, vec2(COL_W - 16.0, 14.0), pan_label);
+    if r.drag_started() || r.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed {
+        app.project.master_pan = pan;
+        app.dirty = true;
+        app.send_now(Command::SetMasterPan(pan));
+    }
     ui.horizontal(|ui| {
         ui.add_space(14.0);
         let (mrect, _) = ui.allocate_exact_size(vec2(14.0, 110.0), Sense::hover());
@@ -619,4 +659,16 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui) {
         }
         ui.label(egui::RichText::new(if db <= -60.0 { "-inf".into() } else { format!("{db:.1}") }).small());
     });
+    // Blue Cue volume (metronome + browser preview).
+    let (cr, _) = ui.allocate_exact_size(vec2(COL_W - 16.0, 15.0), Sense::hover());
+    let mut cue = app.project.cue_gain_db;
+    let (r, changed) = cue_box(ui, cr, ui.scope_id().with("scue"), &mut cue);
+    if r.drag_started() || r.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed {
+        app.project.cue_gain_db = cue;
+        app.dirty = true;
+        app.send_now(Command::SetCueGain(daw_project::db_to_gain(cue)));
+    }
 }

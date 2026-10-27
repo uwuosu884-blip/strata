@@ -7,6 +7,8 @@ mod arrange;
 pub mod clipx;
 mod history;
 pub mod miditools;
+mod mixer;
+pub use mixer::stretch_clip;
 mod routing;
 mod tracks;
 pub use arrange::{trim_left, trim_right};
@@ -72,6 +74,13 @@ pub struct Project {
     pub groove_amount: f32,
     /// Follow tempo leaders / tempo automation (Live: "Unfollow" when off).
     pub tempo_follow: bool,
+    /// Master track colour (Live: changeable like any track).
+    pub master_color: [u8; 3],
+    /// Master Cue volume (metronome + browser preview), dB.
+    pub cue_gain_db: f32,
+    /// Sample rate that `offset_frames` / warp markers / transients refer to
+    /// (0 = unknown, older files: assume the engine rate).
+    pub frame_rate: u32,
 }
 
 impl Default for Project {
@@ -98,6 +107,9 @@ impl Default for Project {
             grooves: Vec::new(),
             groove_amount: 1.0,
             tempo_follow: true,
+            master_color: [150, 150, 150],
+            cue_gain_db: 0.0,
+            frame_rate: 0,
         }
     }
 }
@@ -618,19 +630,9 @@ impl Project {
         }
     }
 
+    /// Append a track (see `insert_track` for "below the selection").
     pub fn add_track(&mut self, kind: TrackKind) -> usize {
-        let id = self.alloc_id();
-        let n = self.tracks.len();
-        let name = match kind {
-            TrackKind::Audio => "# Audio",
-            TrackKind::Midi => "# MIDI",
-            TrackKind::Group => "# Group",
-        }
-        .to_string();
-        // New MIDI tracks start empty (drop an instrument from the browser).
-        self.tracks.push(Track { id, name, kind, color: PALETTE[n % PALETTE.len()], ..Default::default() });
-        self.normalize();
-        n
+        self.insert_track(kind, None)
     }
 
     /// Duplicate a track (groups are duplicated with all their children).

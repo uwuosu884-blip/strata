@@ -29,6 +29,12 @@ impl Smoothed {
 }
 
 impl Smoothed {
+    /// Settled exactly at `v` (lets callers skip per-sample work).
+    #[inline]
+    pub fn is_settled_at(&self, v: f32) -> bool {
+        self.current == v && self.target == v
+    }
+
     /// Advance `n` samples without producing output (exact for a one-pole).
     pub fn skip(&mut self, n: usize) {
         if self.current == self.target || n == 0 {

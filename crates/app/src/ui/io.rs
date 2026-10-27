@@ -683,6 +683,23 @@ fn audio_settings(app: &mut DawApp, ui: &mut egui::Ui) {
                 }
             });
         ui.end_row();
+        // Sample rate: recordings in memory are resampled, sample positions move along.
+        ui.label("Sample Rate");
+        let cur = app.settings.sample_rate;
+        let now = app.audio.info.sample_rate;
+        egui::ComboBox::from_id_salt("set_sr")
+            .width(300.0)
+            .selected_text(cur.map_or_else(|| format!("Default ({now} Hz)"), |r| format!("{r} Hz")))
+            .show_ui(ui, |ui| {
+                for v in [None, Some(44_100), Some(48_000), Some(88_200), Some(96_000), Some(176_400), Some(192_000)] {
+                    let text = v.map_or_else(|| "Default".to_string(), |r| format!("{r} Hz"));
+                    if ui.selectable_label(cur == v, text).clicked() && cur != v {
+                        app.settings.sample_rate = v;
+                        changed = true;
+                    }
+                }
+            });
+        ui.end_row();
     });
     let info = &app.audio.info;
     let sr = info.sample_rate.max(1) as f32;

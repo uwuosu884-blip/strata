@@ -86,6 +86,10 @@ pub struct Settings {
     pub input_device: Option<String>,
     pub no_input: bool,
     pub buffer_frames: Option<u32>,
+    /// Preferences sample rate (None = device default).
+    pub sample_rate: Option<u32>,
+    /// Top-bar output (monitoring) level in dB; never part of renders.
+    pub output_gain_db: f32,
     /// Channel configuration per device ("in:<name>" / "out:<name>").
     pub channels: HashMap<String, ChannelConfig>,
     /// MIDI "Track" switches that differ from the default (inputs on except

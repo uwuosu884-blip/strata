@@ -31,6 +31,8 @@ pub struct AudioOptions {
     /// Output / input device by name (None = the host's default).
     pub output_device: Option<String>,
     pub input_device: Option<String>,
+    /// Requested sample rate (None = the device's default).
+    pub sample_rate: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,19 +114,20 @@ pub fn start(opts: &AudioOptions) -> (AudioSystem, EngineHandle) {
             }
             Err(reason) => {
                 eprintln!("audio: {reason}; falling back to silent null output");
-                return start_null(reason, health);
+                return start_null(reason, health, opts.sample_rate);
             }
         }
     }
-    start_null("disabled with --null-audio".into(), health)
+    start_null("disabled with --null-audio".into(), health, opts.sample_rate)
 }
 
-fn start_null(reason: String, health: Arc<AudioHealth>) -> (AudioSystem, EngineHandle) {
-    let (engine, handle) = create(EngineConfig { sample_rate: NULL_SAMPLE_RATE as f64, max_block_frames: ENGINE_BLOCK, input_channels: 2 });
+fn start_null(reason: String, health: Arc<AudioHealth>, rate: Option<u32>) -> (AudioSystem, EngineHandle) {
+    let sr = rate.filter(|r| (8_000..=384_000).contains(r)).unwrap_or(NULL_SAMPLE_RATE);
+    let (engine, handle) = create(EngineConfig { sample_rate: sr as f64, max_block_frames: ENGINE_BLOCK, input_channels: 2 });
     let info = AudioInfo {
         host: "Null".into(),
         device: "none".into(),
-        sample_rate: NULL_SAMPLE_RATE,
+        sample_rate: sr,
         channels: 2,
         buffer_frames: Some(NULL_BLOCK as u32),
         sample_format: "f32".into(),
@@ -133,7 +136,7 @@ fn start_null(reason: String, health: Arc<AudioHealth>) -> (AudioSystem, EngineH
         input_buffer_frames: None,
         input_channels: 0,
     };
-    let backend = Backend::Null(NullOutput::spawn(engine, NULL_SAMPLE_RATE, NULL_BLOCK));
+    let backend = Backend::Null(NullOutput::spawn(engine, sr, NULL_BLOCK));
     (AudioSystem { _backend: backend, info, health }, handle)
 }
 
@@ -166,7 +169,27 @@ fn start_device(opts: &AudioOptions, health: &Arc<AudioHealth>) -> Result<(Backe
             .ok_or("no output device")?,
         None => host.default_output_device().ok_or("no default output device")?,
     };
-    let supported = device.default_output_config().map_err(|e| format!("no usable output config: {e}"))?;
+    let default = device.default_output_config().map_err(|e| format!("no usable output config: {e}"))?;
+    // Preferences sample rate: same format/channels as the default if the device can.
+    let supported = match opts.sample_rate.filter(|&r| r != default.sample_rate()) {
+        Some(r) => device
+            .supported_output_configs()
+            .ok()
+            .and_then(|mut it| {
+                it.find(|c| {
+                    c.channels() == default.channels()
+                        && c.sample_format() == default.sample_format()
+                        && c.min_sample_rate() <= r
+                        && r <= c.max_sample_rate()
+                })
+            })
+            .map(|c| c.with_sample_rate(r))
+            .unwrap_or_else(|| {
+                eprintln!("audio: {r} Hz not supported by the output device, using {} Hz", default.sample_rate());
+                default
+            }),
+        None => default,
+    };
 
     let sample_format = supported.sample_format();
     let mut config: StreamConfig = supported.config();
