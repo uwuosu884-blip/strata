@@ -54,7 +54,7 @@ fn chan_level(app: &DawApp, e: ChanEntry) -> (f32, bool) {
 }
 
 /// MIDI activity (age in seconds) → 0..1 meter level.
-fn activity_level(age: f32) -> f32 {
+pub(super) fn activity_level(age: f32) -> f32 {
     (1.0 - age / 0.4).clamp(0.0, 1.0)
 }
 
@@ -832,21 +832,5 @@ pub(super) fn midi_settings(app: &mut DawApp, ui: &mut egui::Ui) {
     if changed {
         app.save_settings();
         app.rescan_midi();
-    }
-}
-
-/// Transport bar MIDI Track in / out indicators.
-pub fn midi_leds(app: &DawApp, ui: &mut egui::Ui) {
-    let act = &app.midi.activity;
-    let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
-    for (i, age) in [act.age(&act.track_in), act.age(&act.track_out)].into_iter().enumerate() {
-        let r = Rect::from_min_size(pos2(rect.min.x + 2.0, rect.min.y + 2.0 + i as f32 * 8.0), vec2(10.0, 6.0));
-        let lvl = activity_level(age);
-        let col = gray(50).lerp_to_gamma(Color32::from_rgb(250, 200, 60), lvl);
-        ui.painter().rect_filled(r, CornerRadius::same(1), col);
-    }
-    resp.on_hover_text("MIDI Track input (top) / output (bottom)");
-    if act.age(&act.track_in) < 0.5 || act.age(&act.track_out) < 0.5 {
-        ui.ctx().request_repaint();
     }
 }

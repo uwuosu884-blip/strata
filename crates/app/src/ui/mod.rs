@@ -8,12 +8,13 @@ mod io;
 mod prefs;
 mod session;
 pub mod theme;
+mod topbar;
 pub mod widgets;
 
 use crate::app::{DawApp, DetailMode, Dialog, DragItem, PendingAction, View};
-use daw_engine::{Command, RecordState};
+use daw_engine::Command;
 use daw_project::{InstrumentDef, TrackKind, db_to_gain};
-use eframe::egui::{self, Color32, Key, Modifiers};
+use eframe::egui::{self, Key, Modifiers};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
@@ -418,156 +419,12 @@ impl DawApp {
         }
     }
 
-    fn transport_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            ui.menu_button("File", |ui| self.file_menu(ui));
-            ui.menu_button("View", |ui| self.view_menu(ui));
-
-            self.tempo_box(ui);
-            self.tempo_extras(ui);
-            self.signature_box(ui);
-            if icon_button(ui, Icon::Metronome, self.project.metronome, "Metronome").clicked() {
-                let on = !self.project.metronome;
-                self.edit(|p| p.metronome = on);
-                self.send_now(Command::SetMetronome(on));
-            }
-            let q = self.project.launch_quantize;
-            egui::ComboBox::from_id_salt("quant")
-                .width(64.0)
-                .selected_text(quant_label(q))
-                .show_ui(ui, |ui| {
-                    for v in [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
-                        if ui.selectable_label(q == v, quant_label(v)).clicked() {
-                            self.edit(|p| p.launch_quantize = v);
-                            self.send_now(Command::SetLaunchQuantize(v));
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Global launch quantization");
-
-            ui.add_space(12.0);
-            let pos = self.status.position;
-            ui.label(
-                egui::RichText::new(format!("{:>3}.{}.{}", pos.bar, pos.beat, pos.sixteenth))
-                    .monospace()
-                    .size(17.0)
-                    .color(if self.status.playing { Color32::WHITE } else { Color32::LIGHT_GRAY }),
-            );
-            if icon_button(ui, Icon::Play, self.status.playing, "Play from the start point (Space) · Shift+Space: continue").clicked() {
-                // Live: Play while playing restarts from the start point.
-                self.send_now(Command::SetPosition(self.play_start));
-                self.send_now(Command::Play);
-            }
-            if icon_button(ui, Icon::Stop, false, "Stop; press again to return to start").clicked() {
-                self.stop();
-            }
-            let rec_active = matches!(self.status.record_state, RecordState::Recording | RecordState::StartPending);
-            let blink = matches!(self.status.record_state, RecordState::StartPending | RecordState::StopPending)
-                && (self.status.beat_position * 2.0).fract() < 0.5;
-            if icon_button(ui, Icon::Record, rec_active && !blink, "Record (F9): arrangement recording into armed tracks").clicked() {
-                self.toggle_record();
-            }
-            if icon_button(ui, Icon::Loop, self.project.loop_enabled, "Arrangement loop").clicked() {
-                let on = !self.project.loop_enabled;
-                self.edit(|p| p.loop_enabled = on);
-                self.send_loop();
-            }
-            if self.track_status.iter().any(|t| t.arrangement_off) {
-                let b = ui
-                    .add(egui::Button::new(egui::RichText::new("Back to Arrangement").color(Color32::BLACK)).fill(ACCENT))
-                    .on_hover_text("Session clips override the arrangement on some tracks");
-                if b.clicked() {
-                    self.send_now(Command::BackToArrangement);
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(format!("CPU {:>3.0}%", self.cpu_display * 100.0)).monospace());
-                if stereo_meter(ui, self.meter, self.clipped, egui::vec2(120.0, 18.0)).clicked() {
-                    self.clipped = false;
-                }
-                self.output_box(ui);
-                ui.label("Out");
-                ui.separator();
-                if icon_button(ui, Icon::Arrangement, self.view == View::Arrangement, "Arrangement view (Tab)").clicked() {
-                    self.view = View::Arrangement;
-                }
-                if icon_button(ui, Icon::Session, self.view == View::Session, "Session view (Tab)").clicked() {
-                    self.view = View::Session;
-                }
-                let kb = icon_button(
-                    ui,
-                    Icon::Keyboard,
-                    self.kb.enabled,
-                    "Computer MIDI keyboard (M)\nA W S E D F T G Y H U J K = notes, Z/X octave, C/V velocity",
-                );
-                if kb.clicked() {
-                    self.kb.enabled = !self.kb.enabled;
-                }
-                io::midi_leds(self, ui);
-            });
-        });
-    }
-
-    /// BPM: drag up/down (or wheel) in whole BPM; Shift = 0.01 steps (the only
-    /// way to get decimals besides typing). The cursor is hidden and parked while
-    /// dragging so it never hits the screen edge. Double-click to type a value.
-    /// Tap Tempo, Phase Nudge −/+ and the tempo-automation Follow switch.
-    fn tempo_extras(&mut self, ui: &mut egui::Ui) {
-        let tap_id = egui::Id::unique("tap_tempo");
-        let now = ui.input(|i| i.time);
-        let tap = ui.small_button("Tap").on_hover_text("Tap Tempo: tap 4+ times on the beat");
-        if tap.clicked() {
-            let mut taps: Vec<f64> = ui.data(|d| d.get_temp(tap_id)).unwrap_or_default();
-            // Restart after a 2 s pause.
-            if taps.last().is_some_and(|&l| now - l > 2.0) {
-                taps.clear();
-            }
-            taps.push(now);
-            if taps.len() > 8 {
-                taps.remove(0);
-            }
-            if taps.len() >= 4 {
-                let iv = (taps[taps.len() - 1] - taps[0]) / (taps.len() - 1) as f64;
-                let bpm = ((60.0 / iv).clamp(20.0, 999.0) * 100.0).round() / 100.0;
-                self.edit(|p| p.tempo_bpm = bpm);
-                self.send_now(Command::SetTempo(bpm));
-            }
-            ui.data_mut(|d| d.insert_temp(tap_id, taps));
-        }
-        // Nudge: rate offset only while held.
-        let held_id = egui::Id::unique("nudge_held");
-        let held: f64 = ui.data(|d| d.get_temp(held_id)).unwrap_or(1.0);
-        let mut want = 1.0;
-        for (label, k, tip) in [("−", 0.95, "Phase Nudge Down (hold)"), ("+", 1.05, "Phase Nudge Up (hold)")] {
-            let r = ui.add(egui::Button::new(label).small().sense(egui::Sense::click_and_drag())).on_hover_text(tip);
-            if r.is_pointer_button_down_on() {
-                want = k;
-            }
-        }
-        if want != held {
-            ui.data_mut(|d| d.insert_temp(held_id, want));
-            self.send_now(Command::Nudge(want));
-        }
-        let follow = self.project.tempo_follow;
-        if ui
-            .add(egui::Button::selectable(follow, "Follow"))
-            .on_hover_text("Follow the tempo of Leader clips / tempo automation (off = Unfollow)")
-            .clicked()
-        {
-            self.edit(|p| p.tempo_follow = !follow);
-            self.send_now(Command::SetTempoFollow(!follow));
-        }
-    }
-
     fn tempo_box(&mut self, ui: &mut egui::Ui) {
         let id = ui.make_persistent_id("tempo_box");
         let edit_id = id.with("editing");
         let acc_id = id.with("acc");
         let mut editing: Option<String> = ui.data(|d| d.get_temp(edit_id));
-        let size = egui::vec2(84.0, 20.0);
+        let size = ui.available_size();
         if let Some(text) = editing.as_mut() {
             let r = ui.add_sized(size, egui::TextEdit::singleline(text).id(id.with("te")));
             // Focus once when editing starts; a click anywhere else commits.
@@ -642,15 +499,27 @@ impl DawApp {
             ui.data_mut(|d| d.insert_temp(edit_id, tempo_text(self.project.tempo_bpm)));
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
+        ui.painter().rect_filled(rect, 0.0, if active { gray(0x40) } else { panel() });
+        // Unfollowed tempo automation: value shown dim (Live greys the box).
+        let col = if self.project.tempo_follow { theme::text() } else { gray(0x80) };
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("{} BPM", tempo_text(self.project.tempo_bpm)),
-            egui::FontId::proportional(12.0),
-            Color32::WHITE,
+            format!("{:.2}", self.project.tempo_bpm),
+            theme::font(theme::FS),
+            col,
         );
-        resp.on_hover_text("Tempo: drag up/down or wheel (Shift = 0.01 steps), double-click to type");
+        let follow = self.project.tempo_follow;
+        resp.context_menu(|ui| {
+            if ui.selectable_label(follow, "Follow Tempo Automation / Leader Clips").clicked() {
+                self.edit(|p| p.tempo_follow = !follow);
+                self.send_now(Command::SetTempoFollow(!follow));
+                ui.close();
+            }
+        });
+        resp.on_hover_text(
+            "Tempo: drag up/down or wheel (Shift = 0.01 steps), double-click to type\nRight-click: Follow tempo automation / Leader clips",
+        );
     }
 
     /// DAW output (monitoring) level: added on top of the master on the device
@@ -658,7 +527,7 @@ impl DawApp {
     fn output_box(&mut self, ui: &mut egui::Ui) {
         const MIN: f32 = -70.0; // shown as -inf
         let id = ui.make_persistent_id("output_box");
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(66.0, 20.0), egui::Sense::click_and_drag());
+        let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         let delta = endless_drag(ui, &resp);
         let shift = ui.input(|i| i.modifiers.shift);
         let cur = self.settings.output_gain_db;
@@ -694,10 +563,10 @@ impl DawApp {
             self.save_settings();
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
+        ui.painter().rect_filled(rect, 0.0, if active { gray(0x40) } else { panel() });
         let db = self.settings.output_gain_db;
-        let text = if db <= MIN { "-inf dB".to_string() } else { format!("{db:.1} dB") };
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), Color32::WHITE);
+        let text = if db <= MIN { "-inf".to_string() } else { format!("{db:.1}") };
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, theme::font(theme::FS_SMALL), theme::text());
         resp.on_hover_text(
             "Output level (monitoring only, not part of renders): drag up/down or wheel (Shift = fine), double-click = 0 dB",
         );
@@ -706,7 +575,7 @@ impl DawApp {
     /// Time signature (N/4): drag up/down or wheel; double-click resets to 4/4.
     fn signature_box(&mut self, ui: &mut egui::Ui) {
         let id = ui.make_persistent_id("sig_box");
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 20.0), egui::Sense::click_and_drag());
+        let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         let delta = endless_drag(ui, &resp);
         if resp.drag_started() {
             ui.data_mut(|d| d.insert_temp(id, self.project.beats_per_bar as f32));
@@ -735,13 +604,13 @@ impl DawApp {
             }
         }
         let active = resp.hovered() || resp.dragged();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), if active { gray(60) } else { gray(48) });
+        ui.painter().rect_filled(rect, 0.0, if active { gray(0x40) } else { panel() });
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             format!("{} / 4", self.project.beats_per_bar),
-            egui::FontId::proportional(12.0),
-            Color32::WHITE,
+            theme::font(theme::FS),
+            theme::text(),
         );
         resp.on_hover_text("Time signature: drag up/down or wheel, double-click = 4/4");
     }
@@ -752,7 +621,7 @@ impl DawApp {
         self.send_now(c);
     }
 
-    fn file_menu(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn file_menu(&mut self, ui: &mut egui::Ui) {
         if ui.button("New            Ctrl+N").clicked() {
             self.guarded(PendingAction::New);
             ui.close();
@@ -820,7 +689,7 @@ impl DawApp {
         }
     }
 
-    fn view_menu(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn view_menu(&mut self, ui: &mut egui::Ui) {
         if ui.checkbox(&mut self.show_io, "In/Out      Ctrl+Alt+I").clicked() {
             ui.close();
         }
@@ -847,53 +716,110 @@ impl DawApp {
         }
     }
 
+    /// Live status bar: info/message area, selected track, Device/Clip view switches.
+    /// Segment edges from Live at 1920: 42–1560, 1570–1789, 1799–1863.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let info = &self.audio.info;
-            let ok = info.null_reason.is_none();
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), 4.0, if ok { PLAY_GREEN } else { REC_RED });
-            ui.label(egui::RichText::new(info.summary()).small());
-            let input = match &info.input {
-                Ok(n) => format!("In: {n}"),
-                Err(e) => format!("No input ({e})"),
-            };
-            ui.label(egui::RichText::new(input).small().color(Color32::GRAY));
-            let midi = if self.io_map.midi_in.is_empty() && self.io_map.midi_out.is_empty() {
-                self.midi.error.clone().unwrap_or_else(|| "No MIDI ports".into())
+        let mr = ui.max_rect();
+        ui.allocate_rect(mr, egui::Sense::hover());
+        let p = ui.painter().clone();
+        let (x0, w) = (mr.left() - 9.0, mr.width() + 18.0);
+        let rx = |x: f32| x0 + w - (1920.0 - x);
+        let seg = |a: f32, b: f32| egui::Rect::from_min_max(egui::pos2(a, mr.top()), egui::pos2(b + 1.0, mr.bottom()));
+        // Audio health dot (details on hover).
+        let info = &self.audio.info;
+        let ok = info.null_reason.is_none();
+        let dot = seg(x0 + 12.0, x0 + 30.0);
+        p.circle_filled(dot.center(), 4.0, if ok { PLAY_GREEN } else { REC_RED });
+        let input = match &info.input {
+            Ok(n) => format!("In: {n}"),
+            Err(e) => format!("No input ({e})"),
+        };
+        let midi = if self.io_map.midi_in.is_empty() && self.io_map.midi_out.is_empty() {
+            self.midi.error.clone().unwrap_or_else(|| "No MIDI ports".into())
+        } else {
+            format!("MIDI: {}", self.io_map.midi_in.iter().chain(&self.io_map.midi_out).cloned().collect::<Vec<_>>().join(", "))
+        };
+        ui.interact(dot, ui.make_persistent_id("st_dot"), egui::Sense::hover())
+            .on_hover_text(format!("{}\n{input}\n{midi}", info.summary()));
+        // Message area.
+        let main = seg(x0 + 42.0, rx(1560.0));
+        p.rect_filled(main, 0.0, panel());
+        let mut msg = String::new();
+        let mut col = theme::text();
+        if let Some((m, at)) = &self.message {
+            if at.elapsed() < Duration::from_secs(4) {
+                msg = m.clone();
+                col = gray(0xe6);
             } else {
-                format!("MIDI: {}", self.io_map.midi_in.iter().chain(&self.io_map.midi_out).cloned().collect::<Vec<_>>().join(", "))
-            };
-            ui.label(egui::RichText::new(midi).small().color(Color32::GRAY));
-            if self.kb.enabled {
-                ui.label(egui::RichText::new(format!("Keys: C{} vel {}", self.kb.octave, self.kb.velocity)).small().color(ACCENT));
+                self.message = None;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let h = &self.audio.health;
-                let xruns = h.xruns.load(Relaxed);
-                if xruns > 0 {
-                    ui.colored_label(ACCENT, format!("{xruns} dropouts"));
-                }
-                let errs = h.stream_errors.load(Relaxed);
-                if errs > 0 {
-                    let last = h.last_error.try_lock().ok().and_then(|g| g.clone()).unwrap_or_default();
-                    ui.colored_label(Color32::LIGHT_RED, format!("{errs} audio errors")).on_hover_text(last);
-                }
-                if h.realtime_denied.load(Relaxed) {
-                    ui.colored_label(ACCENT, "no RT priority");
-                }
-                if self.dropped_commands > 0 {
-                    ui.colored_label(Color32::LIGHT_RED, format!("{} commands dropped", self.dropped_commands));
-                }
-                if let Some((msg, at)) = &self.message {
-                    if at.elapsed() < Duration::from_secs(4) {
-                        ui.label(egui::RichText::new(msg).color(Color32::WHITE));
-                    } else {
-                        self.message = None;
-                    }
-                }
-            });
-        });
+        }
+        if msg.is_empty() && self.kb.enabled {
+            msg = format!("Computer MIDI Keyboard: octave C{}, velocity {}", self.kb.octave, self.kb.velocity);
+        }
+        p.text(main.left_center() + egui::vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, msg, theme::font(theme::FS), col);
+        // Health warnings at the right of the message area.
+        let h = &self.audio.health;
+        let mut warn = Vec::new();
+        let xruns = h.xruns.load(Relaxed);
+        if xruns > 0 {
+            warn.push(format!("{xruns} dropouts"));
+        }
+        let errs = h.stream_errors.load(Relaxed);
+        if errs > 0 {
+            warn.push(format!("{errs} audio errors"));
+        }
+        if h.realtime_denied.load(Relaxed) {
+            warn.push("no RT priority".into());
+        }
+        if self.dropped_commands > 0 {
+            warn.push(format!("{} commands dropped", self.dropped_commands));
+        }
+        if !warn.is_empty() {
+            let r = p.text(
+                main.right_center() - egui::vec2(6.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                warn.join(" · "),
+                theme::font(theme::FS),
+                ACCENT,
+            );
+            if errs > 0 {
+                let last = h.last_error.try_lock().ok().and_then(|g| g.clone()).unwrap_or_default();
+                ui.interact(r, ui.make_persistent_id("st_err"), egui::Sense::hover()).on_hover_text(last);
+            }
+        }
+        // Selected track.
+        let tr = seg(rx(1570.0), rx(1789.0));
+        p.rect_filled(tr, 0.0, panel());
+        let name = if self.master_selected {
+            "Main".to_string()
+        } else {
+            self.project.tracks.get(self.selected_track).map(|t| t.name.clone()).unwrap_or_default()
+        };
+        p.text(tr.right_center() - egui::vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, name, theme::font(theme::FS), theme::text());
+        // Device / Clip view switches (orange = shown).
+        for (i, (mode, tip)) in
+            [(DetailMode::Device, "Device View (Ctrl+Alt+L)"), (DetailMode::Clip, "Clip View (Ctrl+Alt+L)")].into_iter().enumerate()
+        {
+            let r = seg(rx(1799.0 + i as f32 * 12.0), rx(1805.0 + i as f32 * 12.0));
+            let r = egui::Rect::from_center_size(r.center(), egui::vec2(9.0, 12.0));
+            let on = self.detail_mode == mode;
+            let resp = ui.interact(r.expand(2.0), ui.make_persistent_id(("st_dv", i)), egui::Sense::click()).on_hover_text(tip);
+            p.rect_filled(
+                r,
+                0.0,
+                if on {
+                    theme::ORANGE
+                } else if resp.hovered() {
+                    gray(0x80)
+                } else {
+                    gray(0x55)
+                },
+            );
+            if resp.clicked() {
+                self.detail_mode = mode;
+            }
+        }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -1086,7 +1012,7 @@ fn tempo_text(t: f64) -> String {
     if (t - t.round()).abs() < 1e-6 { format!("{t:.0}") } else { format!("{t:.2}") }
 }
 
-fn quant_label(q: f64) -> String {
+pub(super) fn quant_label(q: f64) -> String {
     match q {
         0.0 => "None".into(),
         0.25 => "1/16".into(),
