@@ -295,8 +295,10 @@ pub const SEL_BLUE: Color32 = Color32::from_rgb(0xb4, 0xdc, 0xe8);
 pub const FS: f32 = 10.0;
 pub const FS_SMALL: f32 = 8.0;
 
+/// Sizes ≥ 10 px use the auto-hinted Inter (crisp stems); smaller text keeps
+/// Inter's own TrueType hinting, whose spacing holds up better at 8–9 px.
 pub fn font(size: f32) -> FontId {
-    FontId::proportional(size)
+    if size < 9.5 { FontId::new(size, FontFamily::Name("small".into())) } else { FontId::proportional(size) }
 }
 
 pub fn bold(size: f32) -> FontId {
@@ -304,28 +306,33 @@ pub fn bold(size: f32) -> FontId {
 }
 
 /// Inter (OFL) embedded: Medium for UI text, SemiBold for titles.
+///
+/// Blurry-text fix: Inter's TrueType instructions only grid-fit vertically, so
+/// vertical stems straddled two pixel columns. The `*-auto.ttf` copies have the
+/// instructions stripped (fontTools: drop fpgm/prep/cvt/gasp + glyph programs),
+/// which makes egui/skrifa use its auto-hinter; with `preserve_linear_metrics`
+/// off that also snaps stems horizontally.
 pub fn install_fonts(ctx: &egui::Context) {
+    use egui::epaint::text::{FontTweak, HintingTarget, SmoothHinting};
     let mut fonts = FontDefinitions::default();
-    // Sharp small text: Inter ships TrueType hinting; use full (non-symmetric)
-    // grid-fitting incl. horizontal stems instead of egui's soft default.
-    let sharp = || egui::epaint::text::FontTweak {
+    let tweak = || FontTweak {
         hinting: Some(true),
-        hinting_target: egui::epaint::text::HintingTarget::Smooth(egui::epaint::text::SmoothHinting {
-            light: false,
-            symmetric_rendering: false,
-            preserve_linear_metrics: true,
-        }),
+        hinting_target: HintingTarget::Smooth(SmoothHinting { light: false, symmetric_rendering: false, preserve_linear_metrics: false }),
         subpixel_binning: Some(false),
         ..Default::default()
     };
-    fonts.font_data.insert("inter".into(), FontData::from_static(include_bytes!("../../assets/Inter-Medium.ttf")).tweak(sharp()).into());
-    fonts
-        .font_data
-        .insert("inter-bold".into(), FontData::from_static(include_bytes!("../../assets/Inter-SemiBold.ttf")).tweak(sharp()).into());
-    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "inter".into());
-    let mut b = vec!["inter-bold".to_string()];
-    b.extend(fonts.families[&FontFamily::Proportional].iter().skip(1).cloned());
-    fonts.families.insert(FontFamily::Name("bold".into()), b);
+    for (name, bytes) in [
+        ("inter", &include_bytes!("../../assets/Inter-Medium-auto.ttf")[..]),
+        ("inter-tt", &include_bytes!("../../assets/Inter-Medium.ttf")[..]),
+        ("inter-bold", &include_bytes!("../../assets/Inter-SemiBold-auto.ttf")[..]),
+    ] {
+        fonts.font_data.insert(name.into(), FontData::from_static(bytes).tweak(tweak()).into());
+    }
+    let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
+    let with = |first: &str| std::iter::once(first.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
+    fonts.families.insert(FontFamily::Proportional, with("inter"));
+    fonts.families.insert(FontFamily::Name("small".into()), with("inter-tt"));
+    fonts.families.insert(FontFamily::Name("bold".into()), with("inter-bold"));
     ctx.set_fonts(fonts);
 }
 

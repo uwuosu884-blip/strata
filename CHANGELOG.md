@@ -10,6 +10,40 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.3] - 2026-10-28
+
+### Changed
+- **Sharper text**: UI text at 10 px and up uses an auto-hinted copy of Inter,
+  so vertical stems land on whole pixels instead of smearing across two columns.
+  Small 8–9 px text keeps Inter's own hinting, whose spacing holds up better.
+- **Start marker and playhead are independent** (Live). Clicking in the lanes
+  while playing only moves the start marker (a line through the selected
+  track(s) / master); the playhead keeps going. The ▼/▲ triangles mark both
+  while playing, and only the marker while stopped. The marker is hidden while
+  a time selection exists.
+- The top-bar **Play button works exactly like Space**: click again to stop.
+- **Follow** keeps the playhead in the centre: it runs to the middle, then the
+  song scrolls under it. Scrolling or zooming by hand pauses Follow until the
+  next Play.
+- **Time selection** is shown by triangles only, outside the range, at the
+  bottom of the loop row and the top of the time ruler. The bar in the loop row
+  is gone.
+- Loop and selection triangles are isosceles right triangles (equal legs).
+- The arrangement grid never gets coarser than **1/4**, however far you zoom
+  out. Coarser fixed settings are no longer offered there.
+- **Clips** have a 1 px dark-grey outline and the same line between the title
+  bar and the contents. A selected clip keeps its coloured title bar; only the
+  body turns blue.
+- New clip names leave out the track number shown in the header
+  ("Bass 1", not "2 Bass 1"). Typing the number when renaming a track keeps it
+  as the live position number.
+- **Ctrl+D on selected track headers** duplicates the tracks; each copy keeps
+  the original's name and is placed below it.
+
+### Fixed
+- A time selection on one track no longer covers the track separator and the
+  pixel row below it.
+
 ## [0.7.2] - 2026-10-28
 
 ### Changed
@@ -490,7 +524,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...v0.7.0

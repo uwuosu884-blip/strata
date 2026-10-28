@@ -80,6 +80,10 @@ impl eframe::App for DawApp {
         }
         self.begin_frame();
         self.handle_close(&ctx);
+        // Any press ends header focus; a header click (on release) sets it again.
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            self.head_focus = false;
+        }
         self.shortcuts(&ctx);
         clip::groove_pool(self, &ctx);
         // Clip launch button released anywhere → ReleaseClip.
@@ -294,7 +298,11 @@ impl DawApp {
                 self.resync_selected_clip();
             }
         }
-        if cmd(Key::D) && !self.duplicate_selected_notes() && !(self.view == View::Arrangement && self.duplicate_arrangement_selection()) {
+        if cmd(Key::D)
+            && !self.duplicate_selected_notes()
+            && !(!self.focus_detail && self.duplicate_selected_tracks())
+            && !(self.view == View::Arrangement && self.duplicate_arrangement_selection())
+        {
             self.duplicate_selected_clip();
         }
         if cmd(Key::B) {
@@ -1064,8 +1072,7 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, id: 
         return;
     }
     let te_id = ui.make_persistent_id(("rename", r.id, clip));
-    let resp =
-        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(egui::FontId::proportional(11.0)).margin(egui::vec2(2.0, 1.0)));
+    let resp = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(theme::font(11.0)).margin(egui::vec2(2.0, 1.0)));
     if r.fresh {
         r.fresh = false;
         resp.request_focus();

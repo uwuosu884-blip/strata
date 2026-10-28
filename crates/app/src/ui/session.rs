@@ -5,7 +5,7 @@ use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use daw_engine::{Command, PendingLaunch};
 use daw_project::{ClipContent, TrackKind};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, pos2, vec2};
 
 // Live 12 Session metrics at 100 %: 94 px columns, 17 px header, 17 px slots
 // on an 18 px pitch, ~128 px mixer section.
@@ -59,7 +59,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     rect.center(),
                     Align2::CENTER_CENTER,
                     "Drop instruments\nor samples here",
-                    FontId::proportional(10.0),
+                    super::theme::font(10.0),
                     gray(110),
                 );
                 if let Some(item) = resp.dnd_release_payload::<DragItem>() {

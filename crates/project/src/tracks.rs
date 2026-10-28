@@ -11,15 +11,27 @@ pub enum TrackDrop {
     Into(u64),
 }
 
+/// Track name without the position number: `# MIDI` → `MIDI`, and a literal
+/// leading "<position> " (typed when renaming) is dropped too.
+pub fn base_name(name: &str, index: usize) -> &str {
+    let n = name.strip_prefix('#').unwrap_or(name).trim_start();
+    let num = (index + 1).to_string();
+    match n.strip_prefix(num.as_str()) {
+        Some(rest) if rest.starts_with(' ') && !rest.trim().is_empty() => rest.trim(),
+        _ => n.trim(),
+    }
+}
+
 impl Project {
     /// Name as shown in the UI (`#` → position).
     pub fn track_label(&self, i: usize) -> String {
         self.tracks.get(i).map_or_else(String::new, |t| display_name(&t.name, i))
     }
 
-    /// "<track label> <n>" with n one past the highest number already used on that track.
+    /// "<track name> <n>" with n one past the highest number already used on that
+    /// track. The position number shown in the header (`#`) is left out.
     pub fn next_clip_name(&self, track: usize) -> String {
-        let label = self.track_label(track);
+        let label = self.tracks.get(track).map_or_else(String::new, |t| base_name(&t.name, track).to_string());
         let Some(t) = self.tracks.get(track) else { return label };
         let prefix = format!("{label} ");
         let n = t
@@ -137,12 +149,18 @@ mod tests {
         let mut p = blank(2);
         p.add_scene();
         p.add_scene();
-        assert_eq!(p.next_clip_name(1), "2 MIDI 1");
+        assert_eq!(p.next_clip_name(1), "MIDI 1");
         p.new_midi_clip(1, 0, 4.0).unwrap();
-        assert_eq!(p.tracks[1].slots[0].as_ref().unwrap().name, "2 MIDI 1");
+        assert_eq!(p.tracks[1].slots[0].as_ref().unwrap().name, "MIDI 1");
         p.insert_midi_clip(1, 0.0, 4.0).unwrap();
-        assert_eq!(p.tracks[1].arrangement[0].clip.name, "2 MIDI 2");
-        assert_eq!(p.next_clip_name(0), "1 MIDI 1");
+        assert_eq!(p.tracks[1].arrangement[0].clip.name, "MIDI 2");
+        assert_eq!(p.next_clip_name(0), "MIDI 1");
+        p.tracks[0].name = "Bass".into();
+        assert_eq!(p.next_clip_name(0), "Bass 1");
+        p.tracks[0].name = "1 Drums".into();
+        assert_eq!(p.next_clip_name(0), "Drums 1");
+        assert_eq!(super::base_name("2 Drums", 0), "2 Drums");
+        assert_eq!(super::base_name("1", 0), "1");
     }
 
     #[test]

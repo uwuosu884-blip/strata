@@ -10,7 +10,7 @@ use daw_project::clipx::{
 };
 use daw_project::miditools::{self as mt, Generate, PKind, Transform};
 use daw_project::{Clip, ClipContent, Note};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, pos2, vec2};
 
 pub const BOX_W: f32 = 196.0;
 pub const MARKER_H: f32 = 12.0;
@@ -351,7 +351,7 @@ fn clip_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
                 r.left_center() + vec2(4.0, 0.0),
                 Align2::LEFT_CENTER,
                 label,
-                FontId::proportional(11.0),
+                super::theme::font(11.0),
                 text_on(rgb(clip.color)),
             );
             if nr.double_clicked() {
@@ -1480,7 +1480,7 @@ pub fn env_lane(
     let env = clip.envelope(t).unwrap_or(&empty);
     let col = Color32::from_rgb(230, 80, 80);
     p.line_segment([pos2(rect.min.x, y_of(neutral)), pos2(rect.max.x, y_of(neutral))], Stroke::new(1.0, Color32::from_white_alpha(18)));
-    p.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, t.label(), FontId::proportional(9.0), gray(150));
+    p.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, t.label(), super::theme::font(9.0), gray(150));
     // Unlinked: the envelope's own loop repeats along the time axis.
     let pts = &env.points;
     if pts.is_empty() {
@@ -1588,7 +1588,7 @@ pub fn mpe_lane(
         rect.left_top() + vec2(4.0, 2.0),
         Align2::LEFT_TOP,
         ["Pitch (±12 st)", "Slide", "Pressure"][lane],
-        FontId::proportional(9.0),
+        super::theme::font(9.0),
         gray(150),
     );
     let col = Color32::from_rgb(120, 200, 255);
@@ -1611,7 +1611,7 @@ pub fn mpe_lane(
         ));
     }
     let Some(i) = sel else {
-        p.text(rect.center(), Align2::CENTER_CENTER, "Select a note to edit its expression", FontId::proportional(10.0), gray(110));
+        p.text(rect.center(), Align2::CENTER_CENTER, "Select a note to edit its expression", super::theme::font(10.0), gray(110));
         return;
     };
     let n = notes[i];
@@ -1653,7 +1653,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let ClipContent::Audio { sample, warp_bpm, .. } = &clip.content else { return };
     let Some(buf) = app.cache.peek(sample).cloned() else {
         let msg = app.cache.error(sample).map_or("Loading…".to_string(), |e| format!("Missing sample: {e}"));
-        p.text(rect.center(), Align2::CENTER_CENTER, msg, FontId::proportional(11.0), Color32::GRAY);
+        p.text(rect.center(), Align2::CENTER_CENTER, msg, super::theme::font(11.0), Color32::GRAY);
         return;
     };
     let warped = warp_bpm.is_some();
@@ -1728,7 +1728,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
             } else {
                 format!("{:.2}s", map.frame_at(b) / buf.sample_rate as f64)
             };
-            p.text(pos2(x + 2.0, ruler.min.y + 1.0), Align2::LEFT_TOP, label, FontId::proportional(8.0), gray(170));
+            p.text(pos2(x + 2.0, ruler.min.y + 1.0), Align2::LEFT_TOP, label, super::theme::font(8.0), gray(170));
         }
         b += grid;
     }
@@ -1810,7 +1810,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         pos2(rect.max.x - 4.0, ruler.min.y + 1.0),
         Align2::RIGHT_TOP,
         format!("{} · {} Hz · {:.2} s{}", buf.name, buf.sample_rate, buf.duration_secs(), if warped { "" } else { " · unwarped" }),
-        FontId::proportional(8.0),
+        super::theme::font(8.0),
         gray(150),
     );
 }

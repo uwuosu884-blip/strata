@@ -181,6 +181,12 @@ pub struct DawApp {
     pub show_io: bool,
     /// Top-bar Follow: the arrangement scrolls with the playhead.
     pub follow: bool,
+    /// Follow suspended by a manual scroll/zoom; resumes on the next Play.
+    pub follow_paused: bool,
+    /// Transport state seen last frame (detects Play to resume Follow).
+    pub was_playing: bool,
+    /// Last click went to the track headers (Ctrl+D duplicates the tracks).
+    pub head_focus: bool,
     /// Monitor radio under the pointer (Delete returns it to the default).
     pub hover_monitor: Option<usize>,
     /// Device names for the settings dialog (listed when it opens).
@@ -320,6 +326,9 @@ impl DawApp {
             arr_zoom: 28.0,
             arr_scroll: 0.0,
             follow: true,
+            follow_paused: false,
+            was_playing: false,
+            head_focus: false,
             arr_row_h: 88.0,
             arr_vscroll: 0.0,
             pr_low_note: 48,
@@ -823,6 +832,15 @@ impl DawApp {
     pub fn set_playhead(&mut self, beat: f64) {
         self.play_start = beat.max(0.0);
         self.send_now(Command::SetPosition(self.play_start));
+    }
+
+    /// Set the start marker (clicks in the lanes). While playing the playhead
+    /// keeps going; the marker only decides where the next Play starts.
+    pub fn set_start_marker(&mut self, beat: f64) {
+        self.play_start = beat.max(0.0);
+        if !self.status.playing {
+            self.send_now(Command::SetPosition(self.play_start));
+        }
     }
 
     /// Live: Stop while playing pauses; Stop while stopped rewinds.

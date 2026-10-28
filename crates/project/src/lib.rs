@@ -673,9 +673,32 @@ impl Project {
         for t in copy.iter_mut().skip(1) {
             t.group = t.group.map(|g| remap.get(&g).copied().unwrap_or(g));
         }
-        copy[0].name = format!("{} copy", copy[0].name);
+        // Same name as the original (Live); `#` names show their new position.
         self.tracks.splice(end..end, copy);
         Some(end)
+    }
+
+    /// Duplicate several tracks (each copy right below its original's subtree;
+    /// tracks inside a duplicated group come along once). Returns the copies' indices.
+    pub fn duplicate_tracks(&mut self, idx: &[usize]) -> Vec<usize> {
+        let mut roots: Vec<usize> = idx.iter().copied().filter(|&i| i < self.tracks.len()).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        let all = roots.clone();
+        roots.retain(|&i| !all.iter().any(|&a| a != i && self.is_descendant(i, a)));
+        let ids: Vec<u64> = roots.iter().map(|&i| self.tracks[i].id).collect();
+        let mut out = Vec::new();
+        // Bottom-up so earlier indices stay valid.
+        for &id in ids.iter().rev() {
+            if let Some(i) = self.track_index(id)
+                && let Some(d) = self.duplicate_track(i)
+            {
+                out.push(self.tracks[d].id);
+            }
+        }
+        let mut v: Vec<usize> = out.iter().filter_map(|&id| self.track_index(id)).collect();
+        v.sort_unstable();
+        v
     }
 
     /// Index of a track's parent group.
@@ -1186,6 +1209,19 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_several_tracks_keeps_names_and_order() {
+        let mut p = Project::new_default();
+        let n = p.tracks.len();
+        let names: Vec<String> = p.tracks.iter().map(|t| t.name.clone()).collect();
+        p.tracks[1].name = "Bass".into();
+        let d = p.duplicate_tracks(&[0, 1]);
+        assert_eq!(d, vec![1, 3]);
+        assert_eq!(p.tracks.len(), n + 2);
+        assert_eq!(p.tracks[1].name, names[0]);
+        assert_eq!((p.tracks[2].name.as_str(), p.tracks[3].name.as_str()), ("Bass", "Bass"));
+    }
+
+    #[test]
     fn ids_are_unique_after_duplicate_and_load() {
         let mut p = Project::new_default();
         p.new_midi_clip(0, 0, 4.0);
@@ -1196,7 +1232,7 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), n);
-        assert_eq!(p.tracks[d].name, "# Drums copy");
+        assert_eq!(p.tracks[d].name, "# Drums");
         let mut text_loaded = Project::from_ron(&p.to_ron().unwrap()).unwrap();
         let fresh = text_loaded.alloc_id();
         assert!(!ids.contains(&fresh));

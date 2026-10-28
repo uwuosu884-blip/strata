@@ -22,7 +22,7 @@ fn caption(ui: &mut egui::Ui, s: &str) {
 /// Chooser label with room for a meter at its left (Live input choosers).
 fn metered(ui: &egui::Ui, s: impl Into<String>) -> egui::WidgetText {
     let mut job = egui::text::LayoutJob::default();
-    let fmt = egui::TextFormat::simple(egui::FontId::proportional(super::theme::FS), ui.visuals().widgets.inactive.text_color());
+    let fmt = egui::TextFormat::simple(super::theme::font(super::theme::FS), ui.visuals().widgets.inactive.text_color());
     job.append(&s.into(), 9.0, fmt);
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;

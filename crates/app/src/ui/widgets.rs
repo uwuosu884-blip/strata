@@ -186,7 +186,8 @@ pub fn disabled(c: Color32) -> Color32 {
 }
 
 /// Right-click grid menu (arrangement and piano roll).
-pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode) {
+/// `max` = coarsest fixed step offered (beats).
+pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode, max: f64) {
     use crate::arr_ops::GridMode;
     ui.menu_button("Grid", |ui| {
         ui.label(egui::RichText::new("Adaptive").small().color(Color32::GRAY));
@@ -198,7 +199,7 @@ pub fn grid_menu(ui: &mut egui::Ui, mode: &mut crate::arr_ops::GridMode) {
         }
         ui.separator();
         ui.label(egui::RichText::new("Fixed").small().color(Color32::GRAY));
-        for (g, name) in GridMode::FIXED {
+        for (g, name) in GridMode::FIXED.into_iter().filter(|(g, _)| *g <= max) {
             if ui.radio(*mode == GridMode::Fixed(g), name).clicked() {
                 *mode = GridMode::Fixed(g);
                 ui.close();

@@ -16,7 +16,7 @@ use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use crate::arr_ops::{SelMode, TimeSel};
 use daw_engine::SampleBuffer;
 use daw_project::{ArrangementClip, Clip, ClipContent, TrackDrop, TrackKind};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
 /// Live: name 93 + 2 + mixer 119 (+ In/Out 74 + 2) = 290 px.
 const HEAD_W: f32 = 214.0;
@@ -26,6 +26,12 @@ const RULER_H: f32 = 59.0;
 /// Bottom time ruler (2 px separator + 21 px).
 const TIME_H: f32 = 23.0;
 const EDGE: f32 = 6.0;
+/// Coarsest arrangement grid: a quarter note (beats).
+const ARR_GRID_MAX: f64 = 1.0;
+/// Legs of the isosceles right triangles marking loop / selection edges.
+const MARK: f32 = 6.0;
+/// Clip outline and title/body divider.
+const CLIP_EDGE: Color32 = Color32::from_gray(0x1c);
 const TITLE_H: f32 = 14.0;
 const INDENT: f32 = 9.0;
 
@@ -152,6 +158,17 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let x0 = full.min.x;
 
     wheel(app, ui, full, x0);
+    // Follow: the playhead runs to the centre, then the song scrolls under it.
+    // A manual scroll/zoom pauses it until the next Play.
+    let playing = app.status.playing;
+    if playing && !app.was_playing {
+        app.follow_paused = false;
+    }
+    app.was_playing = playing;
+    if playing && app.follow && !app.follow_paused {
+        let half = (lanes.width() * 0.5) as f64 / app.arr_zoom as f64;
+        app.arr_scroll = (app.status.beat_position - half).max(0.0) as f32;
+    }
 
     let rows = app.project.visible_tracks();
     let mut ys = Vec::with_capacity(rows.len() + 2);
@@ -166,7 +183,8 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     app.arr_vscroll = app.arr_vscroll.clamp(0.0, (content_h - body.height()).max(0.0));
     let bpb = app.project.beats_per_bar.max(1) as f64;
     let zoom = app.arr_zoom as f64;
-    let grid = app.arr_grid.step(zoom, bpb);
+    // Arrangement grid never gets coarser than a quarter note, however far out.
+    let grid = app.arr_grid.step(zoom, bpb).min(ARR_GRID_MAX);
     app.grid = grid;
     let alt = ui.input(|i| i.modifiers.alt);
     let g = Geo {
@@ -258,7 +276,8 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
             if (ts.t0..=ts.t1).contains(&t) {
                 let r = g.lane(k);
                 p.rect_filled(
-                    Rect::from_min_max(pos2(x1, r.min.y), pos2(x2, r.max.y + 1.0)),
+                    // Stops above the 2 px track separator.
+                    Rect::from_min_max(pos2(x1, r.min.y), pos2(x2, r.max.y - 2.0)),
                     CornerRadius::ZERO,
                     Color32::from_white_alpha(38),
                 );
@@ -292,53 +311,65 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         }
         _ => {}
     }
+    let top = full.min.y + RULER_H - 2.0; // bottom of the loop row
+    let marks = ui.painter_at(Rect::from_min_max(pos2(lanes.min.x, full.min.y), pos2(lanes.max.x, full.max.y)));
+    // Isosceles right triangle with its vertical leg on pixel column `x`, the other
+    // leg pointing `out` (-1 left / 1 right) at `y_far`, the tip at `y_tip`.
+    let edge_tri = |x: f32, out: f32, y_tip: f32, y_far: f32| {
+        let e = x - 0.5 * out;
+        egui::Shape::convex_polygon(vec![pos2(e, y_tip), pos2(e, y_far), pos2(e + MARK * out, y_far)], gray(0x91), Stroke::NONE)
+    };
     // Active loop: 1 px grey lines at both ends from the brace down to the time
-    // ruler, each ending in a right triangle outside the loop.
+    // ruler, each ending in a triangle outside the loop (right angle at the bottom).
     if app.project.loop_enabled {
-        let lp = ui.painter_at(Rect::from_min_max(pos2(lanes.min.x, full.min.y), pos2(lanes.max.x, full.max.y)));
-        let col = gray(0x91);
         let (y0, yb) = (full.min.y + 35.0 + 11.0, mb + 2.0);
         let x1 = g.to_x(app.project.loop_start).round() + 0.5;
         let x2 = (g.to_x(app.project.loop_end).round() + 0.5).max(x1 + 16.0);
         for (x, out) in [(x1, -1.0f32), (x2, 1.0)] {
-            lp.line_segment([pos2(x, y0), pos2(x, yb)], Stroke::new(1.0, col));
-            // Long side on the line (covering its pixel column), short side out.
-            let e = x - 0.5 * out;
-            lp.add(egui::Shape::convex_polygon(vec![pos2(e, yb), pos2(e, yb + 7.0), pos2(e + 4.0 * out, yb + 7.0)], col, Stroke::NONE));
+            marks.line_segment([pos2(x, y0), pos2(x, yb)], Stroke::new(1.0, gray(0x91)));
+            marks.add(edge_tri(x, out, yb, yb + MARK));
         }
     }
-    // Playhead (Live): 1 px, always inverted. ▼ at the bottom of the loop row,
-    // ▲ at the top of the time ruler; the line spans every lane while playing,
-    // only the selected track(s) / master while stopped.
-    let x = g.to_x(app.status.beat_position).round() + 0.5;
-    if x >= lanes.min.x && x < lanes.max.x {
-        let mut inv = super::invert::Inverted::default();
-        let top = full.min.y + RULER_H - 2.0;
-        inv.tri(pos2(x, top), 7.0, 4.0, true);
-        inv.tri(pos2(x, mb + 2.0), 7.0, 4.0, false);
-        if app.status.playing {
-            inv.vline(x, top, mb + 2.0);
-        } else {
-            for (k, &t) in g.rows.iter().enumerate() {
-                if app.is_track_selected(t) {
-                    let r = g.lane(k).intersect(body);
-                    inv.vline(x, r.min.y, r.max.y);
-                }
+    // Time selection: only triangles, outside the range, at the bottom of the loop
+    // row (right angle up) and the top of the time ruler (right angle down).
+    let sel = app.time_sel.filter(|t| t.len() > 1e-9);
+    if let Some(ts) = sel {
+        let x1 = g.to_x(ts.start).round() + 0.5;
+        let x2 = (g.to_x(ts.end).round() + 0.5).max(x1 + 1.0);
+        for (x, out) in [(x1, -1.0f32), (x2, 1.0)] {
+            marks.add(edge_tri(x, out, top, top - MARK));
+            marks.add(edge_tri(x, out, mb + 2.0, mb + 2.0 + MARK));
+        }
+    }
+    // Start marker and playhead are independent (Live): the marker (where the next
+    // Play starts) is a line through the selected track(s) / master only, hidden
+    // while a time selection exists; the playhead spans every lane while playing.
+    // Both are 1 px inverted with ▼ at the loop row bottom and ▲ at the time ruler.
+    let mut inv = super::invert::Inverted::default();
+    let in_view = |x: f32| x >= lanes.min.x && x < lanes.max.x;
+    let xp = g.to_x(app.status.beat_position).round() + 0.5;
+    let xm = g.to_x(app.play_start).round() + 0.5;
+    if app.status.playing && in_view(xp) {
+        inv.tri(pos2(xp, top), 7.0, 4.0, true);
+        inv.tri(pos2(xp, mb + 2.0), 7.0, 4.0, false);
+        inv.vline(xp, top, mb + 2.0);
+    }
+    // Inverted shapes cancel where they overlap: skip the marker under the playhead.
+    let covered = app.status.playing && (xp - xm).abs() < 0.5;
+    if sel.is_none() && in_view(xm) && !covered {
+        inv.tri(pos2(xm, top), 7.0, 4.0, true);
+        inv.tri(pos2(xm, mb + 2.0), 7.0, 4.0, false);
+        for (k, &t) in g.rows.iter().enumerate() {
+            if app.is_track_selected(t) {
+                let r = g.lane(k).intersect(body);
+                inv.vline(xm, r.min.y, r.max.y);
             }
-            if app.master_selected {
-                inv.vline(x, body.max.y + 3.0, mb);
-            }
         }
-        inv.paint(&ui.painter_at(Rect::from_min_max(pos2(lanes.min.x, full.min.y), pos2(lanes.max.x, full.max.y))));
-    }
-    // Follow the playhead while playing (top-bar Follow switch).
-    if app.status.playing && app.follow {
-        let view_beats = lanes.width() as f64 / zoom;
-        let pos = app.status.beat_position;
-        if pos > g.scroll + view_beats * 0.9 || pos < g.scroll {
-            app.arr_scroll = (pos - view_beats * 0.1).max(0.0) as f32;
+        if app.master_selected {
+            inv.vline(xm, body.max.y + 3.0, mb);
         }
     }
+    inv.paint(&marks);
     ui.allocate_rect(full, Sense::hover());
 }
 
@@ -350,6 +381,9 @@ fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, x0: f32) {
     }
     let (zoom_d, delta, alt, pointer) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.modifiers.alt, i.pointer.hover_pos()));
     let pointer = pointer.unwrap_or(full.center());
+    if zoom_d != 1.0 || delta.x != 0.0 {
+        app.follow_paused |= app.status.playing;
+    }
     if zoom_d != 1.0 {
         let px = (pointer.x - x0) as f64;
         let beat = app.arr_scroll as f64 + px / app.arr_zoom as f64;
@@ -407,10 +441,6 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         && edge_at(h).is_some()
     {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-    }
-    if let Some(ts) = app.time_sel.filter(|t| t.len() > 1e-9) {
-        let r = Rect::from_min_max(pos2(g.to_x(ts.start), band.max.y - 3.0), pos2(g.to_x(ts.end), band.max.y));
-        p.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(120));
     }
     // Beat ruler (21 px): ┌ markers standing on the bottom edge at grid lines, numbers
     // to their right; short ticks on every other grid line (sub-beats).
@@ -479,7 +509,7 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             app.set_playhead(g.snap(g.beat_at(pos.x)));
         }
     }
-    resp.context_menu(|ui| grid_menu(ui, &mut app.arr_grid));
+    resp.context_menu(|ui| grid_menu(ui, &mut app.arr_grid, ARR_GRID_MAX));
 }
 
 fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
@@ -549,7 +579,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         draw_clip(p, r, &a.clip, sel, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm, collapsed);
         if !collapsed && g.grid * g.zoom >= 4.0 {
             // Grid lines show through the clip body (Live).
-            let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max).intersect(lane);
+            let body = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 16.0), r.max - vec2(1.0, 1.0)).intersect(lane);
             let pc = p.with_clip_rect(body.intersect(p.clip_rect()));
             let mut v = (g.beat_at(body.min.x).max(0.0) / g.grid).ceil() * g.grid;
             while g.to_x(v) < body.max.x {
@@ -923,7 +953,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     let gresp = ui
         .interact(gr.expand(3.0), ui.scope_id().with("arr_grid_label"), Sense::click())
         .on_hover_text("Grid (right-click: grid settings · Ctrl+1–4)");
-    gresp.context_menu(|ui| grid_menu(ui, &mut app.arr_grid));
+    gresp.context_menu(|ui| grid_menu(ui, &mut app.arr_grid, ARR_GRID_MAX));
     let p = ui.painter();
     let collapsed = app.project.master_collapsed;
     let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + io_w);
@@ -1042,10 +1072,10 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
                     // marker). Only the title bar jumps to the clip start.
                     Some(id) => {
                         app.select_arr_clip_mode(id, mode);
-                        app.set_playhead(g.snap(beat));
+                        app.set_start_marker(g.snap(beat));
                     }
                     None => {
-                        app.set_playhead(g.snap(beat));
+                        app.set_start_marker(g.snap(beat));
                         if !toggle {
                             app.arr_sel.clear();
                             app.resync_selected_clip();
@@ -1136,7 +1166,7 @@ fn selection_menu(app: &mut DawApp, ui: &mut egui::Ui) {
         ui.close();
     }
     ui.separator();
-    grid_menu(ui, &mut app.arr_grid);
+    grid_menu(ui, &mut app.arr_grid, ARR_GRID_MAX);
     ui.separator();
     if ui.button("Add Audio Track     Ctrl+T").clicked() {
         app.add_track(TrackKind::Audio);
@@ -1162,7 +1192,7 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
                 if ts.len() < 1e-9 {
                     app.time_sel = None;
                 }
-                app.set_playhead(ts.start);
+                app.set_start_marker(ts.start);
             }
         }
         Gesture::Resize { orig, left, fpb, total } => {
@@ -1381,11 +1411,27 @@ pub fn draw_clip(
     tempo: f64,
     collapsed: bool,
 ) {
-    // Live 12: coloured title + body with dark contents; selected = dark title
-    // with light text over a light-blue body.
+    draw_clip_fill(p, r, clip, selected, sample, zoom, tempo, collapsed);
+    // 1 px dark-grey outline on top of everything (contents may touch the edges).
+    p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, CLIP_EDGE), egui::StrokeKind::Inside);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_clip_fill(
+    p: &egui::Painter,
+    r: Rect,
+    clip: &Clip,
+    selected: bool,
+    sample: Option<&SampleBuffer>,
+    zoom: f64,
+    tempo: f64,
+    collapsed: bool,
+) {
+    // Live 12: coloured title + body with dark contents; selected = the body turns
+    // light blue, the title keeps the clip colour. 1 px dark-grey outline and divider.
     let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
-    let (title_bg, title_fg, body_bg) =
-        if selected { (gray(0x4a), Color32::from_gray(0xe6), SEL_BLUE) } else { (c, text_on(c), shade(c, 0.9)) };
+    let (title_bg, title_fg) = (c, text_on(c));
+    let body_bg = if selected { SEL_BLUE } else { shade(c, 0.9) };
     if collapsed {
         p.rect_filled(r, CornerRadius::ZERO, title_bg);
         p.with_clip_rect(r.intersect(p.clip_rect())).text(
@@ -1400,8 +1446,8 @@ pub fn draw_clip(
     p.rect_filled(r, CornerRadius::ZERO, body_bg);
     let title = Rect::from_min_size(r.min, vec2(r.width(), 15.0_f32.min(r.height())));
     p.rect_filled(title, CornerRadius::ZERO, title_bg);
-    if selected {
-        p.line_segment([title.left_top() + vec2(0.0, 0.5), title.right_top() + vec2(0.0, 0.5)], Stroke::new(1.0, SEL_BLUE));
+    if r.height() > title.height() + 1.0 {
+        p.rect_filled(Rect::from_min_max(pos2(r.min.x, title.max.y), pos2(r.max.x, title.max.y + 1.0)), CornerRadius::ZERO, CLIP_EDGE);
     }
     p.with_clip_rect(title.intersect(p.clip_rect())).text(
         title.left_center() + vec2(3.0, 0.0),
@@ -1448,7 +1494,7 @@ pub fn draw_clip(
         }
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
             let Some(buf) = sample else {
-                p.text(body.center(), Align2::CENTER_CENTER, "loading…", FontId::proportional(9.0), Color32::GRAY);
+                p.text(body.center(), Align2::CENTER_CENTER, "loading…", super::theme::font(9.0), Color32::GRAY);
                 return;
             };
             let sr = buf.sample_rate as f64;
@@ -1567,7 +1613,8 @@ fn paint_bars(p: &egui::Painter, r: Rect, g: &Geo, bpb: f64, sel: bool) {
         i += 1;
     }
     let step = g.grid.max(1e-6);
-    if (step * g.zoom) < 3.0 {
+    // Lines stay at the grid even when dense; below 2 px they'd just fill the lane.
+    if (step * g.zoom) < 2.0 {
         return;
     }
     let mut v = (g.beat_at(r.min.x).max(0.0) / step).floor() * step;

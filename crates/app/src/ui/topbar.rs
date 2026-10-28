@@ -205,7 +205,8 @@ impl DawApp {
         // Play / Stop / Record: unboxed icons like Live.
         let ir = |x: f32| g.c(x, x + 17.0);
         let r = ir(840.0);
-        let resp = ui.interact(r, ui.make_persistent_id("tb_play"), Sense::click()).on_hover_text("Play (Space) · Shift+Space: continue");
+        let resp =
+            ui.interact(r, ui.make_persistent_id("tb_play"), Sense::click()).on_hover_text("Play / Stop (Space) · Shift+Space: continue");
         let pc = if self.status.playing {
             Color32::from_rgb(0x5f, 0xd2, 0x5f)
         } else if resp.hovered() {
@@ -216,8 +217,7 @@ impl DawApp {
         let c = r.center();
         tri(&p, [c + vec2(-6.0, -7.5), c + vec2(7.5, 0.0), c + vec2(-6.0, 7.5)], pc);
         if resp.clicked() {
-            self.send_now(Command::SetPosition(self.play_start));
-            self.send_now(Command::Play);
+            self.toggle_play(); // exactly like Space
         }
         let r = ir(860.0);
         let resp = ui.interact(r, ui.make_persistent_id("tb_stop"), Sense::click()).on_hover_text("Stop; press again to return to start");

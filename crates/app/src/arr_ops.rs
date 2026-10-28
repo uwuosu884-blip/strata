@@ -188,6 +188,7 @@ impl DawApp {
         self.touched_track = Some(t);
         self.detail_mode = DetailMode::Device;
         self.focus_detail = false;
+        self.head_focus = true;
     }
 
     /// Header click: plain selects one track, Shift/Ctrl toggles it in the selection.
@@ -310,16 +311,28 @@ impl DawApp {
         self.resync_selected_clip();
     }
 
+    /// Ctrl+D after clicking track headers: duplicate the selected tracks (same
+    /// names, each below its original) and select the copies.
+    pub fn duplicate_selected_tracks(&mut self) -> bool {
+        let sel = self.selected_tracks();
+        if !self.head_focus || sel.is_empty() || !self.arr_sel.is_empty() || self.time_sel.is_some() {
+            return false;
+        }
+        let copies = self.edit(|p| p.duplicate_tracks(&sel));
+        if let Some(&first) = copies.first() {
+            self.track_sel = copies.clone();
+            self.selected_track = first;
+            self.track_anchor = Some(first);
+            self.hide_sel = None;
+        }
+        !copies.is_empty()
+    }
+
     /// Clicking a clip moves the start point (and the playhead) to its start.
     pub fn playhead_to_clip(&mut self, id: u64) {
         if let Some((t, i)) = self.project.find_arrangement_clip(id) {
             let s = self.project.tracks[t].arrangement[i].start;
-            if self.status.playing {
-                // While playing only the start point for the next play moves (no jump).
-                self.play_start = s;
-            } else {
-                self.set_playhead(s);
-            }
+            self.set_start_marker(s);
         }
     }
 
@@ -789,7 +802,14 @@ impl DawApp {
         if text.is_empty() || text == self.project.track_label(t) {
             return;
         }
-        self.edit(|p| p.tracks[t].name = text);
+        // A typed leading position number ("3 Drums" on track 3) stays a live
+        // number (`#`), so it renumbers on moves and stays out of clip names.
+        let num = format!("{} ", t + 1);
+        let name = match text.strip_prefix(&num) {
+            Some(rest) if !rest.trim().is_empty() => format!("# {}", rest.trim()),
+            _ => text,
+        };
+        self.edit(|p| p.tracks[t].name = name);
     }
 
     // ----- clips ----------------------------------------------------------------------
@@ -1440,5 +1460,23 @@ mod app_tests {
         let mut a = app();
         a.set_playhead(8.0);
         assert_eq!(a.play_start, 8.0);
+        // While playing a lane click only moves the start marker.
+        a.status.playing = true;
+        a.set_start_marker(12.0);
+        assert_eq!(a.play_start, 12.0);
+    }
+
+    #[test]
+    fn ctrl_d_on_track_headers_duplicates_tracks() {
+        let mut a = app();
+        a.project.add_track(daw_project::TrackKind::Midi);
+        a.project.add_track(daw_project::TrackKind::Midi);
+        let n = a.project.tracks.len();
+        a.select_track_header(0, super::SelMode::Single);
+        assert!(a.head_focus);
+        assert!(a.duplicate_selected_tracks());
+        assert_eq!(a.project.tracks.len(), n + 1);
+        assert_eq!(a.project.tracks[1].name, a.project.tracks[0].name);
+        assert_eq!(a.selected_tracks(), vec![1]);
     }
 }
