@@ -185,15 +185,12 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
-    locator_area(ui, &g, bpb, side);
+    locator_area(ui, side);
+    overview(app, ui, &g, Rect::from_min_max(full.min, pos2(full.max.x - 10.0, full.min.y + 12.0)));
 
     // ---- Lanes background: alternating bar shades + grid lines (Live) ------------
     let p = ui.painter_at(lanes);
     paint_bars(&p, lanes, &g, bpb, false);
-    if app.project.loop_enabled {
-        let r = Rect::from_min_max(pos2(g.to_x(app.project.loop_start), lanes.min.y), pos2(g.to_x(app.project.loop_end), lanes.max.y));
-        p.rect_filled(r, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(255, 160, 40, 12));
-    }
 
     // Whole-lanes interaction (registered first so clip widgets sit on top).
     let lr = ui.interact(lanes, ui.scope_id().with("arr_lanes"), Sense::click_and_drag());
@@ -295,6 +292,21 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         }
         _ => {}
     }
+    // Active loop: 1 px grey lines at both ends from the brace down to the time
+    // ruler, each ending in a right triangle outside the loop.
+    if app.project.loop_enabled {
+        let lp = ui.painter_at(Rect::from_min_max(pos2(lanes.min.x, full.min.y), pos2(lanes.max.x, full.max.y)));
+        let col = gray(0x91);
+        let (y0, yb) = (full.min.y + 35.0 + 11.0, mb + 2.0);
+        let x1 = g.to_x(app.project.loop_start).round() + 0.5;
+        let x2 = (g.to_x(app.project.loop_end).round() + 0.5).max(x1 + 16.0);
+        for (x, out) in [(x1, -1.0f32), (x2, 1.0)] {
+            lp.line_segment([pos2(x, y0), pos2(x, yb)], Stroke::new(1.0, col));
+            // Long side on the line (covering its pixel column), short side out.
+            let e = x - 0.5 * out;
+            lp.add(egui::Shape::convex_polygon(vec![pos2(e, yb), pos2(e, yb + 7.0), pos2(e + 4.0 * out, yb + 7.0)], col, Stroke::NONE));
+        }
+    }
     // Playhead (Live): 1 px, always inverted. ▼ at the bottom of the loop row,
     // ▲ at the top of the time ruler; the line spans every lane while playing,
     // only the selected track(s) / master while stopped.
@@ -362,29 +374,6 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     let resp = ui.interact(ruler, ui.scope_id().with("ruler"), Sense::click_and_drag());
     let p = ui.painter_at(ruler);
     p.rect_filled(ruler, CornerRadius::ZERO, panel());
-    // View Range Indicator (12 px): song extent, clips, playhead, visible range.
-    let ov = Rect::from_min_max(ruler.min, pos2(ruler.max.x, ruler.min.y + 12.0));
-    p.rect_filled(ov, CornerRadius::ZERO, gray(0x2e));
-    let end = app.project.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.start + a.clip.length)).fold(64.0f64, f64::max) * 1.1;
-    let k = ov.width() as f64 / end;
-    let vis = Rect::from_min_max(
-        pos2(ov.min.x + (g.scroll * k) as f32, ov.min.y),
-        pos2(ov.min.x + ((g.scroll + g.lanes.width() as f64 / g.zoom) * k) as f32, ov.max.y),
-    );
-    for t in &app.project.tracks {
-        for a in &t.arrangement {
-            let x1 = ov.min.x + (a.start * k) as f32;
-            let x2 = ov.min.x + ((a.start + a.clip.length) * k) as f32;
-            p.rect_filled(
-                Rect::from_min_max(pos2(x1, ov.min.y + 3.0), pos2(x2.max(x1 + 1.0), ov.max.y - 3.0)),
-                CornerRadius::ZERO,
-                rgb(a.clip.color).gamma_multiply(0.6),
-            );
-        }
-    }
-    let phx = (ov.min.x + (app.status.beat_position * k) as f32).round() + 0.5;
-    p.line_segment([pos2(phx, ov.min.y + 1.0), pos2(phx, ov.max.y - 1.0)], Stroke::new(1.0, text()));
-    p.rect_stroke(vis, CornerRadius::same(3), Stroke::new(2.0, gray(0x75)), egui::StrokeKind::Inside);
     p.rect_filled(
         Rect::from_min_max(pos2(ruler.min.x, ruler.min.y + 12.0), pos2(ruler.max.x, ruler.min.y + 14.0)),
         CornerRadius::ZERO,
@@ -494,14 +483,11 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
 }
 
 fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
-    let r = g.lane(k);
-    ui.painter_at(g.lanes).text(
-        r.left_center() + vec2(8.0, 0.0),
-        Align2::LEFT_CENTER,
-        "Drop a sample here to add a track · right-click to add tracks",
-        FontId::proportional(10.0),
-        gray(90),
-    );
+    // Centred in all the empty lane space below the last track.
+    let r = Rect::from_min_max(pos2(g.lanes.min.x, g.lane(k).min.y.max(g.body.min.y)), g.lanes.max);
+    if r.height() > 8.0 {
+        ui.painter_at(r).text(r.center(), Align2::CENTER_CENTER, "Drop Files and Devices Here", font(FS), gray(90));
+    }
 }
 
 fn clip_at(app: &DawApp, t: usize, beat: f64) -> Option<u64> {
@@ -797,7 +783,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         let lvl = midi_activity(app, t);
         dot_meter(
             &painter,
-            Rect::from_min_max(pos2(inner.max.x - 15.0, inner.min.y + 3.0), pos2(inner.max.x - 5.0, inner.max.y - 2.0)),
+            // Same column as the stereo meters (x −17…−10) so they line up.
+            Rect::from_min_max(pos2(inner.max.x - 17.0, inner.min.y + 2.0), pos2(inner.max.x - 10.0, inner.max.y - 2.0)),
             lvl,
         );
     } else {
@@ -926,7 +913,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     // Live: 3 px separator above the master; its lane shows the grid in large type.
     p.rect_filled(Rect::from_min_max(lanes.min, pos2(head.max.x, lanes.min.y + 3.0)), CornerRadius::ZERO, sep());
     let lanes = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + 3.0), lanes.max);
-    let head = Rect::from_min_max(pos2(head.min.x, head.min.y + 1.0), head.max);
+    let head = Rect::from_min_max(pos2(head.min.x + 2.0, head.min.y + 1.0), head.max);
     paint_bars(&ui.painter_at(lanes), lanes, g, app.project.beats_per_bar.max(1) as f64, false);
     let gl = match app.arr_grid {
         crate::arr_ops::GridMode::Off => "Off".to_string(),
@@ -1595,14 +1582,41 @@ fn paint_bars(p: &egui::Painter, r: Rect, g: &Geo, bpb: f64, sel: bool) {
     }
 }
 
+/// View Range Indicator (12 px, Live): song extent with clips, the playhead and
+/// the visible range. Spans the lanes and the header column up to the meters.
+fn overview(app: &DawApp, ui: &mut egui::Ui, g: &Geo, ov: Rect) {
+    let p = ui.painter_at(ov);
+    // View Range Indicator (12 px): song extent, clips, playhead, visible range.
+    p.rect_filled(ov, CornerRadius::ZERO, gray(0x2e));
+    let end = app.project.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.start + a.clip.length)).fold(64.0f64, f64::max) * 1.1;
+    let k = ov.width() as f64 / end;
+    let vis = Rect::from_min_max(
+        pos2(ov.min.x + (g.scroll * k) as f32, ov.min.y),
+        pos2(ov.min.x + ((g.scroll + g.lanes.width() as f64 / g.zoom) * k) as f32, ov.max.y),
+    );
+    for t in &app.project.tracks {
+        for a in &t.arrangement {
+            let x1 = ov.min.x + (a.start * k) as f32;
+            let x2 = ov.min.x + ((a.start + a.clip.length) * k) as f32;
+            p.rect_filled(
+                Rect::from_min_max(pos2(x1, ov.min.y + 3.0), pos2(x2.max(x1 + 1.0), ov.max.y - 3.0)),
+                CornerRadius::ZERO,
+                rgb(a.clip.color).gamma_multiply(0.6),
+            );
+        }
+    }
+    let phx = (ov.min.x + (app.status.beat_position * k) as f32).round() + 0.5;
+    p.line_segment([pos2(phx, ov.min.y + 1.0), pos2(phx, ov.max.y - 1.0)], Stroke::new(1.0, text()));
+    p.rect_stroke(vis, CornerRadius::same(3), Stroke::new(2.0, gray(0x75)), egui::StrokeKind::Inside);
+    let strip = Rect::from_min_max(pos2(g.lanes.max.x, ov.max.y), pos2(ov.max.x + 10.0, ov.max.y + 2.0));
+    ui.painter().rect_filled(strip, CornerRadius::ZERO, sep());
+}
+
 /// Header column above the tracks: Live's locator Set / ◂ ▸ and the two view
 /// switches (greyed: no locators here).
-fn locator_area(ui: &mut egui::Ui, g: &Geo, bpb: f64, side: Rect) {
+fn locator_area(ui: &mut egui::Ui, side: Rect) {
     let p = ui.painter();
     p.rect_filled(side, CornerRadius::ZERO, panel());
-    // Loop row continues the lane grid under the ◂ ▸ buttons (Live).
-    let row = Rect::from_min_max(pos2(side.min.x, side.min.y + 35.0), pos2(side.max.x, side.min.y + 57.0));
-    paint_bars(&ui.painter_at(row), row, g, bpb, false);
     p.rect_filled(Rect::from_min_max(pos2(side.min.x, side.max.y - 2.0), side.max), CornerRadius::ZERO, sep());
     let dimc = gray(0x62);
     let set = Rect::from_min_size(side.min + vec2(3.0, 23.0), vec2(30.0, 13.0));
@@ -1659,7 +1673,7 @@ fn time_ruler(app: &DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect)
         if i % n == 0 {
             pr.line_segment([pos2(x, r.min.y), pos2(x, r.min.y + 8.0)], Stroke::new(1.0, mark));
             pr.line_segment([pos2(x, r.min.y + 7.5), pos2(x + 2.0, r.min.y + 7.5)], Stroke::new(1.0, mark));
-            pr.text(pos2(x + 3.0, r.min.y + 11.0), Align2::LEFT_CENTER, time_label(b * spb), font(FS - 1.0), gray(0x8c));
+            pr.text(pos2(x + 3.0, r.min.y + 9.5), Align2::LEFT_CENTER, time_label(b * spb), font(FS - 1.0), gray(0x8c));
         } else if tick {
             pr.line_segment([pos2(x, r.min.y), pos2(x, r.min.y + 2.0)], Stroke::new(1.0, gray(0x6b)));
         }
@@ -1734,8 +1748,10 @@ fn midi_activity(app: &DawApp, t: usize) -> f32 {
 
 /// Live track meter: a column of dots lit bottom-up (green → yellow → red).
 pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
-    let pitch = 8.6;
-    let n = ((r.height() + 2.0) / pitch).floor().max(1.0) as usize;
+    // ~8.6 px pitch, spread so the top and bottom dots touch the ends of `r`
+    // (lines up with the stereo meters on other tracks).
+    let n = ((r.height() + 2.0) / 8.6).floor().max(1.0) as usize;
+    let pitch = if n > 1 { (r.height() - 6.0) / (n - 1) as f32 } else { 0.0 };
     let lit = (level * n as f32).round() as usize;
     for i in 0..n {
         let c = pos2(r.center().x, r.max.y - 3.0 - i as f32 * pitch);

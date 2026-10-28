@@ -231,8 +231,7 @@ pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: 
     if text == "REC" {
         // Live: a plain 7 px disc, light when off, dark on the red when armed.
         let r = (rect.height() * 0.27).min(3.5);
-        let c = rect.center().round() + vec2(0.5, 0.5) * (rect.height() as i32 % 2) as f32;
-        p.circle_filled(c, r, if on { Color32::from_gray(0x16) } else { super::theme::text() });
+        p.circle_filled(rect.center(), r, if on { Color32::from_gray(0x16) } else { super::theme::text() });
     } else {
         let fg = if on { Color32::from_gray(0x16) } else { super::theme::text() };
         p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);

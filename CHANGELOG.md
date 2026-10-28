@@ -10,6 +10,25 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.2] - 2026-10-28
+
+### Changed
+- **Active loop**: the orange fill is gone. Instead, 1 px grey lines mark the
+  loop start and end, running from the brace down to the time ruler. Each line
+  ends in a small right triangle that points out of the loop.
+- **View Range Indicator** now spans the header column too, up to the right
+  edge of the track meters.
+- The header part of the loop row (around the ◂ ▸ locator buttons) is solid
+  again; the grid stays left of the lane/header separator.
+- **Master row**: the collapse button has left padding like on tracks, and the
+  output chooser shows a small level meter left of "1/2".
+- **MIDI activity dots** sit in the same column as the stereo meters and span
+  the same height.
+- The Arm disc is exactly centred in its button.
+- Metronome icon: smaller discs, centred between the box edge and the ▾.
+- Time ruler labels sit slightly higher next to their markers.
+- The empty arrangement area says "Drop Files and Devices Here", centred.
+
 ## [0.7.1] - 2026-10-27
 
 ### Changed
@@ -471,7 +490,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...v0.6.1

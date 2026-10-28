@@ -625,11 +625,11 @@ fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {
     let (ch, stereo) = (app.project.master_out_ch, app.project.master_out_stereo);
     let mut pick = None;
     let mut configure = false;
-    egui::ComboBox::from_id_salt("master_out")
+    let cr = egui::ComboBox::from_id_salt("master_out")
         .wrap_mode(egui::TextWrapMode::Truncate)
         .width(cw)
         .height(420.0)
-        .selected_text(small(ext_label(&cfg, ch, stereo)))
+        .selected_text(metered(ui, ext_label(&cfg, ch, stereo)))
         .show_ui(ui, |ui| {
             for e in cfg.entries(app.audio.info.channels) {
                 if entry(ui, e.ch == ch && e.stereo == stereo, &cfg.label(e), None) {
@@ -641,6 +641,10 @@ fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {
                 configure = true;
             }
         });
+    // Output level meter left of the channel name (Live).
+    let (m, c) = (app.meter, app.clipped);
+    let peaks: Vec<(f32, bool)> = if stereo { vec![(m[0], c), (m[1], c)] } else { vec![(m[0].max(m[1]), c)] };
+    input_meter(&ui.painter_at(cr.response.rect), meter_slot(cr.response.rect), &peaks);
     if configure {
         app.open_settings(SettingsTab::Audio);
     }
