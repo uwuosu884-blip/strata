@@ -10,6 +10,48 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.1] - 2026-10-27
+
+### Changed
+- **Sharper text.** Full TrueType hinting and whole-pixel glyph placement
+  replace egui's soft default (it looked blurry at 100 % scale).
+- **Smaller text** everywhere: body 10 px, small 8 px (was 11 / 9.5); fixed
+  sizes shrink to match.
+- **Rulers** (Live style):
+  - Bar numbers sit beside ┌ markers on the bottom edge, with ticks on the
+    beats and sub-beats. When zoomed in far enough, beats get labels too
+    (e.g. 3.2).
+  - Time markers hang from the top edge (└) on grid lines and show the exact
+    time (`m:ss` or `m:ss.mmm`). They are smaller and dimmer than before.
+  - The loop brace is an outline only: half the row's height, with inward
+    triangles at both ends and no grid inside. The rest of its row shows the
+    lane grid, which continues under the ◂ ▸ locator buttons.
+  - The View Range Indicator shows clips and the playhead, with a rounded
+    2 px frame around the visible range.
+- **Playhead**: 1 px and always colour-inverted. A ▼ sits under the loop brace
+  and a ▲ above the time ruler. While playing it spans every lane; while
+  stopped it shows only on the selected track(s) or the master.
+- **Track headers**:
+  - A single continuous 2 px separator runs between the lanes and the headers,
+    from the first track down past the master.
+  - Text on coloured name areas is slightly softer.
+  - Unarmed Arm buttons show a plain light disc; armed shows a dark disc. Both
+    are a bit smaller.
+- **Meters**:
+  - Tracks with audio output (audio tracks, and MIDI tracks with an
+    instrument) and the master get Live's stereo meter: two thin bars under
+    clip cells.
+  - MIDI activity dots stay only on MIDI tracks without an instrument, and now
+    show the notes actually playing and armed input.
+  - The input channel chooser shows a small stereo or mono input meter.
+    MIDI channel choosers show three MIDI activity cells.
+- **Master row**: 2 px lines separate the name, In/Out and mixer parts. The
+  output chooser is 13 px tall and vertically centred, like on tracks.
+- The master lane shows the grid behind the large grid label.
+- The Automation and Lock switches are the same size as Solo / Arm.
+- The focus outline around the arrangement or device view has rounded corners.
+- The metronome icon's two circles have a clear gap between them.
+
 ## [0.7.0] - 2026-10-27
 
 ### Changed
@@ -429,7 +471,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/uwuosu884-blip/strata/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/uwuosu884-blip/strata/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/uwuosu884-blip/strata/compare/v0.5.0...v0.6.0

@@ -47,7 +47,7 @@ pub fn window(app: &mut DawApp, ctx: &egui::Context, tab: &mut SettingsTab) -> b
             // Title bar.
             let title = Rect::from_min_size(full.min, vec2(W, TITLE_H));
             p.rect_filled(title, 0.0, gray(0x20));
-            p.text(title.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, "Settings", font(13.0), gray(0xe6));
+            p.text(title.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, "Settings", font(12.0), gray(0xe6));
             let xr = Rect::from_center_size(title.right_center() - vec2(18.0, 0.0), vec2(20.0, 20.0));
             let xresp = ui.interact(xr, ui.make_persistent_id("set_close"), Sense::click());
             let xc = if xresp.hovered() { Color32::WHITE } else { gray(0xc8) };

@@ -296,7 +296,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 pos2(x + 2.0, ruler.min.y),
                 Align2::LEFT_TOP,
                 format!("{}", (b / bpb) as i64 + 1),
-                FontId::proportional(9.0),
+                FontId::proportional(8.0),
                 gray(170),
             );
         }
@@ -402,7 +402,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     for &v in vel_scale {
         let y = vel_area.max.y - vel_area.height() * v as f32 / 127.0;
         sp.line_segment([pos2(vel_area.min.x - 6.0, y), pos2(vel_area.min.x - 2.0, y)], Stroke::new(1.0, gray(120)));
-        sp.text(pos2(vel_area.min.x - 8.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::proportional(9.0), gray(150));
+        sp.text(pos2(vel_area.min.x - 8.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::proportional(8.0), gray(150));
         if v == 64 {
             vp.line_segment([pos2(vel_area.min.x, y), pos2(vel_area.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(10)));
         }
@@ -705,7 +705,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 let tp = ui.painter();
                 let lr = Rect::from_center_size(pt + vec2(18.0, -12.0), vec2(28.0, 15.0));
                 tp.rect_filled(lr, CornerRadius::same(2), Color32::from_black_alpha(210));
-                tp.text(lr.center(), Align2::CENTER_CENTER, v.to_string(), FontId::proportional(11.0), Color32::WHITE);
+                tp.text(lr.center(), Align2::CENTER_CENTER, v.to_string(), FontId::proportional(10.0), Color32::WHITE);
                 let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(pt);
                 let b = beat_at(press.x);
                 // Selected notes, else every note starting at the nearest start (a chord).
@@ -1040,7 +1040,7 @@ fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8>
                             r.right_bottom() - vec2(3.0, 2.0),
                             Align2::RIGHT_BOTTOM,
                             note_name(DRUM_BASE_NOTE + i as u8),
-                            FontId::proportional(8.0),
+                            FontId::proportional(7.0),
                             gray(150),
                         );
                         if resp.clicked() {

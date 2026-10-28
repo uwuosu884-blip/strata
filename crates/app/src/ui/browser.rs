@@ -260,7 +260,7 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
     let dimc = gray(0x62);
     let top = Rect::from_min_size(full.min, vec2(full.width(), 21.0));
     for (i, ch) in ["‹", "›"].iter().enumerate() {
-        p.text(pos2(top.left() + 9.0 + i as f32 * 17.0, top.center().y), Align2::CENTER_CENTER, *ch, font(13.0), dimc);
+        p.text(pos2(top.left() + 9.0 + i as f32 * 17.0, top.center().y), Align2::CENTER_CENTER, *ch, font(12.0), dimc);
     }
     p.line_segment([pos2(top.left() + 17.5, top.top() + 4.0), pos2(top.left() + 17.5, top.bottom() - 4.0)], Stroke::new(1.0, sep()));
     let search = Rect::from_min_max(pos2(top.left() + 36.0, top.top() + 1.0), pos2(top.right() - 41.0, top.bottom()));

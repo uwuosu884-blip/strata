@@ -4,6 +4,7 @@ pub(crate) mod arrangement;
 mod browser;
 pub mod clip;
 mod detail;
+mod invert;
 mod io;
 mod prefs;
 mod session;
@@ -149,7 +150,7 @@ impl eframe::App for DawApp {
         let central = central - m(left, 9, 0, 0);
         // Focus outline (drawn in the gap, like Live).
         let fr = if self.focus_detail { detail_inner } else { central };
-        ui.painter().rect_stroke(fr, 0.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
+        ui.painter().rect_stroke(fr, 4.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
         // A press elsewhere in the main view deselects the master.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
             && central.contains(p)
@@ -1064,7 +1065,7 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, id: 
     }
     let te_id = ui.make_persistent_id(("rename", r.id, clip));
     let resp =
-        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(egui::FontId::proportional(12.0)).margin(egui::vec2(2.0, 1.0)));
+        ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(egui::FontId::proportional(11.0)).margin(egui::vec2(2.0, 1.0)));
     if r.fresh {
         r.fresh = false;
         resp.request_focus();

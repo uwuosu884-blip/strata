@@ -154,8 +154,10 @@ impl DawApp {
             self.send_now(Command::SetMetronome(!on));
         }
         let f = fg(on, true);
-        p.circle_stroke(pos2(r.left() + 9.0, r.center().y), 3.5, Stroke::new(1.1, f));
-        p.circle_filled(pos2(r.left() + 18.0, r.center().y), 4.0, f);
+        // Two discs with a clear ~4 px gap between them.
+        let cy = r.center().y.round() + 0.5;
+        p.circle_stroke(pos2(r.left().round() + 7.5, cy), 3.5, Stroke::new(1.1, f));
+        p.circle_filled(pos2(r.left().round() + 19.5, cy), 4.0, f);
         arrow_down(&p, r, f);
         // Global launch quantization.
         let r = g.l(250.0, 294.0);

@@ -292,8 +292,8 @@ pub const SEL_ROW: Color32 = Color32::from_rgb(0x63, 0x7e, 0x86);
 pub const SEL_BLUE: Color32 = Color32::from_rgb(0xb4, 0xdc, 0xe8);
 
 /// Font sizes (Live: ~11 px UI text).
-pub const FS: f32 = 11.0;
-pub const FS_SMALL: f32 = 9.5;
+pub const FS: f32 = 10.0;
+pub const FS_SMALL: f32 = 8.0;
 
 pub fn font(size: f32) -> FontId {
     FontId::proportional(size)
@@ -306,8 +306,22 @@ pub fn bold(size: f32) -> FontId {
 /// Inter (OFL) embedded: Medium for UI text, SemiBold for titles.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert("inter".into(), FontData::from_static(include_bytes!("../../assets/Inter-Medium.ttf")).into());
-    fonts.font_data.insert("inter-bold".into(), FontData::from_static(include_bytes!("../../assets/Inter-SemiBold.ttf")).into());
+    // Sharp small text: Inter ships TrueType hinting; use full (non-symmetric)
+    // grid-fitting incl. horizontal stems instead of egui's soft default.
+    let sharp = || egui::epaint::text::FontTweak {
+        hinting: Some(true),
+        hinting_target: egui::epaint::text::HintingTarget::Smooth(egui::epaint::text::SmoothHinting {
+            light: false,
+            symmetric_rendering: false,
+            preserve_linear_metrics: true,
+        }),
+        subpixel_binning: Some(false),
+        ..Default::default()
+    };
+    fonts.font_data.insert("inter".into(), FontData::from_static(include_bytes!("../../assets/Inter-Medium.ttf")).tweak(sharp()).into());
+    fonts
+        .font_data
+        .insert("inter-bold".into(), FontData::from_static(include_bytes!("../../assets/Inter-SemiBold.ttf")).tweak(sharp()).into());
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "inter".into());
     let mut b = vec!["inter-bold".to_string()];
     b.extend(fonts.families[&FontFamily::Proportional].iter().skip(1).cloned());
@@ -324,7 +338,7 @@ pub fn apply_style(ctx: &egui::Context) {
         (TextStyle::Small, font(FS_SMALL)),
         (TextStyle::Body, font(FS)),
         (TextStyle::Button, font(FS)),
-        (TextStyle::Heading, bold(13.0)),
+        (TextStyle::Heading, bold(12.0)),
         (TextStyle::Monospace, FontId::monospace(FS)),
     ]
     .into();
@@ -337,6 +351,9 @@ pub fn apply_style(ctx: &egui::Context) {
     st.spacing.slider_width = 110.0;
     st.spacing.slider_rail_height = 3.0;
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+    // No sub-pixel glyph binning: glyphs land on whole pixels (crisper).
+    v.text_options.font_hinting = true;
+    v.text_options.subpixel_binning = false;
     let r0 = CornerRadius::ZERO;
     v.override_text_color = Some(text());
     v.panel_fill = panel();

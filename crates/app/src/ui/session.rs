@@ -59,7 +59,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
                     rect.center(),
                     Align2::CENTER_CENTER,
                     "Drop instruments\nor samples here",
-                    FontId::proportional(11.0),
+                    FontId::proportional(10.0),
                     gray(110),
                 );
                 if let Some(item) = resp.dnd_release_payload::<DragItem>() {

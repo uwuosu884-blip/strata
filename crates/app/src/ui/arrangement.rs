@@ -185,7 +185,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
-    locator_area(ui, side);
+    locator_area(ui, &g, bpb, side);
 
     // ---- Lanes background: alternating bar shades + grid lines (Live) ------------
     let p = ui.painter_at(lanes);
@@ -237,6 +237,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     master_row(
         app,
         ui,
+        &g,
         Rect::from_min_max(pos2(full.min.x, body.max.y), pos2(lanes_x1, mb)),
         Rect::from_min_max(pos2(lanes_x1, body.max.y), pos2(full.max.x, mb)),
         io_w,
@@ -248,6 +249,8 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         Rect::from_min_max(pos2(full.min.x, mb), pos2(lanes_x1, full.max.y)),
         Rect::from_min_max(pos2(lanes_x1, mb), full.max),
     );
+    // One continuous 2 px separator between lanes and headers, down past the master.
+    ui.painter().rect_filled(Rect::from_min_max(pos2(lanes_x1, body.min.y), pos2(lanes_x1 + 2.0, mb)), CornerRadius::ZERO, sep());
     os_file_drop(app, ui, &g);
 
     // ---- Overlays --------------------------------------------------------------------
@@ -292,10 +295,29 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         }
         _ => {}
     }
-    // Playhead over lanes + ruler.
-    let x = g.to_x(app.status.beat_position);
-    if x >= lanes.min.x && x <= lanes.max.x {
-        ui.painter().line_segment([pos2(x, full.min.y), pos2(x, full.max.y)], Stroke::new(1.5, Color32::WHITE));
+    // Playhead (Live): 1 px, always inverted. ▼ at the bottom of the loop row,
+    // ▲ at the top of the time ruler; the line spans every lane while playing,
+    // only the selected track(s) / master while stopped.
+    let x = g.to_x(app.status.beat_position).round() + 0.5;
+    if x >= lanes.min.x && x < lanes.max.x {
+        let mut inv = super::invert::Inverted::default();
+        let top = full.min.y + RULER_H - 2.0;
+        inv.tri(pos2(x, top), 7.0, 4.0, true);
+        inv.tri(pos2(x, mb + 2.0), 7.0, 4.0, false);
+        if app.status.playing {
+            inv.vline(x, top, mb + 2.0);
+        } else {
+            for (k, &t) in g.rows.iter().enumerate() {
+                if app.is_track_selected(t) {
+                    let r = g.lane(k).intersect(body);
+                    inv.vline(x, r.min.y, r.max.y);
+                }
+            }
+            if app.master_selected {
+                inv.vline(x, body.max.y + 3.0, mb);
+            }
+        }
+        inv.paint(&ui.painter_at(Rect::from_min_max(pos2(lanes.min.x, full.min.y), pos2(lanes.max.x, full.max.y))));
     }
     // Follow the playhead while playing (top-bar Follow switch).
     if app.status.playing && app.follow {
@@ -340,7 +362,7 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     let resp = ui.interact(ruler, ui.scope_id().with("ruler"), Sense::click_and_drag());
     let p = ui.painter_at(ruler);
     p.rect_filled(ruler, CornerRadius::ZERO, panel());
-    // Overview strip (12 px): song extent with the visible range outlined.
+    // View Range Indicator (12 px): song extent, clips, playhead, visible range.
     let ov = Rect::from_min_max(ruler.min, pos2(ruler.max.x, ruler.min.y + 12.0));
     p.rect_filled(ov, CornerRadius::ZERO, gray(0x2e));
     let end = app.project.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.start + a.clip.length)).fold(64.0f64, f64::max) * 1.1;
@@ -360,28 +382,31 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             );
         }
     }
-    p.rect_stroke(vis, CornerRadius::ZERO, Stroke::new(1.0, gray(0x9a)), egui::StrokeKind::Inside);
+    let phx = (ov.min.x + (app.status.beat_position * k) as f32).round() + 0.5;
+    p.line_segment([pos2(phx, ov.min.y + 1.0), pos2(phx, ov.max.y - 1.0)], Stroke::new(1.0, text()));
+    p.rect_stroke(vis, CornerRadius::same(3), Stroke::new(2.0, gray(0x75)), egui::StrokeKind::Inside);
     p.rect_filled(
         Rect::from_min_max(pos2(ruler.min.x, ruler.min.y + 12.0), pos2(ruler.max.x, ruler.min.y + 14.0)),
         CornerRadius::ZERO,
         sep(),
     );
     p.rect_filled(Rect::from_min_max(pos2(ruler.min.x, ruler.max.y - 2.0), ruler.max), CornerRadius::ZERO, sep());
-    // Loop / locator row (22 px) holds the loop brace.
+    // Loop row (22 px): painted like the lanes; the brace is an outline over the top
+    // half (no grid inside) with inward triangles at both ends.
     let band = Rect::from_min_max(pos2(ruler.min.x, ruler.min.y + 35.0), pos2(ruler.max.x, ruler.min.y + 57.0));
-    p.rect_filled(band, CornerRadius::ZERO, gray(0x32));
+    paint_bars(&p.with_clip_rect(band.intersect(ruler)), band, g, bpb, false);
     let (ls, le) = (app.project.loop_start, app.project.loop_end);
-    let brace = Rect::from_min_max(pos2(g.to_x(ls), band.min.y + 4.0), pos2(g.to_x(le).max(g.to_x(ls) + 4.0), band.max.y - 4.0));
-    let col = if app.project.loop_enabled { ACCENT } else { gray(0x8a) };
-    p.rect_filled(brace, CornerRadius::ZERO, col.gamma_multiply(0.85));
-    // Brace ends: small downward hooks like Live's loop brace.
-    for (x, d) in [(brace.min.x, 1.0), (brace.max.x, -1.0)] {
-        p.rect_filled(
-            Rect::from_min_max(pos2(x.min(x + 3.0 * d), brace.min.y), pos2(x.max(x + 3.0 * d), brace.max.y + 3.0)),
-            CornerRadius::ZERO,
-            col,
-        );
+    let bx1 = g.to_x(ls).round() + 0.5;
+    let bx2 = (g.to_x(le).round() + 0.5).max(bx1 + 16.0);
+    let brace = Rect::from_min_max(pos2(bx1, band.min.y + 0.5), pos2(bx2, band.min.y + 10.5));
+    let col = if app.project.loop_enabled { ACCENT } else { gray(0x91) };
+    p.rect_filled(brace, CornerRadius::ZERO, panel());
+    p.rect_stroke(brace, CornerRadius::ZERO, Stroke::new(1.0, col), egui::StrokeKind::Middle);
+    for (x, d) in [(bx1, 1.0f32), (bx2, -1.0)] {
+        let y = brace.min.y;
+        p.add(egui::Shape::closed_line(vec![pos2(x, y + 2.0), pos2(x + 7.0 * d, y + 5.0), pos2(x, y + 8.0)], Stroke::new(1.0, col)));
     }
+    let brace = Rect::from_min_max(pos2(bx1, band.min.y), pos2(bx2, band.min.y + 11.0));
     let edge_at = |pos: Pos2| -> Option<bool> {
         if !band.expand(2.0).contains(pos) {
             return None;
@@ -398,22 +423,46 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         let r = Rect::from_min_max(pos2(g.to_x(ts.start), band.max.y - 3.0), pos2(g.to_x(ts.end), band.max.y));
         p.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(120));
     }
-    // Beat ruler (21 px): bar numbers with a short tick at their left.
-    let bar_px = bpb * g.zoom;
-    let label_every = ((50.0 / bar_px).ceil() as i64).max(1);
-    let mut bar = (g.scroll / bpb).floor().max(0.0) as i64;
+    // Beat ruler (21 px): ┌ markers standing on the bottom edge at grid lines, numbers
+    // to their right; short ticks on every other grid line (sub-beats).
     let ry = ruler.min.y + 14.0;
-    while g.to_x(bar as f64 * bpb) < ruler.max.x {
-        let x = g.to_x(bar as f64 * bpb).round() + 0.5;
-        if bar % label_every == 0 {
-            p.line_segment([pos2(x, ry + 8.0), pos2(x, ry + 21.0)], Stroke::new(1.0, gray(0x8a)));
-            p.line_segment([pos2(x, ry + 8.0), pos2(x + 3.0, ry + 8.0)], Stroke::new(1.0, gray(0x8a)));
-            p.text(pos2(x + 3.0, ry + 8.0), Align2::LEFT_CENTER, format!("{}", bar + 1), font(FS), text());
-        } else {
-            p.line_segment([pos2(x, ry + 17.0), pos2(x, ry + 21.0)], Stroke::new(1.0, gray(0x5a)));
-        }
-        bar += 1;
+    let yb = ry + 21.0;
+    let bar_px = bpb * g.zoom;
+    // Label every 2^n bars so numbers keep ~50 px apart.
+    let mut label_every = 1i64;
+    while (label_every as f64) * bar_px < 50.0 {
+        label_every *= 2;
     }
+    let beat_labels = g.zoom >= 60.0;
+    let mark = gray(0x64);
+    let step = g.grid.max(1e-6).min(bpb * label_every as f64);
+    let tick_step = if step * g.zoom >= 6.0 { step } else { bpb * label_every as f64 };
+    let mut v = (g.scroll / tick_step).floor().max(0.0) * tick_step;
+    while g.to_x(v) < ruler.max.x {
+        let x = g.to_x(v).round() + 0.5;
+        let bars = v / bpb;
+        let bar = (bars + 1e-9).floor() as i64;
+        let on_bar = (bars - bar as f64).abs() < 1e-6;
+        let beat_f = v - bar as f64 * bpb;
+        let on_beat = (beat_f - beat_f.round()).abs() < 1e-6;
+        let label = if on_bar && bar % label_every == 0 {
+            Some(format!("{}", bar + 1))
+        } else if beat_labels && on_beat && !on_bar {
+            Some(format!("{}.{}", bar + 1, beat_f.round() as i64 + 1))
+        } else {
+            None
+        };
+        if let Some(l) = label {
+            p.line_segment([pos2(x, ry + 15.0), pos2(x, yb)], Stroke::new(1.0, mark));
+            p.line_segment([pos2(x, ry + 15.5), pos2(x + 2.0, ry + 15.5)], Stroke::new(1.0, mark));
+            p.text(pos2(x + 4.0, ry + 15.0), Align2::LEFT_CENTER, l, font(FS), gray(0x92));
+        } else {
+            let h = if on_beat { 3.0 } else { 2.0 };
+            p.line_segment([pos2(x, yb - h), pos2(x, yb)], Stroke::new(1.0, mark));
+        }
+        v += tick_step;
+    }
+    // Playhead triangle under the brace (inverted, see arrangement_view).
     // Drag a brace corner = resize, the brace body = move, elsewhere = draw a new range.
     // None of these switch looping on (click the brace or Ctrl+L for that).
     if resp.drag_started()
@@ -450,7 +499,7 @@ fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
         r.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
         "Drop a sample here to add a track · right-click to add tracks",
-        FontId::proportional(11.0),
+        FontId::proportional(10.0),
         gray(90),
     );
 }
@@ -684,7 +733,7 @@ pub fn io_width(full_w: f32) -> f32 {
 
 fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let lane = g.lane(k);
-    let head = Rect::from_min_max(pos2(g.lanes.max.x + 1.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
+    let head = Rect::from_min_max(pos2(g.lanes.max.x + 2.0, lane.min.y), pos2(g.body.max.x, lane.max.y));
     let clip = head.intersect(g.body);
     if clip.height() <= 0.0 {
         return;
@@ -742,10 +791,20 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if !renaming {
         painter.with_clip_rect(name_rect.intersect(clip)).text(name_rect.left_center(), Align2::LEFT_CENTER, &name, font(FS), text_col);
     }
-    // Live dot meter at the right of the mixer column.
-    let m = app.track_meters.get(t).copied().unwrap_or([0.0; 2]);
-    let lvl = ((daw_project::gain_to_db(m[0].max(m[1])) + 60.0) / 60.0).clamp(0.0, 1.0);
-    dot_meter(&painter, Rect::from_min_max(pos2(inner.max.x - 15.0, inner.min.y + 3.0), pos2(inner.max.x - 5.0, inner.max.y - 2.0)), lvl);
+    // Right edge: MIDI activity dots on MIDI tracks without an instrument, else a
+    // stereo peak meter (Live).
+    if app.project.tracks[t].sends_midi() {
+        let lvl = midi_activity(app, t);
+        dot_meter(
+            &painter,
+            Rect::from_min_max(pos2(inner.max.x - 15.0, inner.min.y + 3.0), pos2(inner.max.x - 5.0, inner.max.y - 2.0)),
+            lvl,
+        );
+    } else {
+        let m = app.track_meters.get(t).copied().unwrap_or([0.0; 2]);
+        let r = Rect::from_min_max(pos2(inner.max.x - 17.0, inner.min.y + 2.0), pos2(inner.max.x - 10.0, inner.max.y - 2.0));
+        track_meter(&painter, r, m, [m[0] >= 1.0, m[1] >= 1.0]);
+    }
 
     let hr = ui.interact(clip, ui.scope_id().with(("arr_head", t)), Sense::click_and_drag());
     if hr.clicked()
@@ -862,13 +921,13 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
 
 /// Master track row, pinned under the lanes (Live). Collapsed by default; no
 /// activator / solo / arm; volume and pan are always shown.
-fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w: f32) {
+fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect, io_w: f32) {
     let p = ui.painter();
     // Live: 3 px separator above the master; its lane shows the grid in large type.
     p.rect_filled(Rect::from_min_max(lanes.min, pos2(head.max.x, lanes.min.y + 3.0)), CornerRadius::ZERO, sep());
     let lanes = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + 3.0), lanes.max);
     let head = Rect::from_min_max(pos2(head.min.x, head.min.y + 1.0), head.max);
-    p.rect_filled(lanes, CornerRadius::ZERO, panel());
+    paint_bars(&ui.painter_at(lanes), lanes, g, app.project.beats_per_bar.max(1) as f64, false);
     let gl = match app.arr_grid {
         crate::arr_ops::GridMode::Off => "Off".to_string(),
         _ => grid_label(app.grid),
@@ -887,6 +946,8 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     let sel = app.master_selected;
     let col = rgb(app.project.master_color);
     let title_bg = if sel { col } else { shade(col, 0.72) };
+    // Separator colour behind everything: 2 px lines between name | In/Out | mixer.
+    p.rect_filled(Rect::from_min_max(pos2(head.min.x, head.min.y), head.max), CornerRadius::ZERO, sep());
     p.rect_filled(left, CornerRadius::ZERO, title_bg);
     super::add_master_zone(ui, head);
     let hr = ui.interact(left, ui.scope_id().with("master_head"), Sense::click());
@@ -897,7 +958,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
     if io_w > 0.0 {
         let io = Rect::from_min_max(pos2(left.max.x + 2.0, head.min.y + 2.0), pos2(split - 2.0, head.max.y));
         ui.painter().rect_filled(io, CornerRadius::ZERO, panel());
-        super::io::master_io_compact(app, ui, io);
+        super::io::master_io_compact(app, ui, io, collapsed);
     }
     let p = ui.painter();
     p.rect_filled(right, CornerRadius::ZERO, if sel { sel_bg() } else { panel() });
@@ -912,9 +973,8 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, lanes: Rect, head: Rect, io_w
         app.dirty = true;
     }
     // Master meter in the lane (expanded) and at the right edge.
-    let lvl = |v: f32| ((daw_project::gain_to_db(v) + 60.0) / 60.0).clamp(0.0, 1.0);
-    let m = app.meter[0].max(app.meter[1]);
-    dot_meter(p, Rect::from_min_max(pos2(head.max.x - 15.0, head.min.y + 3.0), pos2(head.max.x - 5.0, head.max.y - 1.0)), lvl(m));
+    let r = Rect::from_min_max(pos2(head.max.x - 17.0, head.min.y + 2.0), pos2(head.max.x - 10.0, head.max.y - 2.0));
+    track_meter(p, r, app.meter, [app.clipped, app.clipped]);
     let bx = right.min.x + 2.0;
     // Row 1: volume · blue Cue; pan below them once the row is tall enough.
     let vr = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
@@ -1401,7 +1461,7 @@ pub fn draw_clip(
         }
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
             let Some(buf) = sample else {
-                p.text(body.center(), Align2::CENTER_CENTER, "loading…", FontId::proportional(10.0), Color32::GRAY);
+                p.text(body.center(), Align2::CENTER_CENTER, "loading…", FontId::proportional(9.0), Color32::GRAY);
                 return;
             };
             let sr = buf.sample_rate as f64;
@@ -1537,9 +1597,12 @@ fn paint_bars(p: &egui::Painter, r: Rect, g: &Geo, bpb: f64, sel: bool) {
 
 /// Header column above the tracks: Live's locator Set / ◂ ▸ and the two view
 /// switches (greyed: no locators here).
-fn locator_area(ui: &mut egui::Ui, side: Rect) {
+fn locator_area(ui: &mut egui::Ui, g: &Geo, bpb: f64, side: Rect) {
     let p = ui.painter();
     p.rect_filled(side, CornerRadius::ZERO, panel());
+    // Loop row continues the lane grid under the ◂ ▸ buttons (Live).
+    let row = Rect::from_min_max(pos2(side.min.x, side.min.y + 35.0), pos2(side.max.x, side.min.y + 57.0));
+    paint_bars(&ui.painter_at(row), row, g, bpb, false);
     p.rect_filled(Rect::from_min_max(pos2(side.min.x, side.max.y - 2.0), side.max), CornerRadius::ZERO, sep());
     let dimc = gray(0x62);
     let set = Rect::from_min_size(side.min + vec2(3.0, 23.0), vec2(30.0, 13.0));
@@ -1556,7 +1619,7 @@ fn locator_area(ui: &mut egui::Ui, side: Rect) {
         ));
     }
     for i in 0..2 {
-        let r = Rect::from_min_size(side.min + vec2(44.0 + i as f32 * 38.0, 23.0), vec2(35.0, 13.0));
+        let r = Rect::from_min_size(side.min + vec2(44.0 + i as f32 * (SOLO_W + GAP), 23.0), vec2(SOLO_W, BOX_H));
         p.rect_filled(r, CornerRadius::ZERO, gray(0x26));
         p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
         let c = r.center();
@@ -1579,17 +1642,28 @@ fn time_ruler(app: &DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect)
     let r = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + 2.0), lanes.max);
     p.rect_filled(r, CornerRadius::ZERO, panel());
     let spb = 60.0 / app.project.tempo_bpm.max(1.0);
-    let px_per_s = g.zoom / spb;
-    let step = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0].into_iter().find(|s| s * px_per_s >= 70.0).unwrap_or(600.0);
     let pr = ui.painter_at(r);
-    let mut t = ((g.scroll * spb) / step).floor() * step;
-    while g.to_x(t / spb) < r.max.x {
-        let x = g.to_x(t / spb).round() + 0.5;
-        pr.line_segment([pos2(x, r.min.y + 3.0), pos2(x, r.max.y - 5.0)], Stroke::new(1.0, gray(0x8a)));
-        pr.line_segment([pos2(x, r.max.y - 5.0), pos2(x + 3.0, r.max.y - 5.0)], Stroke::new(1.0, gray(0x8a)));
-        let s = t.round() as i64;
-        pr.text(pos2(x + 3.0, r.center().y - 1.0), Align2::LEFT_CENTER, format!("{}:{:02}", s / 60, s % 60), font(FS), text());
-        t += step;
+    let mark = gray(0x64);
+    // 2 px ticks on each grid line; every n-th grid line (≥ 70 px apart) gets a └
+    // marker hanging from the top edge with its exact time.
+    let step = g.grid.max(1e-6);
+    let tick = step * g.zoom >= 4.0;
+    let mut n = 1i64;
+    while step * n as f64 * g.zoom < 70.0 {
+        n *= 2;
+    }
+    let mut i = (g.scroll / step).floor().max(0.0) as i64;
+    while g.to_x(i as f64 * step) < r.max.x {
+        let b = i as f64 * step;
+        let x = g.to_x(b).round() + 0.5;
+        if i % n == 0 {
+            pr.line_segment([pos2(x, r.min.y), pos2(x, r.min.y + 8.0)], Stroke::new(1.0, mark));
+            pr.line_segment([pos2(x, r.min.y + 7.5), pos2(x + 2.0, r.min.y + 7.5)], Stroke::new(1.0, mark));
+            pr.text(pos2(x + 3.0, r.min.y + 11.0), Align2::LEFT_CENTER, time_label(b * spb), font(FS - 1.0), gray(0x8c));
+        } else if tick {
+            pr.line_segment([pos2(x, r.min.y), pos2(x, r.min.y + 2.0)], Stroke::new(1.0, gray(0x6b)));
+        }
+        i += 1;
     }
     let h = Rect::from_min_max(pos2(head.min.x, head.min.y + 2.0), head.max);
     p.rect_filled(h, CornerRadius::ZERO, panel());
@@ -1606,12 +1680,57 @@ fn time_ruler(app: &DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect)
         .on_hover_text("Optimize Height / Width (not available in this version)");
 }
 
+/// m:ss, or m:ss.mmm with trailing zeros trimmed (Live's time ruler).
+fn time_label(secs: f64) -> String {
+    let ms = (secs * 1000.0).round().max(0.0) as i64;
+    let (m, s, f) = (ms / 60_000, (ms / 1000) % 60, ms % 1000);
+    if f == 0 {
+        format!("{m}:{s:02}")
+    } else {
+        let frac = format!("{f:03}");
+        format!("{m}:{s:02}.{}", frac.trim_end_matches('0'))
+    }
+}
+
 fn sel_bg() -> Color32 {
     sel()
 }
 
 /// Solo switch colour (Live blue).
 const SOLO_BLUE: Color32 = Color32::from_rgb(0x5a, 0xa8, 0xff);
+
+/// MIDI note activity of a track (0..1): highest velocity sounding at the playhead
+/// (arrangement or session clip), or recent input while armed / monitoring.
+fn midi_activity(app: &DawApp, t: usize) -> f32 {
+    let tr = &app.project.tracks[t];
+    // Loudest note sounding at content position `u`.
+    let at_u = |c: &Clip, u: f64| -> f32 {
+        let ClipContent::Midi { notes } = &c.content else { return 0.0 };
+        notes.iter().filter(|n| !n.muted && n.start <= u && u < n.start + n.length).map(|n| n.velocity as f32 / 127.0).fold(0.0, f32::max)
+    };
+    let at = |c: &Clip, local: f64| -> f32 {
+        let Some(&(l0, _, u0)) = play_segments(c).iter().find(|(l0, l1, _)| local >= *l0 && local < *l1) else { return 0.0 };
+        at_u(c, u0 + (local - l0))
+    };
+    let mut v = 0.0f32;
+    if app.status.playing {
+        let st = app.track_status.get(t);
+        if let Some(sc) = st.and_then(|s| s.playing_scene) {
+            if let Some(Some(c)) = tr.slots.get(sc as usize) {
+                v = at_u(c, c.wrap(st.map_or(0.0, |s| s.clip_pos)));
+            }
+        } else {
+            let pos = app.status.beat_position;
+            if let Some(a) = tr.arrangement.iter().find(|a| pos >= a.start && pos < a.start + a.clip.length) {
+                v = at(&a.clip, pos - a.start);
+            }
+        }
+    }
+    if tr.arm {
+        v = v.max(super::io::activity_level(app.midi.activity.age(&app.midi.activity.track_in)));
+    }
+    v
+}
 
 /// Live track meter: a column of dots lit bottom-up (green → yellow → red).
 pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
@@ -1633,5 +1752,16 @@ pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
             gray(0x14)
         };
         p.circle_filled(c, 3.0, col);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn time_labels_trim_zeros() {
+        assert_eq!(super::time_label(0.0), "0:00");
+        assert_eq!(super::time_label(2.5), "0:02.5");
+        assert_eq!(super::time_label(61.25), "1:01.25");
+        assert_eq!(super::time_label(0.125), "0:00.125");
     }
 }

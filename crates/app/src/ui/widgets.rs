@@ -229,13 +229,10 @@ pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: 
     p.rect_filled(rect, CornerRadius::ZERO, bg);
     p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
     if text == "REC" {
-        let r = (rect.height() * 0.3).min(4.0);
-        if on {
-            p.circle_filled(rect.center(), r, Color32::from_gray(0x16));
-        } else {
-            p.circle_stroke(rect.center(), r, Stroke::new(1.2, gray(0x9a)));
-            p.circle_filled(rect.center(), r * 0.45, gray(0x9a));
-        }
+        // Live: a plain 7 px disc, light when off, dark on the red when armed.
+        let r = (rect.height() * 0.27).min(3.5);
+        let c = rect.center().round() + vec2(0.5, 0.5) * (rect.height() as i32 % 2) as f32;
+        p.circle_filled(c, r, if on { Color32::from_gray(0x16) } else { super::theme::text() });
     } else {
         let fg = if on { Color32::from_gray(0x16) } else { super::theme::text() };
         p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);
@@ -244,9 +241,10 @@ pub fn rect_toggle(ui: &mut egui::Ui, rect: Rect, id: egui::Id, text: &str, on: 
 }
 
 /// Black or white text, whichever reads better on `bg`.
+/// Live keeps it a touch soft: a dark tint of the colour, or light grey.
 pub fn text_on(bg: Color32) -> Color32 {
     let l = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
-    if l > 140.0 { Color32::BLACK } else { Color32::WHITE }
+    if l > 140.0 { shade(bg, 0.25) } else { gray(0xd2) }
 }
 
 /// Live round knob (bipolar −1…1): arc from the top, drag up/down (Shift = fine),
@@ -349,6 +347,71 @@ pub fn meter_db(frac: f32) -> f32 {
         }
     }
     -70.0
+}
+
+const M_GREEN: Color32 = Color32::from_rgb(0x5f, 0xd2, 0x5f);
+const M_YELLOW: Color32 = Color32::from_rgb(0xff, 0xd0, 0x40);
+const M_RED: Color32 = Color32::from_rgb(0xff, 0x4a, 0x3a);
+/// Unlit meter / clip cell.
+pub const M_OFF: Color32 = Color32::from_gray(0x18);
+
+/// One vertical peak bar (`peak` = linear amplitude) on the Live meter scale:
+/// green, yellow above −6 dB, red above 0 dB.
+pub fn peak_bar(p: &egui::Painter, r: Rect, peak: f32) {
+    p.rect_filled(r, CornerRadius::ZERO, M_OFF);
+    if peak <= 1e-6 {
+        return;
+    }
+    let db = 20.0 * peak.log10();
+    if db <= METER_FLOOR_DB {
+        return;
+    }
+    let y_of = |d: f32| r.min.y + meter_frac(d) * r.height();
+    let top = y_of(db).round();
+    for (lo, hi, c) in [(r.max.y, y_of(-6.0), M_GREEN), (y_of(-6.0), y_of(0.0), M_YELLOW), (y_of(0.0), r.min.y, M_RED)] {
+        let (y0, y1) = (hi.round().max(top), lo.round());
+        if y1 > y0 {
+            p.rect_filled(Rect::from_x_y_ranges(r.x_range(), y0..=y1), CornerRadius::ZERO, c);
+        }
+    }
+}
+
+/// Live track meter: two 3 px bars (1 px apart) under an 8 px clip cell each.
+/// `r` is the full column (7 px wide).
+pub fn track_meter(p: &egui::Painter, r: Rect, peaks: [f32; 2], clip: [bool; 2]) {
+    for i in 0..2 {
+        let x0 = r.min.x + i as f32 * 4.0;
+        let cell = Rect::from_min_max(pos2(x0, r.min.y), pos2(x0 + 3.0, r.min.y + 8.0));
+        p.rect_filled(cell, CornerRadius::ZERO, if clip[i] { M_RED } else { M_OFF });
+        if r.height() > 12.0 {
+            peak_bar(p, Rect::from_min_max(pos2(x0, r.min.y + 9.0), pos2(x0 + 3.0, r.max.y)), peaks[i]);
+        }
+    }
+}
+
+/// Small input meter inside a chooser: 9 px tall, 1 px clip row on top.
+/// One 5 px bar (mono) or two 2 px bars (stereo).
+pub fn input_meter(p: &egui::Painter, r: Rect, peaks: &[(f32, bool)]) {
+    let w = if peaks.len() > 1 { 2.0 } else { 5.0 };
+    for (i, &(pk, clip)) in peaks.iter().enumerate() {
+        let x0 = r.min.x + i as f32 * (w + 1.0);
+        p.rect_filled(
+            Rect::from_min_max(pos2(x0, r.min.y), pos2(x0 + w, r.min.y + 1.0)),
+            CornerRadius::ZERO,
+            if clip { M_RED } else { M_OFF },
+        );
+        peak_bar(p, Rect::from_min_max(pos2(x0, r.min.y + 1.0), pos2(x0 + w, r.max.y)), pk);
+    }
+}
+
+/// MIDI activity: a 3 px column of three 3 px cells lit bottom-up by `level` 0..1.
+pub fn midi_meter(p: &egui::Painter, r: Rect, level: f32) {
+    let lit = (level * 3.0).ceil() as i32;
+    for i in 0..3 {
+        let y1 = r.max.y - i as f32 * 3.0;
+        let c = if i < lit { Color32::from_rgb(0xff, 0xd0, 0x40) } else { M_OFF };
+        p.rect_filled(Rect::from_min_max(pos2(r.min.x, y1 - 3.0), pos2(r.min.x + 3.0, y1)), CornerRadius::ZERO, c);
+    }
 }
 
 /// Live channel fader: ▶ handle left of a stereo meter, dB scale (0…60) at the right.

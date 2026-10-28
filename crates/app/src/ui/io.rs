@@ -12,11 +12,27 @@ pub const IO_H: f32 = 132.0;
 const MON_BLUE: Color32 = Color32::from_rgb(70, 150, 240);
 
 fn small(s: impl Into<String>) -> RichText {
-    RichText::new(s.into()).size(10.5)
+    RichText::new(s.into()).size(super::theme::FS)
 }
 
 fn caption(ui: &mut egui::Ui, s: &str) {
-    ui.label(RichText::new(s).size(9.5).color(Color32::GRAY));
+    ui.label(RichText::new(s).size(super::theme::FS_SMALL).color(Color32::GRAY));
+}
+
+/// Chooser label with room for a meter at its left (Live input choosers).
+fn metered(ui: &egui::Ui, s: impl Into<String>) -> egui::WidgetText {
+    let mut job = egui::text::LayoutJob::default();
+    let fmt = egui::TextFormat::simple(egui::FontId::proportional(super::theme::FS), ui.visuals().widgets.inactive.text_color());
+    job.append(&s.into(), 9.0, fmt);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.into()
+}
+
+/// 9 px meter slot at the left of a chooser button.
+fn meter_slot(r: Rect) -> Rect {
+    let y = (r.center().y - 4.5).round();
+    Rect::from_min_max(pos2(r.min.x + 2.0, y), pos2(r.min.x + 7.0, y + 9.0))
 }
 
 /// Signal / activity bar drawn at the right of a chooser entry.
@@ -155,11 +171,16 @@ pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, cli
 }
 
 /// Arrangement master row: main output channels.
-pub fn master_io_compact(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+/// Like a track's choosers: 13 px tall, vertically centred while collapsed.
+pub fn master_io_compact(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect, centred: bool) {
+    let y = if centred { (rect.center().y - 6.5).round() } else { rect.min.y + 2.0 };
+    let r = Rect::from_min_max(pos2(rect.min.x + 2.0, y), pos2(rect.max.x - 2.0, rect.max.y));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    master_out_combo(app, &mut child, rect.width() - 8.0);
+    child.spacing_mut().interact_size.y = 13.0;
+    child.spacing_mut().button_padding = vec2(3.0, 0.0);
+    child.spacing_mut().combo_width = 0.0;
+    master_out_combo(app, &mut child, rect.width() - 4.0);
 }
 
 fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
@@ -204,11 +225,11 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
             let n = app.audio.info.input_channels;
             let entries = cfg.entries(n);
             let mut configure = false;
-            egui::ComboBox::from_id_salt(("ainch", t))
+            let cr = egui::ComboBox::from_id_salt(("ainch", t))
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .width(cw)
                 .height(420.0)
-                .selected_text(small(ext_label(&cfg, ch, stereo)))
+                .selected_text(metered(ui, ext_label(&cfg, ch, stereo)))
                 .show_ui(ui, |ui| {
                     if n == 0 {
                         ui.label(small("No input device"));
@@ -224,6 +245,12 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
                         configure = true;
                     }
                 });
+            // Live: small stereo / mono input meter left of the channel name.
+            let lv = |c: u16| {
+                (app.input_meters.get(c as usize).copied().unwrap_or(0.0), app.input_clip.get(c as usize).copied().unwrap_or(false))
+            };
+            let peaks: Vec<(f32, bool)> = if stereo { vec![lv(ch), lv(ch + 1)] } else { vec![lv(ch)] };
+            input_meter(&ui.painter_at(cr.response.rect), meter_slot(cr.response.rect), &peaks);
             if configure {
                 app.open_settings(SettingsTab::Audio);
             }
@@ -334,11 +361,11 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
         let ch = app.project.tracks[t].midi_channel;
         let label = |c: u8| if c == 0 { "All Channels".to_string() } else { format!("Ch. {c}") };
         let mut new_ch = None;
-        egui::ComboBox::from_id_salt(("minch", t))
+        let cr = egui::ComboBox::from_id_salt(("minch", t))
             .wrap_mode(egui::TextWrapMode::Truncate)
             .width(cw)
             .height(420.0)
-            .selected_text(small(label(ch)))
+            .selected_text(metered(ui, label(ch)))
             .show_ui(ui, |ui| {
                 for c in 0..=16u8 {
                     let lv = if cur == MidiIn::Keyboard {
@@ -351,6 +378,10 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
                     }
                 }
             });
+        // Live: MIDI activity cells left of the channel name.
+        let age = if cur == MidiIn::Keyboard { act.age(&act.track_in) } else { any_port(port, if ch == 0 { None } else { Some(ch - 1) }) };
+        let slot = meter_slot(cr.response.rect);
+        midi_meter(&ui.painter_at(cr.response.rect), Rect::from_min_size(slot.min, vec2(3.0, 9.0)), activity_level(age));
         if let Some(c) = new_ch
             && c != ch
         {
@@ -382,7 +413,7 @@ fn monitor_radio(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
                 (true, _) => ACCENT,
                 _ => gray(58),
             };
-            let txt = RichText::new(label).size(10.0).color(if on { Color32::BLACK } else { Color32::LIGHT_GRAY });
+            let txt = RichText::new(label).size(super::theme::FS - 1.0).color(if on { Color32::BLACK } else { Color32::LIGHT_GRAY });
             let b = ui.add(egui::Button::new(txt).fill(fill).min_size(vec2(bw, 15.0)));
             if b.clicked() {
                 set = Some(Some(m));

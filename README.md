@@ -4,9 +4,10 @@ An Ableton Live–style digital audio workstation written in Rust: fast,
 lightweight and real-time safe. It targets **Linux (priority), Windows and
 macOS**.
 
-> **Status: v0.1.0, the first version.** Session and arrangement views, audio
-> and MIDI clips, a built-in synth, sampler and drum rack, a mixer, recording,
-> undo/redo and WAV export. Effects and automation come next. See
+> **Status: v0.7.1.** Session and arrangement views in an Ableton Live 12
+> style UI, audio and MIDI clips with warping and MIDI tools, a built-in
+> synth, sampler and drum rack, group buses, a mixer, recording, undo/redo and
+> WAV export. Effects and automation come next. See
 > [CHANGELOG.md](CHANGELOG.md).
 
 **Download:** [Releases](https://github.com/uwuosu884-blip/strata/releases)
