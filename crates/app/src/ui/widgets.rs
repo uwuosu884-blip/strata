@@ -250,6 +250,11 @@ pub fn text_on(bg: Color32) -> Color32 {
 /// Live round knob (bipolar −1…1): arc from the top, drag up/down (Shift = fine),
 /// double-click = centre.
 pub fn knob(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f32) -> (egui::Response, bool) {
+    knob_ex(ui, c, r, id, v, true)
+}
+
+/// [`knob`] with the centre ▼ optional (Live's Cue knob has none).
+pub fn knob_ex(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f32, mark: bool) -> (egui::Response, bool) {
     let rect = Rect::from_center_size(c, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0));
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut changed = false;
@@ -266,7 +271,9 @@ pub fn knob(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f32)
         }
     }
     let p = ui.painter();
+    // Live: dark 2 px ring and pointer; the value arc is drawn in the text grey.
     let col = if resp.hovered() || resp.dragged() { gray(0xd0) } else { gray(0xa8) };
+    let ptr = if resp.hovered() || resp.dragged() { gray(0x60) } else { gray(0x18) };
     // 300° track with a gap at the bottom; value arc from 12 o'clock.
     let ang = |t: f32| std::f32::consts::PI * (-0.5 + t * 5.0 / 6.0);
     let pts = |a0: f32, a1: f32| -> Vec<egui::Pos2> {
@@ -278,54 +285,27 @@ pub fn knob(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f32)
             })
             .collect()
     };
-    p.add(egui::Shape::line(pts(ang(-1.0), ang(1.0)), Stroke::new(1.6, gray(0x22))));
+    p.add(egui::Shape::line(pts(ang(-1.0), ang(1.0)), Stroke::new(2.0, gray(0x11))));
     if v.abs() > 0.005 {
-        p.add(egui::Shape::line(pts(ang(0.0), ang(*v)), Stroke::new(1.6, col)));
+        p.add(egui::Shape::line(pts(ang(0.0), ang(*v)), Stroke::new(2.0, col)));
     }
     let a = ang(*v);
-    p.line_segment([c, c + vec2(a.cos(), a.sin()) * (r - 1.0)], Stroke::new(1.6, col));
-    p.add(egui::Shape::convex_polygon(
-        vec![c + vec2(0.0, -r - 1.5), c + vec2(-3.0, -r - 5.5), c + vec2(3.0, -r - 5.5)],
-        gray(0x22),
-        Stroke::NONE,
-    ));
-    (resp.on_hover_text(format!("Pan {} · drag · double-click: centre", pan_label(*v))), changed)
-}
-
-/// Live volume pill above the pan knob: dB value, drag to change.
-pub fn vol_pill(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
-    let resp = ui.interact(rect, id, Sense::click_and_drag());
-    let mut changed = false;
-    let d = endless_drag(ui, &resp);
-    if resp.double_clicked() {
-        *db = 0.0;
-        changed = true;
-    } else if d != Vec2::ZERO {
-        let k = if ui.input(|i| i.modifiers.shift) { 0.0007 } else { 0.006 };
-        let nd = pos_to_db(db_to_pos(*db) - (d.y - d.x) * k).clamp(METER_FLOOR_DB, 6.0);
-        if (nd - *db).abs() > 1e-5 {
-            *db = nd;
-            changed = true;
-        }
+    p.line_segment([c, c + vec2(a.cos(), a.sin()) * (r - 1.0)], Stroke::new(2.0, ptr));
+    // Centre mark: 7 px ▼ above the ring.
+    if mark {
+        p.add(egui::Shape::convex_polygon(
+            vec![c + vec2(0.0, -r - 1.0), c + vec2(-3.5, -r - 4.5), c + vec2(3.5, -r - 4.5)],
+            gray(0x11),
+            Stroke::NONE,
+        ));
     }
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(5), if resp.hovered() { gray(0x2a) } else { super::theme::off_fill() });
-    p.rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
-    let t = if *db <= METER_FLOOR_DB {
-        "-∞".to_string()
-    } else if db.abs() < 0.05 {
-        "0".into()
-    } else {
-        format!("{db:.1}")
-    };
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, t, super::theme::font(super::theme::FS_SMALL), super::theme::text());
-    (resp.on_hover_text("Track volume (dB) · drag · double-click: 0 dB"), changed)
+    (resp.on_hover_text(format!("Pan {} · drag · double-click: centre", pan_label(*v))), changed)
 }
 
 /// Live meter / fader scale (fraction from the top): near-linear to −36 dB,
 /// compressed below, measured from Live's mixer.
 const METER_PTS: [(f32, f32); 8] =
-    [(6.0, 0.0), (0.0, 0.09), (-12.0, 0.30), (-24.0, 0.48), (-36.0, 0.67), (-48.0, 0.81), (-60.0, 0.93), (-70.0, 1.0)];
+    [(6.0, 0.0), (0.0, 0.112), (-12.0, 0.306), (-24.0, 0.493), (-36.0, 0.68), (-48.0, 0.82), (-60.0, 0.93), (-70.0, 1.0)];
 
 pub fn meter_frac(db: f32) -> f32 {
     let db = db.clamp(-70.0, 6.0);
@@ -414,10 +394,20 @@ pub fn midi_meter(p: &egui::Painter, r: Rect, level: f32) {
     }
 }
 
-/// Live channel fader: ▶ handle left of a stereo meter, dB scale (0…60) at the right.
-pub fn fader_meter(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, levels: [f32; 2]) -> (egui::Response, bool) {
-    let meter = Rect::from_min_max(pos2(rect.min.x + 10.0, rect.min.y + 2.0), pos2(rect.min.x + 20.0, rect.max.y - 2.0));
-    let resp = ui.interact(Rect::from_min_max(rect.min, pos2(meter.max.x + 2.0, rect.max.y)), id, Sense::click_and_drag());
+/// Live channel fader (Session mixer, measured at 100 %): an 11 px ▶ handle,
+/// a 13 px meter (two bars split by a 1 px line) spanning `rect`'s height and
+/// the dB scale (0…60). `rect.min.x` = handle's back edge. `ticks_left`: the
+/// Main column draws its ticks between handle and meter.
+pub fn fader_meter(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: egui::Id,
+    db: &mut f32,
+    levels: [f32; 2],
+    ticks_left: bool,
+) -> (egui::Response, bool) {
+    let meter = Rect::from_min_max(pos2(rect.min.x + 12.0, rect.min.y), pos2(rect.min.x + 25.0, rect.max.y));
+    let resp = ui.interact(Rect::from_min_max(rect.min - vec2(0.0, 6.0), pos2(meter.max.x, rect.max.y)), id, Sense::click_and_drag());
     let mut changed = false;
     if resp.double_clicked() {
         *db = 0.0;
@@ -433,45 +423,69 @@ pub fn fader_meter(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, le
         }
     }
     let p = ui.painter();
-    p.rect_filled(meter, CornerRadius::ZERO, Color32::from_gray(0x14));
-    p.rect_stroke(meter, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Outside);
-    let y_of = |d: f32| meter.min.y + meter_frac(d) * meter.height();
+    p.rect_filled(meter, CornerRadius::ZERO, M_OFF);
+    let mid = meter.min.x + 6.0;
+    let y_of = |d: f32| (meter.min.y + meter_frac(d) * meter.height()).round();
     for (i, l) in levels.iter().enumerate() {
-        let ldb = if *l <= 1e-6 { METER_FLOOR_DB } else { (20.0 * l.log10()).max(METER_FLOOR_DB) };
-        if ldb > METER_FLOOR_DB {
-            let x0 = meter.min.x + 1.0 + i as f32 * 4.0;
-            let col = if ldb > 0.0 {
-                Color32::from_rgb(0xff, 0x4a, 0x3a)
-            } else if ldb > -6.0 {
-                Color32::from_rgb(0xff, 0xd0, 0x40)
-            } else {
-                Color32::from_rgb(0x5f, 0xd2, 0x5f)
-            };
-            p.rect_filled(Rect::from_min_max(pos2(x0, y_of(ldb)), pos2(x0 + 3.5, meter.max.y - 1.0)), CornerRadius::ZERO, col);
-        }
+        let bar = if i == 0 {
+            Rect::from_min_max(meter.min, pos2(mid, meter.max.y))
+        } else {
+            Rect::from_min_max(pos2(mid + 1.0, meter.min.y), meter.max)
+        };
+        peak_bar(p, bar, *l);
     }
+    p.rect_filled(Rect::from_min_max(pos2(mid, meter.min.y), pos2(mid + 1.0, meter.max.y)), CornerRadius::ZERO, gray(0x3e));
     // Scale: 0 / 12 / 24 / 36 / 48 / 60 dB below full scale.
+    let (tick_x, label_x) = if ticks_left { (meter.min.x - 12.0, meter.max.x + 4.0) } else { (meter.max.x + 3.0, meter.max.x + 7.0) };
+    // Minor ticks every 6 dB (and -3), labels every 12 (Live).
+    for d in [-3.0f32, -6.0, -18.0, -30.0, -42.0, -54.0, -66.0] {
+        let y = y_of(d) + 0.5;
+        p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x5a)));
+    }
     for d in [0.0f32, -12.0, -24.0, -36.0, -48.0, -60.0] {
-        let y = y_of(d);
-        p.line_segment([pos2(meter.max.x + 2.0, y), pos2(meter.max.x + 5.0, y)], Stroke::new(1.0, gray(0x70)));
+        let y = y_of(d) + 0.5;
+        p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x7e)));
         p.text(
-            pos2(meter.max.x + 8.0, y),
+            pos2(label_x, y),
             egui::Align2::LEFT_CENTER,
             format!("{}", -d as i32),
             super::theme::font(super::theme::FS_SMALL),
             super::theme::text(),
         );
     }
-    let y = y_of(*db);
+    let y = y_of(*db) + 0.5;
     let hc = if resp.hovered() || resp.dragged() { gray(0xe0) } else { gray(0xb5) };
     p.add(egui::Shape::convex_polygon(
-        vec![pos2(meter.min.x - 1.0, y), pos2(meter.min.x - 9.0, y - 5.0), pos2(meter.min.x - 9.0, y + 5.0)],
+        vec![pos2(meter.min.x - 1.0, y), pos2(meter.min.x - 12.0, y - 6.5), pos2(meter.min.x - 12.0, y + 6.5)],
         hc,
         Stroke::NONE,
     ));
-    p.line_segment([pos2(meter.min.x, y), pos2(meter.max.x, y)], Stroke::new(1.0, hc));
+    p.line_segment([pos2(meter.min.x + 1.0, y), pos2(meter.max.x - 1.0, y)], Stroke::new(1.0, gray(0x86)));
     let txt = if *db <= METER_FLOOR_DB { "-inf".to_string() } else { format!("{db:.1} dB") };
     (resp.on_hover_text(format!("Volume {txt} · drag · double-click: 0 dB")), changed)
+}
+
+/// Live peak-level pill above the pan knob: highest level since the last
+/// click ("-∞" while silent). Click = reset.
+pub fn peak_pill(ui: &mut egui::Ui, rect: Rect, id: egui::Id, levels: [f32; 2]) {
+    let resp = ui.interact(rect, id, Sense::click());
+    let now = levels[0].max(levels[1]);
+    let hold = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+    let hold = if resp.clicked() { 0.0 } else { hold.max(now) };
+    ui.data_mut(|d| d.insert_temp(id, hold));
+    let p = ui.painter();
+    let r = CornerRadius::same((rect.height() / 2.0) as u8);
+    p.rect_filled(rect, r, sep_fill());
+    p.rect_stroke(rect, r, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+    let db = if hold > 1e-6 { 20.0 * hold.log10() } else { f32::NEG_INFINITY };
+    let t = if db <= METER_FLOOR_DB { "-∞".to_string() } else { format!("{db:.1}") };
+    let col = if db > 0.0 { Color32::from_rgb(0xff, 0x4a, 0x3a) } else { super::theme::text() };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, t, super::theme::font(super::theme::FS), col);
+    resp.on_hover_text("Peak level · click: reset");
+}
+
+fn sep_fill() -> Color32 {
+    super::theme::sep()
 }
 
 #[cfg(test)]

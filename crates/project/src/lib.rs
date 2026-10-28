@@ -6,6 +6,7 @@
 mod arrange;
 pub mod clipx;
 mod history;
+pub mod midifile;
 pub mod miditools;
 mod mixer;
 pub use mixer::stretch_clip;
@@ -655,7 +656,17 @@ impl Project {
     pub fn duplicate_track(&mut self, idx: usize) -> Option<usize> {
         self.tracks.get(idx)?;
         let end = self.subtree_end(idx);
-        let mut copy: Vec<Track> = self.tracks[idx..end].to_vec();
+        let src: Vec<Track> = self.tracks[idx..end].to_vec();
+        let copy = self.fresh_copies(&src);
+        // Same name as the original (Live); `#` names show their new position.
+        self.tracks.splice(end..end, copy);
+        Some(end)
+    }
+
+    /// Clones of `tracks` (a run of subtrees) with new ids for tracks and clips;
+    /// group links inside the run follow the copies. Solo/arm cleared.
+    pub fn fresh_copies(&mut self, tracks: &[Track]) -> Vec<Track> {
+        let mut copy = tracks.to_vec();
         let mut remap = std::collections::HashMap::new();
         for t in &mut copy {
             let id = self.alloc_id();
@@ -670,12 +681,49 @@ impl Project {
                 a.clip.id = self.alloc_id();
             }
         }
-        for t in copy.iter_mut().skip(1) {
+        for t in &mut copy {
             t.group = t.group.map(|g| remap.get(&g).copied().unwrap_or(g));
         }
-        // Same name as the original (Live); `#` names show their new position.
-        self.tracks.splice(end..end, copy);
-        Some(end)
+        copy
+    }
+
+    /// The subtrees of `idx` (descendants of other picks come along once), in
+    /// order, with the roots detached from their groups. For track copy/paste.
+    pub fn copy_tracks(&self, idx: &[usize]) -> Vec<Track> {
+        let mut roots: Vec<usize> = idx.iter().copied().filter(|&i| i < self.tracks.len()).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        let all = roots.clone();
+        roots.retain(|&i| !all.iter().any(|&a| a != i && self.is_descendant(i, a)));
+        let mut out = Vec::new();
+        for r in roots {
+            let mut sub = self.tracks[r..self.subtree_end(r)].to_vec();
+            sub[0].group = None;
+            out.extend(sub);
+        }
+        out
+    }
+
+    /// Insert copies of `tracks` (from [`Self::copy_tracks`]) after the subtree
+    /// of `after` (in its group), or at the end. Returns the new root indices.
+    pub fn paste_tracks(&mut self, tracks: &[Track], after: Option<usize>) -> Vec<usize> {
+        if tracks.is_empty() {
+            return Vec::new();
+        }
+        let roots: Vec<bool> = tracks.iter().map(|t| t.group.is_none()).collect();
+        let mut copy = self.fresh_copies(tracks);
+        let (at, parent) = match after.filter(|&a| a < self.tracks.len()) {
+            Some(a) => (self.subtree_end(a), self.tracks[a].group),
+            None => (self.tracks.len(), None),
+        };
+        for (t, root) in copy.iter_mut().zip(&roots) {
+            if *root {
+                t.group = parent;
+            }
+        }
+        let n = copy.len();
+        self.tracks.splice(at..at, copy);
+        (at..at + n).zip(roots).filter(|(_, r)| *r).map(|(i, _)| i).collect()
     }
 
     /// Duplicate several tracks (each copy right below its original's subtree;

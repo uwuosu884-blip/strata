@@ -7,16 +7,10 @@ use crate::settings::{ChanEntry, ChannelConfig, Settings};
 use daw_project::{AudioIn, AudioOut, InstrumentDef, MidiIn, MidiOut, Monitor, Tap, TrackKind};
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, pos2, vec2};
 
-/// Height of the In/Out block in a mixer column.
-pub const IO_H: f32 = 132.0;
 const MON_BLUE: Color32 = Color32::from_rgb(70, 150, 240);
 
 fn small(s: impl Into<String>) -> RichText {
     RichText::new(s.into()).size(super::theme::FS)
-}
-
-fn caption(ui: &mut egui::Ui, s: &str) {
-    ui.label(RichText::new(s).size(super::theme::FS_SMALL).color(Color32::GRAY));
 }
 
 /// Chooser label with room for a meter at its left (Live input choosers).
@@ -86,33 +80,55 @@ fn track_name(app: &DawApp, id: u64) -> String {
     app.project.tracks.iter().position(|x| x.id == id).map_or_else(|| "?".into(), |i| app.project.track_label(i))
 }
 
-/// The In/Out block of mixer column `t`: input type + channel, monitor radio,
-/// output type + channel. Changes apply to every selected track of the same kind.
-pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, w: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(w, IO_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(38));
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+/// Empty outlined box where Live shows a chooser with nothing to choose.
+fn empty_box(ui: &mut egui::Ui, cw: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(cw, ui.spacing().interact_size.y), Sense::hover());
+    ui.painter().rect_stroke(r, CornerRadius::ZERO, egui::Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+}
+
+/// Session caption ("MIDI From"): same size as the chooser text (Live).
+/// `h` = row height, `cy` = text centre from the row top.
+fn io_caption(ui: &mut egui::Ui, s: &str, h: f32, cy: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    ui.painter().text(
+        pos2(r.min.x, r.min.y + cy),
+        egui::Align2::LEFT_CENTER,
+        s,
+        super::theme::font(super::theme::FS),
+        super::theme::text(),
+    );
+}
+
+/// Session In/Out block of column `t` in `rect` (115 px, Live 12 measures):
+/// caption 14, chooser 13, 3, chooser 13, caption 13, monitor 13, caption 13,
+/// chooser 13, 3, chooser 13. Changes apply to every selected track of the same kind.
+pub fn io_section(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect) {
+    let inner = Rect::from_min_max(rect.min + vec2(4.0, 0.0), rect.max - vec2(4.0, 0.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
     let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(2.0, 1.0);
-    ui.spacing_mut().interact_size.y = 16.0;
-    let cw = w - 8.0;
+    // 13 px controls 3 px apart; captions absorb the spacing (10 px rows).
+    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+    ui.spacing_mut().interact_size.y = 13.0;
+    ui.spacing_mut().button_padding = vec2(2.0, 0.0);
+    ui.spacing_mut().combo_width = 0.0;
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    let cw = inner.width();
     let Some(track) = app.project.tracks.get(t) else { return };
     let kind = track.kind;
     if kind != TrackKind::Group {
-        caption(ui, if kind == TrackKind::Audio { "Audio From" } else { "MIDI From" });
+        io_caption(ui, if kind == TrackKind::Audio { "Audio From" } else { "MIDI From" }, 11.0, 7.0);
         if kind == TrackKind::Audio {
             audio_from(app, ui, t, cw, true);
         } else {
             midi_from(app, ui, t, cw, true);
         }
-        caption(ui, "Monitor");
+        io_caption(ui, "Monitor", 7.0, 3.0);
         monitor_radio(app, ui, t, cw);
     } else {
-        ui.add_space(68.0);
+        ui.add_space(52.0);
     }
     let sends_midi = app.project.tracks[t].sends_midi();
-    caption(ui, if sends_midi { "MIDI To" } else { "Audio To" });
+    io_caption(ui, if sends_midi { "MIDI To" } else { "Audio To" }, 7.0, 3.0);
     if sends_midi {
         midi_to(app, ui, t, cw, true);
     } else {
@@ -288,9 +304,7 @@ fn audio_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) 
                     }
                 });
         }
-        _ => {
-            ui.add_space(17.0);
-        }
+        _ => empty_box(ui, cw),
     }
     if let Some(v) = pick
         && v != cur
@@ -388,7 +402,7 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
             app.set_routing(t, |x| x.midi_channel = c);
         }
     } else {
-        ui.add_space(17.0);
+        empty_box(ui, cw);
     }
     if let Some(v) = pick
         && v != cur
@@ -402,19 +416,31 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
 fn monitor_radio(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
     let tr = &app.project.tracks[t];
     let (mode, keep, kind) = (tr.monitor_mode(), tr.keep_monitor_latency, tr.kind);
-    let bw = (cw - 4.0) / 3.0;
+    // Live: In 17 / Auto 27 / Off 20 px, 3 px apart; narrower columns split evenly.
+    let ws = if cw >= 73.0 { [17.0, 27.0, 20.0] } else { [(cw - 6.0) / 3.0; 3] };
+    let h = ui.spacing().interact_size.y.min(15.0);
     let mut set = None;
     let r = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for (m, label) in [(Monitor::In, "In"), (Monitor::Auto, "Auto"), (Monitor::Off, "Off")] {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (k, (m, label)) in [(Monitor::In, "In"), (Monitor::Auto, "Auto"), (Monitor::Off, "Off")].into_iter().enumerate() {
             let on = mode == m;
+            let (rect, b) = ui.allocate_exact_size(vec2(ws[k], h), Sense::click());
             let fill = match (on, m) {
                 (true, Monitor::In) => MON_BLUE,
-                (true, _) => ACCENT,
-                _ => gray(58),
+                (true, _) => super::theme::ORANGE,
+                _ if b.hovered() => gray(0x2c),
+                _ => super::theme::off_fill(),
             };
-            let txt = RichText::new(label).size(super::theme::FS - 1.0).color(if on { Color32::BLACK } else { Color32::LIGHT_GRAY });
-            let b = ui.add(egui::Button::new(txt).fill(fill).min_size(vec2(bw, 15.0)));
+            let p = ui.painter();
+            p.rect_filled(rect, CornerRadius::ZERO, fill);
+            p.rect_stroke(rect, CornerRadius::ZERO, egui::Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+            p.with_clip_rect(rect).text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                super::theme::font(super::theme::FS),
+                if on { Color32::from_gray(0x16) } else { super::theme::text() },
+            );
             if b.clicked() {
                 set = Some(Some(m));
             }
@@ -512,9 +538,7 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
         AudioOut::Track(_) => {
             ui.add_enabled(false, egui::Button::new(small("Track In")).min_size(vec2(cw, 16.0)));
         }
-        _ => {
-            ui.add_space(17.0);
-        }
+        _ => empty_box(ui, cw),
     }
     if let Some(v) = pick
         && v != cur
@@ -597,7 +621,7 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
                 });
         }
         MidiOut::None => {
-            ui.add_space(17.0);
+            empty_box(ui, cw);
         }
     }
     if let Some(v) = pick
@@ -608,16 +632,27 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
 }
 
 /// Master column In/Out block: the main output's device channels.
-pub fn master_io(app: &mut DawApp, ui: &mut egui::Ui, w: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(w, IO_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), gray(38));
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(4.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+/// Main column In/Out: Cue Out / Main Out at the bottom of the block (Live).
+pub fn master_io(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
+    let inner = Rect::from_min_max(pos2(rect.min.x + 4.0, rect.max.y - 64.0), rect.max - vec2(4.0, 0.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
     let ui = &mut child;
-    ui.spacing_mut().item_spacing = vec2(2.0, 1.0);
-    ui.add_space(IO_H - 44.0);
-    caption(ui, "Master Out");
-    master_out_combo(app, ui, w - 8.0);
+    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+    ui.spacing_mut().interact_size.y = 13.0;
+    ui.spacing_mut().button_padding = vec2(2.0, 0.0);
+    ui.spacing_mut().combo_width = 0.0;
+    let cw = inner.width();
+    io_caption(ui, "Cue Out", 13.0, 8.0);
+    // Cue routing isn't separate (metronome + preview follow the main out): greyed.
+    let cfg = app.channel_config(false);
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt("cue_out")
+            .width(cw)
+            .selected_text(metered(ui, ext_label(&cfg, app.project.master_out_ch, app.project.master_out_stereo)))
+            .show_ui(ui, |_| {});
+    });
+    io_caption(ui, "Main Out", 12.0, 6.0);
+    master_out_combo(app, ui, cw);
 }
 
 fn master_out_combo(app: &mut DawApp, ui: &mut egui::Ui, cw: f32) {

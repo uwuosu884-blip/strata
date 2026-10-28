@@ -6,6 +6,7 @@ pub mod clip;
 mod detail;
 mod invert;
 mod io;
+mod menu;
 mod prefs;
 mod session;
 pub mod theme;
@@ -26,7 +27,7 @@ use widgets::*;
 type DialogAction = Box<dyn FnOnce(&mut DawApp)>;
 
 /// Fixed Device View height.
-const DEVICE_VIEW_H: f32 = 240.0;
+const DEVICE_VIEW_H: f32 = 199.0; // Live: 2 px focus line + 9 px gap + 188 px panel
 
 impl eframe::App for DawApp {
     /// Take plain (unmodified) key presses before egui sees them, unless a text
@@ -104,9 +105,10 @@ impl eframe::App for DawApp {
             .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 0)))
             .show(ui, |ui| self.transport_bar(ui));
         egui::Panel::bottom("status")
-            .exact_size(28.0)
+            .show_separator_line(false)
+            .exact_size(36.0)
             .resizable(false)
-            .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 9)))
+            .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 9, 8)))
             .show(ui, |ui| self.status_bar(ui));
         // Selecting a (different) clip switches the detail panel to the clip view.
         let prev_id = egui::Id::unique("prev_selected_clip");
@@ -124,11 +126,16 @@ impl eframe::App for DawApp {
             egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
         };
         let detail_rect = dpanel
-            .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(9, 9, 9, 0)))
-            .show(ui, |ui| detail::detail_panel(self, ui))
+            .show_separator_line(false)
+            // Window-coloured 9 px margin (no unpainted gaps), rounded panel inside.
+            .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 11, 0)))
+            .show(ui, |ui| {
+                ui.painter().rect_filled(ui.max_rect(), 3.0, panel());
+                detail::detail_panel(self, ui)
+            })
             .response
             .rect;
-        let detail_inner = detail_rect - m(9, 9, 9, 0);
+        let detail_inner = detail_rect - m(9, 9, 11, 0);
         // Keys like Del / Ctrl+D / 0 act on whatever was clicked last: notes or the main view.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
             self.focus_detail = detail_inner.contains(p);
@@ -260,7 +267,15 @@ impl DawApp {
             self.group_selected_tracks();
         }
         if cmd_shift(Key::M) {
-            self.insert_midi_clip_in_selection();
+            // Session: the selected empty slot; Arrangement: the time selection.
+            match (self.view, self.empty_slot) {
+                (View::Session, Some((t, s))) if self.selected_clip.is_none() => {
+                    if self.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi) {
+                        self.create_midi_clip(t, s);
+                    }
+                }
+                _ => self.insert_midi_clip_in_selection(),
+            }
         }
         if cmd(Key::L) {
             self.loop_selection();
@@ -304,6 +319,45 @@ impl DawApp {
             && !(self.view == View::Arrangement && self.duplicate_arrangement_selection())
         {
             self.duplicate_selected_clip();
+        }
+        // Grid (Live: Ctrl+1 narrow, Ctrl+2 widen, Ctrl+3 triplet, Ctrl+4 snap).
+        if !typing && !self.focus_detail {
+            if cmd(Key::Num1) {
+                self.narrow_grid(true);
+            }
+            if cmd(Key::Num2) {
+                self.narrow_grid(false);
+            }
+            if cmd(Key::Num3) {
+                self.arr_triplet = !self.arr_triplet;
+            }
+            if cmd(Key::Num4) {
+                self.toggle_snap();
+            }
+        }
+        // Cut / Copy / Paste arrive as events (egui-winit), not as keys.
+        if !typing && self.view == View::Arrangement && !self.focus_detail {
+            let (copy, cut, paste) = ctx.input(|i| {
+                i.events.iter().fold((false, false, false), |a, e| match e {
+                    egui::Event::Copy => (true, a.1, a.2),
+                    egui::Event::Cut => (a.0, true, a.2),
+                    egui::Event::Paste(_) => (a.0, a.1, true),
+                    _ => a,
+                })
+            });
+            let text = if cut {
+                self.cut_selection()
+            } else if copy {
+                self.copy_selection()
+            } else {
+                None
+            };
+            if let Some(t) = text {
+                ctx.copy_text(t);
+            }
+            if paste {
+                self.paste();
+            }
         }
         if cmd(Key::B) {
             self.show_browser = !self.show_browser;
@@ -358,6 +412,16 @@ impl DawApp {
                     }
                     Key::Num0 => {
                         self.toggle_disable();
+                        continue;
+                    }
+                    // Zoom to / back from the time selection (Live), unless the
+                    // computer MIDI keyboard uses Z/X for octaves.
+                    Key::Z if !self.kb.enabled && self.view == View::Arrangement => {
+                        self.zoom_to_selection();
+                        continue;
+                    }
+                    Key::X if !self.kb.enabled && self.view == View::Arrangement => {
+                        self.zoom_back_from_selection();
                         continue;
                     }
                     Key::F9 => {
@@ -727,18 +791,25 @@ impl DawApp {
 
     /// Live status bar: info/message area, selected track, Device/Clip view switches.
     /// Segment edges from Live at 1920: 42–1560, 1570–1789, 1799–1863.
+    /// Live 12 status bar (measured at 1920 px): ⓘ, message field 42..1555,
+    /// ▶ + field 1565..1784, orange ▲ + track name ending at 1863, meter, ▾.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        use egui::{Align2, CornerRadius, Rect, Sense, pos2, vec2};
         let mr = ui.max_rect();
-        ui.allocate_rect(mr, egui::Sense::hover());
+        ui.allocate_rect(mr, Sense::hover());
         let p = ui.painter().clone();
         let (x0, w) = (mr.left() - 9.0, mr.width() + 18.0);
         let rx = |x: f32| x0 + w - (1920.0 - x);
-        let seg = |a: f32, b: f32| egui::Rect::from_min_max(egui::pos2(a, mr.top()), egui::pos2(b + 1.0, mr.bottom()));
-        // Audio health dot (details on hover).
+        let (y0, y1) = (mr.top(), mr.top() + 19.0);
+        let seg = |a: f32, b: f32| Rect::from_min_max(pos2(a, y0), pos2(b + 1.0, y1));
+        let fs = theme::font(theme::FS);
+        // ⓘ (audio health on hover; red when the engine runs without a device).
         let info = &self.audio.info;
         let ok = info.null_reason.is_none();
-        let dot = seg(x0 + 12.0, x0 + 30.0);
-        p.circle_filled(dot.center(), 4.0, if ok { PLAY_GREEN } else { REC_RED });
+        let ic = pos2(x0 + 18.0, y0 + 9.5);
+        p.circle_filled(ic, 7.5, if ok { gray(0x46) } else { REC_RED });
+        p.rect_filled(Rect::from_min_size(pos2(ic.x - 0.5, ic.y - 4.0), vec2(2.0, 2.0)), 0.0, gray(0x2a));
+        p.rect_filled(Rect::from_min_size(pos2(ic.x - 0.5, ic.y - 1.0), vec2(2.0, 5.0)), 0.0, gray(0x2a));
         let input = match &info.input {
             Ok(n) => format!("In: {n}"),
             Err(e) => format!("No input ({e})"),
@@ -748,11 +819,11 @@ impl DawApp {
         } else {
             format!("MIDI: {}", self.io_map.midi_in.iter().chain(&self.io_map.midi_out).cloned().collect::<Vec<_>>().join(", "))
         };
-        ui.interact(dot, ui.make_persistent_id("st_dot"), egui::Sense::hover())
+        ui.interact(Rect::from_center_size(ic, vec2(15.0, 15.0)), ui.make_persistent_id("st_dot"), Sense::hover())
             .on_hover_text(format!("{}\n{input}\n{midi}", info.summary()));
-        // Message area.
-        let main = seg(x0 + 42.0, rx(1560.0));
-        p.rect_filled(main, 0.0, panel());
+        // Message field: toasts, else the insert marker / time selection (Live).
+        let main = seg(x0 + 42.0, rx(1555.0));
+        p.rect_filled(main, CornerRadius::same(3), panel());
         let mut msg = String::new();
         let mut col = theme::text();
         if let Some((m, at)) = &self.message {
@@ -763,11 +834,42 @@ impl DawApp {
                 self.message = None;
             }
         }
-        if msg.is_empty() && self.kb.enabled {
-            msg = format!("Computer MIDI Keyboard: octave C{}, velocity {}", self.kb.octave, self.kb.velocity);
+        if msg.is_empty() {
+            let bpb = self.project.beats_per_bar.max(1);
+            let spb = 60.0 / self.project.tempo_bpm.max(1.0);
+            let pos = |b: f64| topbar::bbs(b, bpb, false).replace(' ', "");
+            let len = |b: f64| topbar::bbs(b, bpb, true).replace(' ', "");
+            let time = |b: f64| {
+                let s = (b * spb).max(0.0);
+                format!("{}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64)
+            };
+            msg = match self.time_sel {
+                Some(ts) if ts.end - ts.start > 1e-9 => format!(
+                    "Time Selection Start: {}  End: {}  Length: {} (Duration: {})",
+                    pos(ts.start),
+                    pos(ts.end),
+                    len(ts.end - ts.start),
+                    time(ts.end - ts.start)
+                ),
+                _ => format!("Insert Mark {} (Time: {})", pos(self.play_start), time(self.play_start)),
+            };
+            if self.kb.enabled {
+                msg = format!("{msg}  ·  Computer MIDI Keyboard: octave C{}, velocity {}", self.kb.octave, self.kb.velocity);
+            }
         }
-        p.text(main.left_center() + egui::vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, msg, theme::font(theme::FS), col);
-        // Health warnings at the right of the message area.
+        p.with_clip_rect(main.shrink2(vec2(6.0, 0.0))).text(main.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, msg, fs.clone(), col);
+        // ▶ box + field (health warnings live here).
+        let play = seg(rx(1565.0), rx(1583.0));
+        let fld = seg(rx(1585.0), rx(1784.0));
+        p.rect_filled(play, CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, panel());
+        p.rect_filled(fld, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }, panel());
+        p.rect_filled(Rect::from_min_max(pos2(play.right(), y0), pos2(fld.left(), y1)), 0.0, theme::sep());
+        let c = play.center();
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(c.x - 2.5, c.y - 4.0), pos2(c.x + 3.5, c.y), pos2(c.x - 2.5, c.y + 4.0)],
+            gray(0x8c),
+            egui::Stroke::NONE,
+        ));
         let h = &self.audio.health;
         let mut warn = Vec::new();
         let xruns = h.xruns.load(Relaxed);
@@ -785,50 +887,56 @@ impl DawApp {
             warn.push(format!("{} commands dropped", self.dropped_commands));
         }
         if !warn.is_empty() {
-            let r = p.text(
-                main.right_center() - egui::vec2(6.0, 0.0),
-                egui::Align2::RIGHT_CENTER,
+            p.with_clip_rect(fld.shrink2(vec2(6.0, 0.0))).text(
+                fld.left_center() + vec2(6.0, 0.0),
+                Align2::LEFT_CENTER,
                 warn.join(" · "),
-                theme::font(theme::FS),
+                fs.clone(),
                 ACCENT,
             );
             if errs > 0 {
                 let last = h.last_error.try_lock().ok().and_then(|g| g.clone()).unwrap_or_default();
-                ui.interact(r, ui.make_persistent_id("st_err"), egui::Sense::hover()).on_hover_text(last);
+                ui.interact(fld, ui.make_persistent_id("st_err"), Sense::hover()).on_hover_text(last);
             }
         }
-        // Selected track.
-        let tr = seg(rx(1570.0), rx(1789.0));
-        p.rect_filled(tr, 0.0, panel());
-        let name = if self.master_selected {
-            "Main".to_string()
-        } else {
-            self.project.tracks.get(self.selected_track).map(|t| t.name.clone()).unwrap_or_default()
-        };
-        p.text(tr.right_center() - egui::vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, name, theme::font(theme::FS), theme::text());
-        // Device / Clip view switches (orange = shown).
-        for (i, (mode, tip)) in
-            [(DetailMode::Device, "Device View (Ctrl+Alt+L)"), (DetailMode::Clip, "Clip View (Ctrl+Alt+L)")].into_iter().enumerate()
-        {
-            let r = seg(rx(1799.0 + i as f32 * 12.0), rx(1805.0 + i as f32 * 12.0));
-            let r = egui::Rect::from_center_size(r.center(), egui::vec2(9.0, 12.0));
-            let on = self.detail_mode == mode;
-            let resp = ui.interact(r.expand(2.0), ui.make_persistent_id(("st_dv", i)), egui::Sense::click()).on_hover_text(tip);
-            p.rect_filled(
-                r,
-                0.0,
-                if on {
-                    theme::ORANGE
-                } else if resp.hovered() {
-                    gray(0x80)
-                } else {
-                    gray(0x55)
-                },
-            );
-            if resp.clicked() {
-                self.detail_mode = mode;
-            }
+        // Orange ▲ + selected track name (right edge 1863, width = text + 12).
+        // Clicking either toggles Device / Clip view (Shift+Tab).
+        let name = if self.master_selected { "Main".to_string() } else { self.project.track_label(self.selected_track) };
+        let bf = theme::bold(theme::FS);
+        let tw = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), bf.clone(), egui::Color32::WHITE).size().x);
+        let nr = seg(rx(1863.0) - tw.ceil() - 12.0, rx(1863.0));
+        let tri = seg(nr.left() - 20.0, nr.left() - 2.0);
+        p.rect_filled(nr, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }, panel());
+        p.text(nr.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &name, bf, theme::text());
+        p.rect_filled(tri, CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, theme::ORANGE);
+        let c = tri.center();
+        let (a, b2) = if self.detail_mode == DetailMode::Device { (-1.0, 1.0) } else { (1.0, -1.0) };
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(c.x, c.y + 3.0 * a), pos2(c.x + 4.0, c.y + 3.0 * b2), pos2(c.x - 4.0, c.y + 3.0 * b2)],
+            gray(0x0c),
+            egui::Stroke::NONE,
+        ));
+        let resp = ui
+            .interact(tri.union(nr), ui.make_persistent_id("st_dv"), Sense::click())
+            .on_hover_text("Toggle Device / Clip View (Shift+Tab)");
+        if resp.clicked() {
+            self.detail_mode = if self.detail_mode == DetailMode::Device { DetailMode::Clip } else { DetailMode::Device };
         }
+        // Decorative meter bars and ▾ (Live's CPU / disk overload area).
+        for (i, top) in [5.0, 3.0, 0.5, 3.0].into_iter().enumerate() {
+            let x = rx(1881.0 + 4.0 * i as f32);
+            p.rect_filled(Rect::from_min_max(pos2(x, y0 + 2.0 + top), pos2(x + 2.0, y0 + 17.0)), 0.0, gray(0x46));
+        }
+        let c = pos2(rx(1904.5), y0 + 8.5);
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(c.x - 3.0, c.y - 2.0), pos2(c.x + 3.0, c.y - 2.0), pos2(c.x, c.y + 2.0)],
+            gray(0x46),
+            egui::Stroke::NONE,
+        ));
+        // Window-corner grip (orange).
+        let g = pos2(rx(1912.0), y1 + 1.0);
+        p.rect_stroke(Rect::from_min_size(g, vec2(7.0, 7.0)), 0.0, egui::Stroke::new(1.0, theme::ORANGE), egui::StrokeKind::Inside);
+        p.line_segment([g + vec2(2.0, 5.0), g + vec2(5.0, 2.0)], egui::Stroke::new(1.0, theme::ORANGE));
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {

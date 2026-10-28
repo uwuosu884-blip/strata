@@ -64,6 +64,28 @@ impl Project {
         }
     }
 
+    /// Ctrl+drag: copies of the clips at `(clip id, destination track, start)`,
+    /// overwriting what's underneath; the originals stay. Returns the new ids.
+    pub fn copy_clips(&mut self, moves: &[(u64, usize, f64)], fpb: &impl Fn(&Clip) -> f64) -> Vec<u64> {
+        let copies: Vec<(ArrangementClip, usize, f64)> = moves
+            .iter()
+            .filter_map(|&(id, dest, start)| {
+                let (t, i) = self.find_arrangement_clip(id)?;
+                (dest < self.tracks.len()).then(|| (self.tracks[t].arrangement[i].clone(), dest, start.max(0.0)))
+            })
+            .collect();
+        let mut ids = Vec::with_capacity(copies.len());
+        for (mut a, dest, start) in copies {
+            a.start = start;
+            a.clip.id = self.alloc_id();
+            self.clear_arrangement_range(dest, start, start + a.clip.length, fpb);
+            ids.push(a.clip.id);
+            self.tracks[dest].arrangement.push(a);
+            self.tracks[dest].arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
+        }
+        ids
+    }
+
     /// Copy the material in `[start, end)` on `tracks` to `[end, 2*end-start)`.
     /// Returns the ids of the copies.
     pub fn duplicate_range(&mut self, tracks: &[usize], start: f64, end: f64, fpb: &impl Fn(&Clip) -> f64) -> Vec<u64> {
@@ -88,6 +110,42 @@ impl Project {
             self.tracks[t].arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
         }
         out
+    }
+
+    /// The material in `[start, end)` on `tracks`, trimmed to the range:
+    /// `(track, piece)` with `piece.start` relative to `start`.
+    pub fn copy_range(&self, tracks: &[usize], start: f64, end: f64, fpb: &impl Fn(&Clip) -> f64) -> Vec<(usize, ArrangementClip)> {
+        let mut out = Vec::new();
+        for &t in tracks {
+            let Some(tr) = self.tracks.get(t) else { continue };
+            for mut p in tr.arrangement.iter().filter_map(|a| trimmed(a, start, end, fpb)) {
+                p.start -= start;
+                out.push((t, p));
+            }
+        }
+        out
+    }
+
+    /// Place `pieces` (clip starts relative to `at`) on their tracks, overwriting
+    /// what is underneath. Returns the new clip ids.
+    pub fn paste_clips(&mut self, pieces: &[(usize, ArrangementClip)], at: f64, fpb: &impl Fn(&Clip) -> f64) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for (t, a) in pieces {
+            let Some(tr) = self.tracks.get(*t) else { continue };
+            let audio = matches!(a.clip.content, ClipContent::Audio { .. });
+            if (tr.kind == TrackKind::Audio) != audio || tr.kind == TrackKind::Group {
+                continue;
+            }
+            let mut a = a.clone();
+            a.start += at;
+            a.clip.id = self.alloc_id();
+            ids.push(a.clip.id);
+            self.clear_arrangement_range(*t, a.start, a.start + a.clip.length, fpb);
+            let tr = &mut self.tracks[*t];
+            tr.arrangement.push(a);
+            tr.arrangement.sort_by(|x, y| x.start.total_cmp(&y.start));
+        }
+        ids
     }
 
     /// Does `[start, end)` on `track` overlap any clip?
@@ -283,6 +341,23 @@ mod tests {
         let ClipContent::Midi { notes } = &p.tracks[1].arrangement[0].clip.content else { panic!() };
         assert_eq!(notes.len(), 1);
         assert!((notes[0].start - 1.0).abs() < 1e-9, "note at beat 3 → 1 into the piece");
+    }
+
+    #[test]
+    fn copy_clips_keeps_original_and_overwrites_destination() {
+        let mut p = proj();
+        let a = put(&mut p, 0, 0.0, 4.0, &[1.0]);
+        put(&mut p, 1, 2.0, 4.0, &[]);
+        let ids = p.copy_clips(&[(a, 1, 4.0)], &|_| 1.0);
+        assert_eq!(ids.len(), 1);
+        assert_ne!(ids[0], a, "the copy gets a fresh id");
+        assert_eq!(spans(&p, 0), vec![(0.0, 4.0)], "original untouched");
+        assert_eq!(spans(&p, 1), vec![(2.0, 4.0), (4.0, 8.0)], "underlying clip trimmed");
+        assert_eq!(p.tracks[1].arrangement[1].clip.id, ids[0]);
+        let ClipContent::Midi { notes } = &p.tracks[1].arrangement[1].clip.content else { panic!() };
+        assert_eq!(notes.len(), 1);
+        // Unknown ids / tracks are ignored.
+        assert!(p.copy_clips(&[(9999, 0, 0.0), (a, 7, 0.0)], &|_| 1.0).is_empty());
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub fn detail_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     ui.set_min_size(full);
     ui.set_max_size(full);
     if app.master_selected {
-        master_device(app, ui);
+        device_view(app, ui);
         return;
     }
     if app.project.tracks.is_empty() {
@@ -45,9 +45,7 @@ pub fn detail_panel(app: &mut DawApp, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new("No clip selected on this track · Shift+Tab: devices").color(Color32::GRAY))
             });
         }
-        (crate::app::DetailMode::Device, _) => {
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| device_panel(app, ui));
-        }
+        (crate::app::DetailMode::Device, _) => device_view(app, ui),
     }
 }
 
@@ -799,110 +797,113 @@ fn c_or(c: Color32) -> Color32 {
 
 // ============================ Devices ============================
 
-/// Master track device view: an (empty) audio effect chain, ready for effects.
-fn master_device(app: &mut DawApp, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
-        ui.painter().rect_filled(r, CornerRadius::same(2), rgb(app.project.master_color));
-        ui.label(egui::RichText::new("Master").strong());
-        ui.label(egui::RichText::new("Audio effect chain").color(Color32::GRAY));
-    });
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), (ui.available_height() - 4.0).max(60.0)), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::ZERO, win_bg());
-    p.text(rect.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", font(FS), dim());
-}
-
-fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
+/// Live 12 device view (measured at 1920 px): the panel fills the detail area,
+/// a `#18` double grip sits in the left window margin, devices run left to right
+/// and the rest of the chain is the centred "Drop Audio Effects Here" zone.
+fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
+    let rect = ui.max_rect();
+    ui.allocate_rect(rect, Sense::hover());
+    // Grip: two 2 px bars at panel.left-7 / -4, inset 40 px, notch 11 px below the top.
+    let gp = ui.painter().with_clip_rect(rect.expand2(vec2(9.0, 0.0)));
+    let (gy0, gy1) = (rect.top() + 40.0, rect.bottom() - 40.0);
+    for dx in [-7.0, -4.0] {
+        let x = rect.left() + dx;
+        gp.rect_filled(Rect::from_min_max(pos2(x, gy0), pos2(x + 2.0, gy1)), 0.0, gray(0x18));
+        gp.rect_filled(Rect::from_min_max(pos2(x, gy0 + 11.0), pos2(x + 2.0, gy0 + 12.0)), 0.0, panel());
+    }
     let t = app.selected_track;
-    let Some(track) = app.project.tracks.get(t) else { return };
-    ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
-        ui.painter().rect_filled(r, CornerRadius::same(2), rgb(track.color));
-        ui.label(egui::RichText::new(app.project.track_label(t)).strong());
-        ui.label(egui::RichText::new(track.instrument.label()).color(Color32::GRAY));
-        if track.kind == TrackKind::Midi {
-            ui.label(egui::RichText::new("Drop an instrument from the browser here to replace").small().color(gray(110)));
-        }
-    });
-    if track.kind == TrackKind::Group {
-        let n = app.project.subtree_end(t) - t - 1;
-        ui.label(
-            egui::RichText::new(format!(
-                "Group bus with {n} track(s): their audio is summed here, then this track's volume, pan, mute and solo apply. Ctrl+Shift+G ungroups."
-            ))
-            .color(Color32::GRAY),
-        );
-        return;
-    }
-    if track.kind == TrackKind::Audio {
-        ui.label(egui::RichText::new("Audio track: drop samples on its slots or arrangement lane, arm it (red dot) and record with F9 or a slot's record button. IN = monitor input.").color(Color32::GRAY));
-        return;
-    }
-    let mut inst = track.instrument.clone();
-    let mut ed = Edit::default();
-    // Live device: panel body, 1 px outline, title strip with an activator dot.
-    let title = track.instrument.label().to_string();
-    let frame = egui::Frame::NONE.fill(panel()).stroke(Stroke::new(1.0, outline())).inner_margin(egui::Margin {
-        left: 6,
-        right: 6,
-        top: 2,
-        bottom: 6,
-    });
-    let (resp, dropped) = ui.dnd_drop_zone::<DragItem, _>(frame, |ui| {
-        ui.set_min_size(vec2(ui.available_width(), 120.0));
-        let (tr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
-        let tp = ui.painter();
-        tp.rect_filled(tr.expand2(vec2(5.0, 1.0)), CornerRadius::ZERO, gray(0x46));
-        tp.circle_filled(tr.left_center() + vec2(5.0, 0.0), 4.5, ORANGE);
-        tp.text(tr.left_center() + vec2(15.0, 0.0), Align2::LEFT_CENTER, &title, bold(FS), text());
-        ui.add_space(4.0);
-        match &mut inst {
+    let midi = !app.master_selected && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
+    let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected)), Sense::hover());
+    let mut fx = rect;
+    let mut inst_drop_ok = false;
+    if midi {
+        inst_drop_ok = true;
+        match app.project.tracks[t].instrument {
             InstrumentDef::None => {
-                ui.label("No instrument. Drag one from the browser.");
+                // Empty MIDI track: the whole chain takes an instrument.
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Drop an Instrument or Sample Here", font(FS), text());
+                fx = Rect::NOTHING;
             }
-            InstrumentDef::Synth(s) => synth_ui(ui, s, &mut ed),
-            InstrumentDef::Sampler { sample, params } => {
-                ui.horizontal(|ui| {
-                    ui.label("Sample:");
-                    let name = sample
-                        .as_deref()
-                        .map(|s| s.rsplit(['/', '\\', ':']).next().unwrap_or(s).to_string())
-                        .unwrap_or_else(|| "(drop a sample here)".into());
-                    ui.label(egui::RichText::new(name).color(ACCENT));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Root");
-                    ed.drag(ui.add(egui::DragValue::new(&mut params.root_note).range(0..=127).custom_formatter(|v, _| note_name(v as u8))));
-                    ed.slider(ui, "Tune", &mut params.tune_semitones, -24.0..=24.0, false);
-                    ed.slider(ui, "Gain", &mut params.gain, 0.0..=2.0, false);
-                });
-                adsr_ui(ui, "Amp", &mut params.amp, &mut ed);
-            }
-            InstrumentDef::Drums { pads } => {
-                if let Some(a) = drums_ui(ui, pads, &mut ed) {
-                    app.audition_note(t, a, 110);
-                }
+            _ => {
+                let used = instrument_device(app, ui, rect);
+                fx = Rect::from_min_max(pos2(used.right() + 1.0, rect.top()), rect.max);
             }
         }
-    });
-    let _ = resp;
-    if let Some(item) = dropped {
+    }
+    if fx.is_positive() {
+        ui.painter().with_clip_rect(fx).text(fx.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", font(FS), text());
+    }
+    // Drag & drop: instruments / samples replace the device (audio effects: Phase 6).
+    let hover = zone.dnd_hover_payload::<DragItem>();
+    if inst_drop_ok && hover.as_deref().is_some_and(|d| super::instrument_for(d).is_some() || matches!(d, DragItem::Sample { .. })) {
+        ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, focus()), egui::StrokeKind::Inside);
+    }
+    if !inst_drop_ok {
+        return;
+    }
+    if let Some(item) = zone.dnd_release_payload::<DragItem>() {
+        let inst = app.project.tracks[t].instrument.clone();
         if let Some(def) = match &*item {
-            // Sample onto a sampler: keep its params.
-            DragItem::Sample { key, .. } if matches!(inst, InstrumentDef::Sampler { .. }) => {
-                if let InstrumentDef::Sampler { params, .. } = &inst {
-                    Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: *params })
-                } else {
-                    None
-                }
-            }
-            DragItem::Sample { .. } if matches!(inst, InstrumentDef::Drums { .. }) => None, // handled per pad
+            // Sample onto a sampler: keep its params; onto anything else: new Sampler.
+            DragItem::Sample { key, .. } => match &inst {
+                InstrumentDef::Sampler { params, .. } => Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: *params }),
+                InstrumentDef::Drums { .. } => None, // pads take samples individually
+                _ => super::instrument_for(&item),
+            },
             other => super::instrument_for(other),
         } {
             app.set_instrument(t, def);
         }
-        return;
+    }
+}
+
+/// Draws the selected MIDI track's instrument as a Live device at the left of
+/// `area`; returns the device rect.
+fn instrument_device(app: &mut DawApp, ui: &mut egui::Ui, area: Rect) -> Rect {
+    let t = app.selected_track;
+    let mut inst = app.project.tracks[t].instrument.clone();
+    let w = match inst {
+        InstrumentDef::Synth(_) => 880.0_f32,
+        InstrumentDef::Sampler { .. } => 470.0,
+        _ => 640.0,
+    };
+    let dev = Rect::from_min_size(area.min, vec2(w.min(area.width() - 120.0).max(200.0), area.height()));
+    let p = ui.painter().with_clip_rect(dev);
+    // Title strip: activator dot + name; 1 px chain separator on the right.
+    let title = Rect::from_min_size(dev.min, vec2(dev.width(), 17.0));
+    p.rect_filled(title, CornerRadius { nw: 3, ne: 0, sw: 0, se: 0 }, gray(0x46));
+    p.circle_filled(title.left_center() + vec2(9.0, 0.0), 4.5, ORANGE);
+    p.text(title.left_center() + vec2(19.0, 0.0), Align2::LEFT_CENTER, inst.label(), bold(FS), text());
+    ui.painter().rect_filled(Rect::from_min_max(pos2(dev.right(), dev.top()), pos2(dev.right() + 1.0, dev.bottom())), 0.0, sep());
+    let body = Rect::from_min_max(pos2(dev.left() + 6.0, title.bottom() + 4.0), dev.max - vec2(6.0, 4.0));
+    let mut ed = Edit::default();
+    let mut audition = None;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt(("dev", t)));
+    child.set_clip_rect(body);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| match &mut inst {
+        InstrumentDef::None => {}
+        InstrumentDef::Synth(s) => synth_ui(ui, s, &mut ed),
+        InstrumentDef::Sampler { sample, params } => {
+            ui.horizontal(|ui| {
+                ui.label("Sample:");
+                let name = sample
+                    .as_deref()
+                    .map(|s| s.rsplit(['/', '\\', ':']).next().unwrap_or(s).to_string())
+                    .unwrap_or_else(|| "(drop a sample here)".into());
+                ui.label(egui::RichText::new(name).color(ACCENT));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Root");
+                ed.drag(ui.add(egui::DragValue::new(&mut params.root_note).range(0..=127).custom_formatter(|v, _| note_name(v as u8))));
+            });
+            ed.slider(ui, "Tune", &mut params.tune_semitones, -24.0..=24.0, false);
+            ed.slider(ui, "Gain", &mut params.gain, 0.0..=2.0, false);
+            adsr_ui(ui, "Amp", &mut params.amp, &mut ed);
+        }
+        InstrumentDef::Drums { pads } => audition = drums_ui(ui, pads, &mut ed),
+    });
+    if let Some(a) = audition {
+        app.audition_note(t, a, 110);
     }
     if let Some((pad, key)) = ed.pad_drop.take() {
         if let InstrumentDef::Drums { pads } = &mut inst {
@@ -923,6 +924,7 @@ fn device_panel(app: &mut DawApp, ui: &mut egui::Ui) {
         app.needs_compile = true;
         app.dirty = true;
     }
+    dev
 }
 
 #[derive(Default)]
@@ -959,7 +961,8 @@ fn synth_ui(ui: &mut egui::Ui, s: &mut daw_engine::SynthParams, ed: &mut Edit) {
         wave_combo(ui, "Osc 1", &mut s.osc1, ed);
         wave_combo(ui, "Osc 2", &mut s.osc2, ed);
     });
-    ui.columns(3, |c| {
+    // Four columns keep every control inside Live's fixed device height.
+    ui.columns(4, |c| {
         c[0].label(egui::RichText::new("OSCILLATORS").small().color(Color32::GRAY));
         ed.slider(&mut c[0], "Osc2 semi", &mut s.osc2_semitones, -24.0..=24.0, false);
         ed.slider(&mut c[0], "Detune ct", &mut s.osc2_detune_cents, -50.0..=50.0, false);
@@ -969,9 +972,8 @@ fn synth_ui(ui: &mut egui::Ui, s: &mut daw_engine::SynthParams, ed: &mut Edit) {
         ed.slider(&mut c[1], "Cutoff Hz", &mut s.cutoff_hz, 30.0..=18000.0, true);
         ed.slider(&mut c[1], "Resonance", &mut s.resonance, 0.0..=1.0, false);
         ed.slider(&mut c[1], "Env oct", &mut s.filter_env_octaves, -4.0..=8.0, false);
-        adsr_ui(&mut c[1], "Filter env", &mut s.filter, ed);
-        c[2].label(egui::RichText::new("AMP").small().color(Color32::GRAY));
-        adsr_ui(&mut c[2], "Amp env", &mut s.amp, ed);
+        adsr_ui(&mut c[2], "FILTER ENV", &mut s.filter, ed);
+        adsr_ui(&mut c[3], "AMP ENV", &mut s.amp, ed);
     });
 }
 
@@ -1011,7 +1013,7 @@ fn drums_ui(ui: &mut egui::Ui, pads: &mut [PadDef], ed: &mut Edit) -> Option<u8>
                         if i >= DRUM_PADS {
                             continue;
                         }
-                        let (r, resp) = ui.allocate_exact_size(vec2(78.0, 34.0), Sense::click());
+                        let (r, resp) = ui.allocate_exact_size(vec2(78.0, 32.0), Sense::click());
                         let has = pads.get(i).is_some_and(|p| p.sample.is_some());
                         let bg = if i == sel {
                             ACCENT

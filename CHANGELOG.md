@@ -10,6 +10,49 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.4] - 2026-10-28
+
+### Added
+- **Ctrl+drag copies clips** in the Arrangement (the originals stay; copies
+  overwrite what is underneath and become the selection; a dragged time
+  selection moves with them).
+- **Drop into empty Arrangement / Session space** creates a track holding the
+  dropped item: samples → audio track with the clip, instruments / presets →
+  MIDI track with that instrument, session or arrangement clips → a new track
+  of the clip's kind (MIDI keeps the source instrument).
+- **MIDI file import**: drop `.mid` / `.midi` files onto a MIDI lane (one merged
+  clip) or empty space (one new MIDI track per file track, named after it).
+  Clips are rounded up to whole bars.
+- **Shift+click time selection**: Shift+click in the lanes selects from the
+  start marker to the click, across the start-marker track(s) to the clicked
+  track (Live).
+- **Empty session slots can be selected**; Ctrl+Shift+M inserts a MIDI clip
+  into the selected empty slot.
+- Clipboard: Ctrl+C / Ctrl+X / Ctrl+V for clips, time selections and tracks;
+  Ctrl+1 / Ctrl+2 narrow / widen the grid, Ctrl+3 triplets, Ctrl+4 snap,
+  8 Bars fixed grid.
+
+### Changed
+- **Font: JetBrainsMono Nerd Font** (Medium; bold text uses SemiBold) for all UI
+  text; painted icons are unchanged.
+- **Context menus** rebuilt after Live 12: clip-space menu is context
+  dependent (Cut / Copy / Paste / Duplicate / Delete, Insert MIDI Clip, Split …
+  on top with a time selection or clips), the track menu matches Live's,
+  including the colour grid and Assign Track Color to Clips. Features the app
+  doesn't have yet are shown greyed out.
+- **Selection colour** is Live's light blue (`#b0ddeb`) for selected clips,
+  slots and time selections.
+- **Session view** redrawn after Live 12: column widths, slot squares, I/O
+  section, mixer (peak pill, pan knob, number / S / arm buttons, fader meter
+  with major and minor ticks), Main column (scene launch, Stop All, Solo,
+  blue Cue knob with headphones icon).
+- **Device view** matches Live: one rounded panel with the left grip, the
+  instrument as a device at the left and the "Drop Audio Effects Here" chain
+  area; empty MIDI tracks show "Drop an Instrument or Sample Here".
+- **Status bar** matches Live: ⓘ (audio status on hover), message field showing
+  the insert mark or time selection, track name with the orange Device / Clip
+  view toggle.
+
 ## [0.7.3] - 2026-10-28
 
 ### Changed
@@ -524,7 +567,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/uwuosu884-blip/strata/compare/v0.7.0...v0.7.1

@@ -43,8 +43,17 @@ pub enum GridMode {
 }
 
 impl GridMode {
-    pub const FIXED: [(f64, &'static str); 8] =
-        [(16.0, "4 Bars"), (8.0, "2 Bars"), (4.0, "1 Bar"), (2.0, "1/2"), (1.0, "1/4"), (0.5, "1/8"), (0.25, "1/16"), (0.125, "1/32")];
+    pub const FIXED: [(f64, &'static str); 9] = [
+        (32.0, "8 Bars"),
+        (16.0, "4 Bars"),
+        (8.0, "2 Bars"),
+        (4.0, "1 Bar"),
+        (2.0, "1/2"),
+        (1.0, "1/4"),
+        (0.5, "1/8"),
+        (0.25, "1/16"),
+        (0.125, "1/32"),
+    ];
     pub const ADAPTIVE: [(i8, &'static str); 5] = [(-2, "Widest"), (-1, "Wide"), (0, "Medium"), (1, "Narrow"), (2, "Narrowest")];
 
     /// Grid step in beats at `ppb` pixels per beat.
@@ -96,7 +105,7 @@ impl TimeSel {
     }
 }
 
-const EPS: f64 = 1e-6;
+pub const EPS: f64 = 1e-6;
 
 impl DawApp {
     /// Source frames per beat for audio clips (offsets are in source frames).
@@ -553,6 +562,23 @@ impl DawApp {
             self.project.move_clips(moves, &fpb);
             self.dirty = true;
             self.needs_compile = true;
+        }
+        self.resync_selected_clip();
+    }
+
+    /// Ctrl+drag drop: copies at the targets (originals untouched); selects them.
+    pub fn copy_arr_clips(&mut self, moves: &[(u64, usize, f64)], checkpoint: bool) {
+        let fpb = self.fpb_fn();
+        let ids = if checkpoint {
+            self.edit(|p| p.copy_clips(moves, &fpb))
+        } else {
+            let ids = self.project.copy_clips(moves, &fpb);
+            self.dirty = true;
+            self.needs_compile = true;
+            ids
+        };
+        if !ids.is_empty() {
+            self.arr_sel = ids;
         }
         self.resync_selected_clip();
     }

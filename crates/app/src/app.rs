@@ -221,6 +221,20 @@ pub struct DawApp {
     pub grid: f64,
     pub pr_grid_now: f64,
     pub arr_grid: crate::arr_ops::GridMode,
+    /// Mode restored by Ctrl+4 (Snap to Grid back on).
+    pub arr_grid_prev: crate::arr_ops::GridMode,
+    /// Ctrl+3: triplet grid (step x 2/3).
+    pub arr_triplet: bool,
+    /// Internal Cut/Copy/Paste buffer.
+    pub clipboard: crate::edit_ops::Clipboard,
+    /// View before "Zoom to Time Selection" (zoom, scroll).
+    pub zoom_back: Option<(f32, f32)>,
+    /// Lanes width last frame (zoom to selection).
+    pub arr_lanes_w: f32,
+    /// Selected scene (Session highlight row; Live always has one).
+    pub sel_scene: usize,
+    /// Selected *empty* session slot (track, scene); clip slots use `selected_clip`.
+    pub empty_slot: Option<(usize, usize)>,
     pub pr_grid: crate::arr_ops::GridMode,
     pub detail_mode: DetailMode,
     /// Last mouse press was in the detail panel (keys like Del/Ctrl+D/0 act on notes).
@@ -340,6 +354,13 @@ impl DawApp {
             grid: 0.25,
             pr_grid_now: 0.25,
             arr_grid: crate::arr_ops::GridMode::Adaptive(0),
+            arr_grid_prev: crate::arr_ops::GridMode::Adaptive(0),
+            arr_triplet: false,
+            clipboard: Default::default(),
+            zoom_back: None,
+            arr_lanes_w: 800.0,
+            sel_scene: 0,
+            empty_slot: None,
             pr_grid: crate::arr_ops::GridMode::Adaptive(0),
             detail_mode: DetailMode::Device,
             cv: Default::default(),
@@ -708,15 +729,6 @@ impl DawApp {
         let at = self.edit(|p| p.insert_track(kind, after));
         self.clear_structure_selection();
         self.selected_track = at;
-    }
-
-    pub fn delete_track(&mut self, idx: usize) {
-        if idx < self.project.tracks.len() {
-            self.edit(|p| p.remove_track(idx)); // a group takes its children with it
-            self.selected_clip = None;
-            self.clear_structure_selection();
-            self.clamp_selection();
-        }
     }
 
     pub fn delete_selected_clip(&mut self) {

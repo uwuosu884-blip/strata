@@ -288,15 +288,24 @@ pub const VOL_TEAL: Color32 = Color32::from_rgb(0x00, 0x73, 0x83);
 pub const CUE_BLUE: Color32 = Color32::from_rgb(0x4a, 0x6c, 0xc8);
 /// Selected browser row.
 pub const SEL_ROW: Color32 = Color32::from_rgb(0x63, 0x7e, 0x86);
-/// Clip / selection light blue (selected audio clip body).
-pub const SEL_BLUE: Color32 = Color32::from_rgb(0xb4, 0xdc, 0xe8);
+/// Selection light blue (Live 12: time selection on a #46 lane, selected slot,
+/// selected clip body).
+pub const SEL_BLUE: Color32 = Color32::from_rgb(0xb0, 0xdd, 0xeb);
+
+/// Time-selection colour over a grey of value `v`: Live multiplies the blue by
+/// the underlying shade (#46 → #b0ddeb, #40 → #a0c8d5, grid lines darker).
+pub fn sel_tint(v: u8) -> Color32 {
+    let k = (gray(v).r() as f32 / gray(0x46).r().max(1) as f32).min(1.4);
+    let f = |c: u8| (c as f32 * k).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(f(SEL_BLUE.r()), f(SEL_BLUE.g()), f(SEL_BLUE.b()))
+}
 
 /// Font sizes (Live: ~11 px UI text).
 pub const FS: f32 = 10.0;
 pub const FS_SMALL: f32 = 8.0;
 
-/// Sizes ≥ 10 px use the auto-hinted Inter (crisp stems); smaller text keeps
-/// Inter's own TrueType hinting, whose spacing holds up better at 8–9 px.
+/// Sizes ≥ 10 px use the auto-hinted copy (crisp stems); smaller text keeps the
+/// font's own TrueType hinting, whose spacing holds up better at 8–9 px.
 pub fn font(size: f32) -> FontId {
     if size < 9.5 { FontId::new(size, FontFamily::Name("small".into())) } else { FontId::proportional(size) }
 }
@@ -305,13 +314,15 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
 
-/// Inter (OFL) embedded: Medium for UI text, SemiBold for titles.
+/// JetBrainsMono Nerd Font (OFL) embedded: Medium for UI text, SemiBold for titles.
 ///
-/// Blurry-text fix: Inter's TrueType instructions only grid-fit vertically, so
-/// vertical stems straddled two pixel columns. The `*-auto.ttf` copies have the
-/// instructions stripped (fontTools: drop fpgm/prep/cvt/gasp + glyph programs),
-/// which makes egui/skrifa use its auto-hinter; with `preserve_linear_metrics`
-/// off that also snaps stems horizontally.
+/// * `JetBrainsMonoNerdFont-Medium.ttf`: the unmodified Nerd Font (TrueType
+///   hinting). Used below 9.5 px and as fallback for every family, so Nerd
+///   icons (private-use code points) still render.
+/// * `JetBrainsMonoNF-*-auto.ttf`: fontTools subsets without the icon ranges
+///   and with the TrueType instructions stripped. egui/skrifa then uses its
+///   auto-hinter, which (with `preserve_linear_metrics` off) also snaps stems
+///   horizontally: the TT interpreter only grid-fits vertically, which blurs.
 pub fn install_fonts(ctx: &egui::Context) {
     use egui::epaint::text::{FontTweak, HintingTarget, SmoothHinting};
     let mut fonts = FontDefinitions::default();
@@ -322,17 +333,21 @@ pub fn install_fonts(ctx: &egui::Context) {
         ..Default::default()
     };
     for (name, bytes) in [
-        ("inter", &include_bytes!("../../assets/Inter-Medium-auto.ttf")[..]),
-        ("inter-tt", &include_bytes!("../../assets/Inter-Medium.ttf")[..]),
-        ("inter-bold", &include_bytes!("../../assets/Inter-SemiBold-auto.ttf")[..]),
+        ("jb", &include_bytes!("../../assets/JetBrainsMonoNF-Medium-auto.ttf")[..]),
+        ("jb-tt", &include_bytes!("../../assets/JetBrainsMonoNerdFont-Medium.ttf")[..]),
+        ("jb-bold", &include_bytes!("../../assets/JetBrainsMonoNF-SemiBold-auto.ttf")[..]),
     ] {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).tweak(tweak()).into());
     }
     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
-    let with = |first: &str| std::iter::once(first.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
-    fonts.families.insert(FontFamily::Proportional, with("inter"));
-    fonts.families.insert(FontFamily::Name("small".into()), with("inter-tt"));
-    fonts.families.insert(FontFamily::Name("bold".into()), with("inter-bold"));
+    let with = |first: &[&str]| first.iter().map(|s| s.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
+    // Auto-hinted face for normal text (crisper than the TrueType hints at 10 px);
+    // the TT-hinted face for 8 px, where the auto-hinter spaces glyphs unevenly.
+    let main: &[&str] = &["jb", "jb-tt"];
+    fonts.families.insert(FontFamily::Proportional, with(main));
+    fonts.families.insert(FontFamily::Monospace, with(main));
+    fonts.families.insert(FontFamily::Name("small".into()), with(&["jb-tt"]));
+    fonts.families.insert(FontFamily::Name("bold".into()), with(&["jb-bold", "jb-tt"]));
     ctx.set_fonts(fonts);
 }
 
