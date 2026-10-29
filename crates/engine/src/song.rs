@@ -8,6 +8,8 @@ use crate::warp::{StretchMode, StretchParams, WarpMap};
 use std::sync::Arc;
 
 pub const MAX_TRACKS: usize = 64;
+/// Return tracks a track can send to (Live: A–L).
+pub const MAX_SENDS: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Note {
@@ -355,6 +357,8 @@ pub struct SongTrack {
     pub pad_outs: u32,
     /// Filled by [`Song::prepare`]: runtime tracks whose input is this track's MIDI.
     pub midi_listeners: u64,
+    /// Post-fader sends: (return track rt, linear gain), at most [`MAX_SENDS`].
+    pub sends: Vec<(u16, f32)>,
 }
 
 impl Default for SongTrack {
@@ -374,6 +378,7 @@ impl Default for SongTrack {
             arrangement: Vec::new(),
             pad_outs: 0,
             midi_listeners: 0,
+            sends: Vec::new(),
         }
     }
 }
@@ -438,6 +443,12 @@ impl Song {
             {
                 t.output = TrackOutput::Master;
             }
+            let me = t.rt;
+            t.sends.retain(|&(d, g)| d != me && seen[d as usize] && g.is_finite() && g > 0.0);
+            t.sends.truncate(MAX_SENDS);
+            for s in &mut t.sends {
+                s.1 = s.1.min(4.0);
+            }
             if let TrackInput::Midi { channel, .. } = &mut t.input {
                 *channel = (*channel).min(16);
             }
@@ -480,7 +491,7 @@ impl Song {
         let deps = |tracks: &[SongTrack], j: usize, done: &[bool]| -> bool {
             let me = tracks[j].rt;
             tracks[j].input.source().is_some_and(|s| !done[index[s as usize]])
-                || tracks.iter().enumerate().any(|(i, t)| !done[i] && t.output.dest() == Some(me))
+                || tracks.iter().enumerate().any(|(i, t)| !done[i] && (t.output.dest() == Some(me) || t.sends.iter().any(|s| s.0 == me)))
         };
         while self.order.len() < n {
             if let Some(j) = (0..n).find(|&j| !done[j] && !deps(&self.tracks, j, &done)) {
@@ -498,6 +509,7 @@ impl Song {
                 if t.output.dest() == Some(me) {
                     t.output = TrackOutput::Master;
                 }
+                t.sends.retain(|s| s.0 != me);
             }
         }
     }

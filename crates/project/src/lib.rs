@@ -84,6 +84,9 @@ pub struct Project {
     pub loop_end: f64,
     pub scenes: Vec<Scene>,
     pub tracks: Vec<Track>,
+    /// Return tracks (Live: A, B, …), fed by every track's sends; always
+    /// shown after the tracks and before the Main track.
+    pub returns: Vec<Track>,
     pub next_id: u64,
     /// Groove Pool and its global amount (0..1.3).
     pub grooves: Vec<clipx::Groove>,
@@ -120,6 +123,7 @@ impl Default for Project {
             loop_end: 16.0,
             scenes: Vec::new(),
             tracks: Vec::new(),
+            returns: Vec::new(),
             next_id: 1,
             grooves: Vec::new(),
             groove_amount: 1.0,
@@ -183,7 +187,13 @@ pub struct Track {
     pub height: f32,
     /// Arrangement lane collapsed to the clip title bars. View state.
     pub collapsed: bool,
+    /// Post-fader send levels (dB) to `Project::returns`, by index;
+    /// ≤ [`SEND_OFF_DB`] = off (Live's −inf). Kept as long as the return list.
+    pub sends: Vec<f32>,
 }
+
+/// Send level treated as −inf (off).
+pub const SEND_OFF_DB: f32 = -70.0;
 
 impl Default for Track {
     fn default() -> Self {
@@ -212,6 +222,7 @@ impl Default for Track {
             folded: false,
             height: 0.0,
             collapsed: false,
+            sends: Vec::new(),
         }
     }
 }
@@ -609,7 +620,50 @@ impl Project {
         p.tracks[keys].instrument = InstrumentDef::Synth(SynthParams::preset("Pad"));
         let audio = p.add_track(TrackKind::Audio);
         p.tracks[audio].name = "# Audio".into();
+        // Live's default Set has two returns, A and B.
+        p.add_return();
+        p.add_return();
         p
+    }
+
+    /// Append a return track ("A Return", "B Return", …); every track gets a
+    /// new send (off). Returns its index in `returns`.
+    pub fn add_return(&mut self) -> usize {
+        let k = self.returns.len();
+        let id = self.alloc_id();
+        let letter = (b'A' + (k % 26) as u8) as char;
+        // Live's return colours: light blue-grey family.
+        const COLORS: [[u8; 3]; 4] = [[0x96, 0xb8, 0xd9], [0xd3, 0xb4, 0xdd], [0xb5, 0xd6, 0x8c], [0xe8, 0xc1, 0x8a]];
+        self.returns.push(Track {
+            id,
+            name: format!("{letter} Return"),
+            kind: TrackKind::Audio,
+            color: COLORS[k % COLORS.len()],
+            audio_in: AudioIn::None,
+            ..Default::default()
+        });
+        self.normalize();
+        k
+    }
+
+    /// Remove return `k` and the matching send of every track.
+    pub fn delete_return(&mut self, k: usize) -> bool {
+        if k >= self.returns.len() {
+            return false;
+        }
+        self.returns.remove(k);
+        for t in &mut self.tracks {
+            if k < t.sends.len() {
+                t.sends.remove(k);
+            }
+        }
+        self.normalize();
+        true
+    }
+
+    /// Send level of track `t` to return `k` (dB; [`SEND_OFF_DB`] when off).
+    pub fn send_db(&self, t: usize, k: usize) -> f32 {
+        self.tracks.get(t).and_then(|t| t.sends.get(k)).copied().unwrap_or(SEND_OFF_DB)
     }
 
     pub fn alloc_id(&mut self) -> u64 {
@@ -884,7 +938,22 @@ impl Project {
     /// Make every track's slot list match the scene count, fix ids.
     pub fn normalize(&mut self) {
         let n = self.scenes.len();
+        let nr = self.returns.len();
+        for r in &mut self.returns {
+            r.slots.clear();
+            r.arrangement.clear();
+            r.sends.clear();
+            r.group = None;
+            r.kind = TrackKind::Audio;
+        }
         for t in &mut self.tracks {
+            t.sends.resize(nr, SEND_OFF_DB);
+            for s in &mut t.sends {
+                if !s.is_finite() || *s < SEND_OFF_DB {
+                    *s = SEND_OFF_DB;
+                }
+                *s = s.min(6.0);
+            }
             t.slots.resize(n, None);
             t.arrangement.sort_by(|a, b| a.start.total_cmp(&b.start));
             for c in t.slots.iter_mut().flatten().chain(t.arrangement.iter_mut().map(|a| &mut a.clip)) {
@@ -894,6 +963,7 @@ impl Project {
         let max_id = self
             .tracks
             .iter()
+            .chain(&self.returns)
             .flat_map(|t| {
                 std::iter::once(t.id).chain(t.slots.iter().flatten().map(|c| c.id)).chain(t.arrangement.iter().map(|a| a.clip.id))
             })

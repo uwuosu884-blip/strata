@@ -248,3 +248,31 @@ fn keyboard_notes_reach_keyboard_and_all_ins_tracks_only() {
     h.send(Command::KeyboardNote { pitch: 61, velocity: 100 }).unwrap();
     assert!(!nonzero(&render(&mut e, 480, 480)).is_empty());
 }
+
+#[test]
+fn post_fader_sends_feed_return_tracks() {
+    let (mut e, mut h, mut input) = engine4();
+    // Track 0 hears input ch 1 (0.1) and only sends (output None) at 0.5 to return rt 1.
+    let song = |send: f32, gain: f32, mute: bool, solo: (bool, bool)| {
+        Song::new(vec![
+            SongTrack { output: TrackOutput::None, sends: vec![(1, send)], gain, mute, solo: solo.0, ..ext(0, 0, false, Monitor::In) },
+            SongTrack { rt: 1, ..Default::default() },
+            SongTrack { rt: 2, solo: solo.1, ..Default::default() },
+        ])
+    };
+    let level = |e: &mut Engine, input: &mut rtrb::Producer<f32>| ch(&run(e, input, 4800, 2), 2, 0);
+    h.set_song(song(0.5, 1.0, false, (false, false))).unwrap();
+    assert!((level(&mut e, &mut input) - 0.05).abs() < 1e-4, "send 0.5");
+    h.set_song(song(0.5, 0.5, false, (false, false))).unwrap();
+    assert!((level(&mut e, &mut input) - 0.025).abs() < 1e-4, "post-fader");
+    h.set_song(song(0.5, 1.0, true, (false, false))).unwrap();
+    assert!(level(&mut e, &mut input).abs() < 1e-4, "muted track sends nothing");
+    h.set_song(song(0.5, 1.0, false, (true, false))).unwrap();
+    assert!((level(&mut e, &mut input) - 0.05).abs() < 1e-4, "solo in place keeps the return");
+    h.set_song(song(0.5, 1.0, false, (false, true))).unwrap();
+    assert!(level(&mut e, &mut input).abs() < 1e-4, "another solo silences track + return");
+    // Self / dangling sends are dropped; cycles via sends are cut.
+    let mut s = Song::new(vec![SongTrack { sends: vec![(0, 1.0), (9, 1.0)], ..Default::default() }]);
+    s.prepare();
+    assert!(s.tracks[0].sends.is_empty());
+}

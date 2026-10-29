@@ -30,8 +30,8 @@ pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams
 pub use instruments::synth::{SynthParams, Wave};
 pub use sample::{PEAK_BLOCK, SampleBuffer};
 pub use song::{
-    ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_TRACKS, MIDI_ALL_INS,
-    MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup, fade_gain,
+    ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_SENDS, MAX_TRACKS,
+    MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup, fade_gain,
 };
 pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};
@@ -1093,6 +1093,10 @@ impl Engine {
             if let TrackOutput::Track(d) = st.output {
                 down[d as usize] |= down[rt];
             }
+            // Solo in place: a soloed track keeps the returns it sends to audible.
+            for &(d, _) in &st.sends {
+                down[d as usize] |= down[rt];
+            }
         }
         for &i in song.order.iter().rev() {
             let st = &song.tracks[i as usize];
@@ -1210,7 +1214,21 @@ impl Engine {
 
             let audible = !any_solo || up[rt] || down[rt];
             if !tracks[rt].mix(n, audible) {
+                tracks[rt].send_g = [0.0; MAX_SENDS];
                 continue;
+            }
+            // Post-fader sends into the return tracks' buses (gain ramped per block).
+            for (k, &(d, target)) in st.sends.iter().enumerate() {
+                let (t, rtn) = two_mut(tracks, rt, d as usize);
+                let g0 = t.send_g[k];
+                let step = (target - g0) / n.max(1) as f32;
+                for j in 0..n {
+                    let g = g0 + step * (j + 1) as f32;
+                    rtn.bus_l[j] += t.post_l[j] * g;
+                    rtn.bus_r[j] += t.post_r[j] * g;
+                }
+                t.send_g[k] = target;
+                rtn.bus_active = true;
             }
             match st.output {
                 TrackOutput::Master => {

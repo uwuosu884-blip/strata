@@ -115,6 +115,8 @@ pub(crate) struct TrackRt {
     /// Clip envelope modulation of the mixer (volume factor, pan offset).
     pub env_vol: f32,
     pub env_pan: f32,
+    /// Send gains applied last block (per send slot), ramped to the target.
+    pub send_g: [f32; crate::song::MAX_SENDS],
 }
 
 impl TrackRt {
@@ -159,6 +161,7 @@ impl TrackRt {
             held: None,
             env_vol: 1.0,
             env_pan: 0.0,
+            send_g: [0.0; crate::song::MAX_SENDS],
         }
     }
 

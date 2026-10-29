@@ -37,7 +37,7 @@ impl RtSlots {
     fn retain(&mut self, project: &Project) {
         let free = &mut self.free;
         self.map.retain(|id, rt| {
-            let keep = project.tracks.iter().any(|t| t.id == *id);
+            let keep = project.tracks.iter().chain(&project.returns).any(|t| t.id == *id);
             if !keep {
                 free.push_back(*rt);
             }
@@ -335,9 +335,17 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
     slots.retain(project);
     let cx = ClipCtx { grooves: &project.grooves, amount: project.groove_amount.clamp(0.0, 1.3) };
     // Slots first: routing may point at any track.
-    for t in &project.tracks {
+    for t in project.tracks.iter().chain(&project.returns) {
         slots.assign(t.id); // > MAX_TRACKS tracks: extra ones are silent
     }
+    let sends = |t: &p::Track| -> Vec<(u16, f32)> {
+        t.sends
+            .iter()
+            .zip(&project.returns)
+            .filter(|(db, _)| **db > p::SEND_OFF_DB)
+            .filter_map(|(db, r)| Some((slots.get(r.id)?, db_to_gain(*db))))
+            .collect()
+    };
     let tracks = project
         .tracks
         .iter()
@@ -361,10 +369,26 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
                     .filter(|a| !a.clip.muted)
                     .map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache, &cx) })
                     .collect(),
+                sends: sends(t),
                 ..Default::default()
             })
         })
-        .collect();
+        .chain(project.returns.iter().filter_map(|r| {
+            // Returns: a bus fed by the sends, out to Main (or Ext. Out).
+            Some(e::SongTrack {
+                rt: slots.get(r.id)?,
+                gain: db_to_gain(r.gain_db),
+                pan: r.pan.clamp(-1.0, 1.0),
+                mute: r.mute,
+                solo: r.solo,
+                output: match r.audio_out {
+                    p::AudioOut::Ext { ch, stereo } => e::TrackOutput::Ext { ch, stereo },
+                    _ => e::TrackOutput::Master,
+                },
+                ..Default::default()
+            })
+        }))
+        .collect::<Vec<_>>();
     let mut song = e::Song::new(tracks);
     song.master_out = (project.master_out_ch, project.master_out_stereo);
     song.base_tempo = project.tempo_bpm;
@@ -416,6 +440,28 @@ fn output(t: &p::Track, slots: &RtSlots, io: &IoMap) -> e::TrackOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn returns_compile_with_track_sends() {
+        let mut proj = Project::new_default();
+        assert_eq!(proj.returns.len(), 2);
+        assert!(proj.tracks.iter().all(|t| t.sends == vec![p::SEND_OFF_DB; 2]));
+        proj.tracks[0].sends[1] = -6.0;
+        let mut cache = SampleCache::new(48_000);
+        let mut slots = RtSlots::default();
+        let song = compile(&proj, &mut cache, &mut slots);
+        let rb = slots.get(proj.returns[1].id).unwrap();
+        assert!(song.tracks.iter().any(|t| t.rt == rb && t.output == e::TrackOutput::Master));
+        let s = &song.tracks[0].sends;
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].0, rb);
+        assert!((s[0].1 - db_to_gain(-6.0)).abs() < 1e-6);
+        // Deleting a return drops that send column everywhere.
+        proj.delete_return(0);
+        assert_eq!(proj.tracks[0].sends, vec![-6.0]);
+        let song = compile(&proj, &mut cache, &mut slots);
+        assert_eq!(song.tracks.len(), proj.tracks.len() + 1);
+    }
 
     #[test]
     fn group_children_route_to_the_group_bus() {
