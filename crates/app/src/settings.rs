@@ -100,6 +100,29 @@ pub struct Settings {
     pub theme: crate::ui::theme::ThemeSettings,
     /// Display & Input > Zoom Display in % (0 = 100).
     pub zoom_pct: u16,
+    /// Browser: collections, columns, sidebar width.
+    pub browser: BrowserPrefs,
+}
+
+/// Saved browser state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserPrefs {
+    /// Item key → collection bits (bit i = collection i: Favorites, Orange, …, Gray).
+    pub collections: std::collections::BTreeMap<String, u8>,
+    /// Collections hidden from the sidebar (bits).
+    pub hidden: u8,
+    /// Extra list columns (bits: Date Modified, Size, Type, Rank, Place).
+    pub columns: u8,
+    pub show_extensions: bool,
+    /// Sidebar width in px (below 60 = narrow icon-only sidebar).
+    pub sidebar_w: f32,
+}
+
+impl Default for BrowserPrefs {
+    fn default() -> Self {
+        Self { collections: Default::default(), hidden: 0, columns: 0, show_extensions: true, sidebar_w: 27.0 }
+    }
 }
 
 impl Settings {

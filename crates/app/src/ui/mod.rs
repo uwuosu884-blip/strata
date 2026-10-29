@@ -101,6 +101,7 @@ impl eframe::App for DawApp {
         // window colour, 19 px status bar, 2 px outline around the focused panel.
         let m = |l: i8, r: i8, t: i8, b: i8| egui::Margin { left: l, right: r, top: t, bottom: b };
         egui::Panel::top("transport")
+            .show_separator_line(false)
             .exact_size(47.0)
             .resizable(false)
             .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 0)))
@@ -141,14 +142,19 @@ impl eframe::App for DawApp {
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
             self.focus_detail = detail_inner.contains(p);
         }
-        if self.show_browser {
-            egui::Panel::left("browser")
+        // Browser: window-coloured 9 px margins left / right, rounded panel inside.
+        let browser_inner = self.show_browser.then(|| {
+            let r = egui::Panel::left("browser")
                 .resizable(true)
-                .default_size(344.0)
-                .size_range(200.0..=520.0)
-                .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(9, 9, 0, 0)))
-                .show(ui, |ui| browser::browser(self, ui));
-        }
+                .show_separator_line(false)
+                .default_size(360.0)
+                .size_range(220.0..=620.0)
+                .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 0, 0)))
+                .show(ui, |ui| browser::browser(self, ui))
+                .response
+                .rect;
+            r - m(9, 9, 0, 0)
+        });
         ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(master_zone_id()));
         let left = if self.show_browser { 0 } else { 9 };
         // Arrangement Mixer: its own rounded panel under the Arrangement, 9 px gap.
@@ -183,8 +189,17 @@ impl eframe::App for DawApp {
             ctx.data_mut(|d| d.insert_temp(mix_focus_id, inside));
         }
         let mix_focus = ctx.data(|d| d.get_temp::<bool>(mix_focus_id)).unwrap_or(false);
-        let fr = match mixer_inner {
-            Some(r) if mix_focus && !self.focus_detail => r,
+        let brw_focus_id = egui::Id::unique("focus_browser");
+        // Presses on popups (browser menus) keep the focus where it was.
+        if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
+            && ctx.layer_id_at(p).is_none_or(|l| l.order == egui::Order::Background)
+        {
+            ctx.data_mut(|d| d.insert_temp(brw_focus_id, browser_inner.is_some_and(|r| r.contains(p))));
+        }
+        let brw_focus = ctx.data(|d| d.get_temp::<bool>(brw_focus_id)).unwrap_or(false);
+        let fr = match (browser_inner, mixer_inner) {
+            (Some(r), _) if brw_focus => r,
+            (_, Some(r)) if mix_focus && !self.focus_detail => r,
             _ if self.focus_detail => detail_inner,
             _ => central,
         };
@@ -424,6 +439,7 @@ impl DawApp {
             self.pr_time_sel = None;
             self.renaming = None;
         }
+        browser::collection_keys(self, ctx);
         let events = std::mem::take(&mut self.key_events);
         let hover_monitor = self.hover_monitor.take(); // set again by this frame's UI
         for ev in events {

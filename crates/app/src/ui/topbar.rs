@@ -479,17 +479,6 @@ fn gain_to_db_floor(g: f32) -> f32 {
     if g <= 1e-6 { METER_FLOOR_DB } else { (20.0 * g.log10()).max(METER_FLOOR_DB) }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn bars_beats_sixteenths() {
-        assert_eq!(super::bbs(8.0, 4, false), "3. 1. 1");
-        assert_eq!(super::bbs(16.0, 4, true), "4. 0. 0");
-        assert_eq!(super::bbs(5.75, 4, false), "2. 2. 4");
-        assert_eq!(super::bbs(1.5, 3, true), "0. 1. 2");
-    }
-}
-
 impl DawApp {
     /// CPU chooser menu (hh-cpu-context-menu: 197 px wide, rows measured at 1.0).
     fn cpu_menu(&mut self, resp: &egui::Response) {
@@ -531,5 +520,16 @@ impl DawApp {
         if configure {
             self.open_settings(crate::app::SettingsTab::Audio);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bars_beats_sixteenths() {
+        assert_eq!(super::bbs(8.0, 4, false), "3. 1. 1");
+        assert_eq!(super::bbs(16.0, 4, true), "4. 0. 0");
+        assert_eq!(super::bbs(5.75, 4, false), "2. 2. 4");
+        assert_eq!(super::bbs(1.5, 3, true), "0. 1. 2");
     }
 }
