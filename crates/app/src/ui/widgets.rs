@@ -96,6 +96,11 @@ pub fn volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> 
     level_box(ui, rect, id, db, super::theme::VOL_TEAL, "Track volume (dB) · drag · double-click: 0 dB")
 }
 
+/// Arrangement Mixer volume box: plain dark field (no value fill), Live 12.
+pub fn plain_volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
+    level_box(ui, rect, id, db, Color32::TRANSPARENT, "Volume (dB) · drag · double-click: 0 dB")
+}
+
 /// Master Cue volume: metronome + browser preview level (blue).
 pub fn cue_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
     level_box(ui, rect, id, db, super::theme::CUE_BLUE, "Cue volume: metronome + browser preview (dB) · drag · double-click: 0 dB")
@@ -123,9 +128,12 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
     }
     // Live number slider: dark box, coloured fill up to the value, 1 px outline.
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, super::theme::off_fill());
+    let plain = fill == Color32::TRANSPARENT;
+    p.rect_filled(rect, CornerRadius::ZERO, if plain { gray(0x24) } else { super::theme::off_fill() });
     let w = rect.width() * db_to_pos(*db);
-    p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::ZERO, fill);
+    if !plain {
+        p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::ZERO, fill);
+    }
     p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
     let text = if *db <= METER_FLOOR_DB {
         "-inf".to_string()
@@ -134,7 +142,8 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
     } else {
         format!("{db:.1}")
     };
-    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), Color32::from_gray(0xe0));
+    let fg = if plain { super::theme::text() } else { Color32::from_gray(0xe0) };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);
     (resp.on_hover_text(tip), changed)
 }
 
@@ -491,7 +500,11 @@ pub fn fader_meter(
     let p = ui.painter();
     p.rect_filled(meter, CornerRadius::ZERO, M_OFF);
     let mid = meter.min.x + 6.0;
-    let y_of = |d: f32| (meter.min.y + meter_frac(d) * meter.height()).round();
+    // Arrangement Mixer (tall, 127 px meter): scale 1 px higher, labels every
+    // 6 dB to −36 then 48 / 60, ticks left of the meter (Live 12 measures).
+    let tall = meter.height() > 115.0;
+    let top = meter.min.y - if tall { 1.0 } else { 0.0 };
+    let y_of = |d: f32| (top + meter_frac(d) * meter.height()).round();
     for (i, l) in levels.iter().enumerate() {
         let bar = if i == 0 {
             Rect::from_min_max(meter.min, pos2(mid, meter.max.y))
@@ -501,23 +514,34 @@ pub fn fader_meter(
         peak_bar(p, bar, *l);
     }
     p.rect_filled(Rect::from_min_max(pos2(mid, meter.min.y), pos2(mid + 1.0, meter.max.y)), CornerRadius::ZERO, gray(0x3e));
-    // Scale: 0 / 12 / 24 / 36 / 48 / 60 dB below full scale.
-    let (tick_x, label_x) = if ticks_left { (meter.min.x - 12.0, meter.max.x + 4.0) } else { (meter.max.x + 3.0, meter.max.x + 7.0) };
-    // Minor ticks every 6 dB (and -3), labels every 12 (Live).
-    for d in [-3.0f32, -6.0, -18.0, -30.0, -42.0, -54.0, -66.0] {
-        let y = y_of(d) + 0.5;
-        p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x5a)));
-    }
-    for d in [0.0f32, -12.0, -24.0, -36.0, -48.0, -60.0] {
-        let y = y_of(d) + 0.5;
-        p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x7e)));
+    let label = |p: &egui::Painter, x: f32, y: f32, d: f32| {
         p.text(
-            pos2(label_x, y),
+            pos2(x, y),
             egui::Align2::LEFT_CENTER,
             format!("{}", -d as i32),
             super::theme::font(super::theme::FS_SMALL),
             super::theme::text(),
         );
+    };
+    if tall {
+        for d in [0.0f32, -6.0, -12.0, -18.0, -24.0, -30.0, -36.0, -48.0, -60.0] {
+            let y = y_of(d) + 0.5;
+            p.line_segment([pos2(meter.min.x - 5.0, y), pos2(meter.min.x - 2.0, y)], Stroke::new(1.0, gray(0x7e)));
+            label(p, meter.max.x + 4.0, y, d);
+        }
+    } else {
+        // Scale: 0 / 12 / 24 / 36 / 48 / 60 dB below full scale.
+        let (tick_x, label_x) = if ticks_left { (meter.min.x - 12.0, meter.max.x + 4.0) } else { (meter.max.x + 3.0, meter.max.x + 7.0) };
+        // Minor ticks every 6 dB (and -3), labels every 12 (Live).
+        for d in [-3.0f32, -6.0, -18.0, -30.0, -42.0, -54.0, -66.0] {
+            let y = y_of(d) + 0.5;
+            p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x5a)));
+        }
+        for d in [0.0f32, -12.0, -24.0, -36.0, -48.0, -60.0] {
+            let y = y_of(d) + 0.5;
+            p.line_segment([pos2(tick_x, y), pos2(tick_x + 2.0, y)], Stroke::new(1.0, gray(0x7e)));
+            label(p, label_x, y, d);
+        }
     }
     let y = y_of(*db) + 0.5;
     let hc = if resp.hovered() || resp.dragged() { gray(0xe0) } else { gray(0xb5) };

@@ -187,6 +187,8 @@ pub struct DawApp {
     pub input_clip: [bool; MAX_IO_CHANNELS],
     /// Mixer In/Out section visible (Ctrl+Alt+I).
     pub show_io: bool,
+    /// Arrangement Mixer panel under the Arrangement (Ctrl+Alt+M).
+    pub arr_mixer: bool,
     /// Top-bar Follow: the arrangement scrolls with the playhead.
     pub follow: bool,
     /// Follow suspended by a manual scroll/zoom; resumes on the next Play.
@@ -341,6 +343,7 @@ impl DawApp {
             input_meters: [0.0; MAX_IO_CHANNELS],
             input_clip: [false; MAX_IO_CHANNELS],
             show_io: true,
+            arr_mixer: true,
             hover_monitor: None,
             device_lists: None,
             dialog_keys: Vec::new(),

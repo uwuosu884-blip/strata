@@ -151,6 +151,22 @@ impl eframe::App for DawApp {
         }
         ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(master_zone_id()));
         let left = if self.show_browser { 0 } else { 9 };
+        // Arrangement Mixer: its own rounded panel under the Arrangement, 9 px gap.
+        let mixer_inner = (self.view == View::Arrangement && self.arr_mixer).then(|| {
+            let h = session::arr_mixer_height(self);
+            let r = egui::Panel::bottom("arr_mixer")
+                .show_separator_line(false)
+                .resizable(false)
+                .exact_size(h + 9.0)
+                .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(left, 9, 9, 0)))
+                .show(ui, |ui| {
+                    ui.painter().rect_filled(ui.max_rect(), 3.0, panel());
+                    session::arrangement_mixer(self, ui)
+                })
+                .response
+                .rect;
+            r - m(left, 9, 9, 0)
+        });
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(left, 9, 0, 0)))
             .show(ui, |ui| match self.view {
@@ -161,7 +177,17 @@ impl eframe::App for DawApp {
             .rect;
         let central = central - m(left, 9, 0, 0);
         // Focus outline (drawn in the gap, like Live).
-        let fr = if self.focus_detail { detail_inner } else { central };
+        let mix_focus_id = egui::Id::unique("focus_arr_mixer");
+        if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
+            let inside = mixer_inner.is_some_and(|r| r.contains(p));
+            ctx.data_mut(|d| d.insert_temp(mix_focus_id, inside));
+        }
+        let mix_focus = ctx.data(|d| d.get_temp::<bool>(mix_focus_id)).unwrap_or(false);
+        let fr = match mixer_inner {
+            Some(r) if mix_focus && !self.focus_detail => r,
+            _ if self.focus_detail => detail_inner,
+            _ => central,
+        };
         ui.painter().rect_stroke(fr, 4.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
         // A press elsewhere in the main view deselects the master.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
@@ -265,6 +291,9 @@ impl DawApp {
             }
         }
         // Shift variants first: consume_key(COMMAND, k) also matches Ctrl+Shift+k.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::M)) {
+            self.arr_mixer = !self.arr_mixer;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::T)) {
             self.add_return_track();
         }

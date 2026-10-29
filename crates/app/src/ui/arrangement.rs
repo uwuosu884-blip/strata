@@ -20,7 +20,7 @@ use daw_project::{ArrangementClip, Clip, ClipContent, TrackDrop, TrackKind};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
 /// Live: name 93 + 2 + mixer 119 (+ In/Out 74 + 2) = 290 px.
-const HEAD_W: f32 = 214.0;
+const HEAD_W: f32 = 216.0;
 const NAME_W: f32 = 93.0;
 /// Overview 12 + 2 + beat ruler 21 + loop row 22 + 2.
 const RULER_H: f32 = 59.0;
@@ -154,7 +154,13 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // the first and 2 px between (the last one's is Main's).
     let nret = app.project.returns.len();
     let ret_h = if nret > 0 { 3.0 + nret as f32 * (RET_H + 2.0) - 2.0 } else { 0.0 };
-    let master_h = master_h - if nret > 0 { 1.0 } else { 0.0 };
+    // Under returns Main has a 2 px separator and, collapsed, the returns' 17 px.
+    let master_h = master_h
+        - match (nret > 0, app.project.master_collapsed) {
+            (false, _) => 0.0,
+            (true, false) => 1.0,
+            (true, true) => 3.0,
+        };
     let body = Rect::from_min_max(
         pos2(full.min.x, full.min.y + RULER_H),
         pos2(full.max.x, (full.max.y - master_h - TIME_H - ret_h).max(full.min.y + RULER_H + 20.0)),
@@ -1010,7 +1016,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         return;
     }
     let act_col = if app.solo_silenced.get(t).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
-    let solo_r = Rect::from_min_size(pos2(act.max.x + 6.0, row1), vec2(SOLO_W, BOX_H));
+    let solo_r = Rect::from_min_size(pos2(act.max.x + GAP, row1), vec2(SOLO_W, BOX_H));
     let arm_r = Rect::from_min_size(pos2(solo_r.max.x + GAP, row1), vec2(ARM_W, BOX_H));
     if rect_toggle(ui, act, ui.scope_id().with(("hact", id)), &format!("{}", t + 1), !mute, act_col, "Track activator (mute)").clicked() {
         app.toggle_track_flag(t, TrackFlag::Mute, false);
@@ -1044,7 +1050,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     // Row 2: volume under the activator, pan under solo.
     let row2 = row1 + BOX_H + GAP;
     let vr = Rect::from_min_size(pos2(bx, row2), vec2(ACT_W, BOX_H));
-    let pr = Rect::from_min_size(pos2(vr.max.x + 6.0, row2), vec2(PAN_W, BOX_H));
+    let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row2), vec2(PAN_W, BOX_H));
     if clip.contains_rect(vr) && clip.contains_rect(pr) {
         let mut db = app.project.tracks[t].gain_db;
         let (r, changed) = volume_box(ui, vr, ui.scope_id().with(("hvol", id)), &mut db);
@@ -1190,7 +1196,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     let bx = right.min.x + 2.0;
     // Row 1: volume · blue Cue; pan below them once the row is tall enough.
     let vr = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
-    let cr = Rect::from_min_size(pos2(vr.max.x + 6.0, row1), vec2(PAN_W, BOX_H));
+    let cr = Rect::from_min_size(pos2(vr.max.x + GAP, row1), vec2(PAN_W, BOX_H));
     let pr = Rect::from_min_size(pos2(bx, row1 + BOX_H + GAP), vec2(ACT_W, BOX_H));
     let mut cue = app.project.cue_gain_db;
     let (r, changed) = cue_box(ui, cr, ui.scope_id().with("mcue"), &mut cue);
