@@ -17,7 +17,7 @@ from source (see below).
 ## Features
 
 - **Ableton Live 12 look**: Live's layout and colours pixel-matched at 100 %,
-  JetBrainsMono Nerd Font, Zoom Display 50–200 %, and Live's Theme & Colors settings
+  Live's Ableton Sans fonts and cursors, Zoom Display 50–200 %, and Live's Theme & Colors settings
   (themes, tone, high contrast, grid/brightness/colour customization, track
   and clip colour policy).
 - **Session view**: clip grid, scene launching with launch quantization, and

@@ -10,6 +10,49 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.5] - 2026-10-29
+
+### Added
+- **Return tracks and sends**: Live's default A / B returns, post-fader sends
+  on every track (Sends knobs in Session strips, return columns, return rows
+  in the Arrangement), return solo; real audio routing in the engine.
+- **Arrangement Mixer** panel (Ctrl+Alt+M) per Live 12: In/Out, Sends, tall
+  fader strips, A / B Return and Main columns.
+- **Clip fades** in the Arrangement: fade-in / fade-out handles with curve,
+  Create Fades (Ctrl+Alt+F) / Reset Fades; shaded fade areas, grid lines and
+  Live's selected-clip colours.
+- **Clip View rewrite** (measured from Live 12): 170 px left panel with
+  foldable Clip / Launch / Audio / Pitch & Time / Transform / Generate
+  sections, drag-or-type value boxes (bars-beats or min:sec), Set buttons,
+  Warp / Follow, warp-mode parameters, BPM ÷2 / ×2, Gain fader, Pitch knob;
+  editor header with sample info (rate, bit depth, channels), centred tabs and
+  grid chooser; Live's ruler / loop / marker / strip rows for the piano roll
+  and the sample editor (min:sec ruler when unwarped, bars ruler when warped);
+  status-bar sample info on hover.
+- **Piano roll** per Live 12: note names beside the keys, dark notes with
+  names and a light-blue selection border, hollow velocity heads, dashed area
+  selection with a time-selection bar and pin handles, "Time Selection …" in
+  the status bar.
+- **Browser rewrite** per Live 12: resizable sidebar (icons only ↔ labelled),
+  colour collections with Edit / Done, show-hide checkboxes and colour dots
+  (keys 1–7 tag the selection), ⋯ menu with Date Modified / Size / Type / Rank /
+  Place columns and Show File Extensions, back / forward history, search.
+- **Software cursors** from Live's cursor set; beat-ruler drag zoom.
+- **Save changes dialog** like Live (Yes / No / Cancel, keys Y N C).
+- **CPU meter context menu** (Average / Current, Audio Engine On
+  Ctrl+Shift+Alt+E).
+
+### Changed
+- Fonts: Live's Ableton Sans family is embedded (replaces JetBrainsMono).
+- Status bar always shows the insert mark ("Insert Mark 4.4.1 (Time: 0:05)");
+  computer-keyboard octave / velocity only for 4 s after a change.
+- Loop: grey brace with boundary lines through the tracks; no loop triangles
+  in the bottom ruler. Sub-beat ruler ticks are dimmer.
+- MIDI activity dots fill the track header height.
+
+### Fixed
+- Browser search: Escape clears it; Ctrl+A selects the typed text.
+
 ## [0.7.4] - 2026-10-28
 
 ### Added
@@ -567,7 +610,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/uwuosu884-blip/strata/compare/v0.7.1...v0.7.2

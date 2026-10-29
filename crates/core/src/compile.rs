@@ -520,8 +520,9 @@ mod tests {
         let mut cache = SampleCache::new(48_000);
         let mut slots = RtSlots::default();
         let song = compile(&proj, &mut cache, &mut slots);
-        assert_eq!(song.tracks.len(), 4);
-        assert_eq!(song.tracks.iter().map(|t| t.rt).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        // 4 tracks + the default A / B returns.
+        assert_eq!(song.tracks.len(), 4 + proj.returns.len());
+        assert_eq!(song.tracks.iter().take(4).map(|t| t.rt).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
         assert!(matches!(&song.tracks[0].instrument, e::Instrument::Drums(p) if p.iter().all(|d| d.sample.is_some())));
         assert!(song.tracks[0].slots[0].is_some() && song.tracks[0].slots[1].is_none());
 
@@ -531,7 +532,9 @@ mod tests {
         proj.add_track(p::TrackKind::Audio);
         let song = compile(&proj, &mut cache, &mut slots);
         assert_eq!(song.tracks[0].rt, slots.get(drum_id).unwrap());
-        assert_eq!(song.tracks.last().unwrap().rt, 4);
+        let new_rt = song.tracks[proj.tracks.len() - 1].rt;
+        assert_ne!(new_rt, 1);
+        assert_eq!(new_rt, song.tracks.iter().map(|t| t.rt).max().unwrap());
     }
 
     #[test]
