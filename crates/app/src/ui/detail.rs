@@ -371,17 +371,28 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         );
     }
     // Rubber-band time range (Ctrl+D duplicates it with its notes).
+    // Live 12: a light-blue bar at the bottom of the scrub strip with grey pin
+    // handles at both ends; the status bar reads "Time Selection …".
     if let Some((a, b)) = app.pr_time_sel {
-        let r = Rect::from_min_max(pos2(x_of(a).max(grid_area.min.x), ruler.min.y), pos2(x_of(b).min(grid_area.max.x), grid_area.max.y));
-        if r.width() > 0.0 {
-            gp.rect_filled(r, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(120, 170, 255, 22));
+        let (xa, xb) = (x_of(a).round(), x_of(b).round());
+        let sp = ui.painter_at(ruler);
+        sp.rect_filled(Rect::from_min_max(pos2(xa, ruler.max.y - 4.0), pos2(xb, ruler.max.y)), CornerRadius::ZERO, SEL_BLUE);
+        for x in [xa, xb] {
+            let pin = Rect::from_center_size(pos2(x, ruler.min.y + 5.0), vec2(7.0, 8.0));
+            sp.rect_filled(pin, CornerRadius::same(1), gray(0x91));
+            sp.rect_stroke(pin, CornerRadius::same(1), Stroke::new(1.0, gray(0x5d)), egui::StrokeKind::Inside);
+            sp.line_segment([pos2(x + 0.5, pin.max.y), pos2(x + 0.5, ruler.max.y)], Stroke::new(1.0, gray(0x91)));
+        }
+        if app.focus_detail {
+            let bpb_u = app.project.beats_per_bar.max(1);
+            let f = |v: f64, l: bool| super::topbar::bbs(v, bpb_u, l).replace(' ', "");
+            app.status_hover = Some(format!("Time Selection  Start: {}  End: {}  Length: {}", f(a, false), f(b, false), f(b - a, true)));
         }
     }
 
     // Notes (clipped to the scrolling area).
     let np = ui.painter_at(grid_area);
     let vp = ui.painter_at(vel_area);
-    let color = rgb(clip.color);
     let note_rect = |n: &Note| {
         let (x1, x2) = (x_of(n.start), x_of(n.start + n.length).max(x_of(n.start) + 3.0));
         let y = y_of(n.pitch as i32);
@@ -394,15 +405,27 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let sel = app.note_sel.contains(&i);
         if r.max.y > grid_area.min.y && r.min.y < grid_area.max.y && r.max.x > grid_area.min.x && r.min.x < grid_area.max.x {
             let outside = n.start >= w1 - 1e-9 || n.start < w0 - 1e-9;
-            let base = if n.muted || outside { disabled(color) } else { color };
-            let c = shade(base, 0.5 + n.velocity as f32 / 127.0 * 0.7);
-            np.rect_filled(r, CornerRadius::same(1), c);
-            np.rect_stroke(
-                r,
-                CornerRadius::same(1),
-                Stroke::new(1.0, if sel { Color32::WHITE } else { Color32::from_black_alpha(160) }),
-                egui::StrokeKind::Inside,
-            );
+            // Live 12 (measured): #3f fill (velocity 100; darker when softer), black
+            // 1 px border, selected = #b0ddeb border; bold white name when it fits.
+            let v = 0x2a as f32 + n.velocity as f32 * 0.21;
+            let fill = if n.muted || outside { gray(0x30) } else { gray(v.min(255.0) as u8) };
+            let r = Rect::from_min_max(r.min - vec2(0.0, 1.0), r.max + vec2(0.0, 1.0));
+            np.rect_filled(r, CornerRadius::ZERO, fill);
+            if sel {
+                np.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
+                np.rect_stroke(r.shrink(1.0), CornerRadius::ZERO, Stroke::new(1.0, SEL_BLUE), egui::StrokeKind::Inside);
+            } else {
+                np.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
+            }
+            if row_h >= 9.0 && r.width() > 18.0 && drums.is_none() {
+                np.with_clip_rect(r.shrink(1.0).intersect(grid_area)).text(
+                    pos2(r.min.x + 4.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    note_name(n.pitch),
+                    bold(FS),
+                    if n.muted { gray(0x75) } else { gray(0xfb) },
+                );
+            }
             // Note expression (MPE) pitch curve over the note.
             if let Some(e) = clip.note_mpe(n)
                 && e.pitch.len() > 1
@@ -431,20 +454,19 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         }
         let sel = app.note_sel.contains(&i);
         let vh = vel_area.height() * n.velocity as f32 / 127.0;
+        // Live 12: hollow head at the note start + a line over the note's length.
         let c = if sel {
-            Color32::WHITE
+            SEL_BLUE
         } else if n.muted {
-            disabled(c_or(color))
+            gray(0x5d)
         } else {
-            c_or(color)
+            gray(0xc0)
         };
-        let top = pos2(x, vel_area.max.y - vh);
-        // Slim line showing the note's length.
-        let x_end = (x_of(n.start + n.length) - 1.0).max(x + 2.0);
-        vp.line_segment([top, pos2(x_end, top.y)], Stroke::new(1.0, c.gamma_multiply(0.6)));
-        vp.line_segment([pos2(x, vel_area.max.y), top], Stroke::new(1.5, c));
-        vp.circle_filled(top, 2.5, c);
-        vp.circle_stroke(top, 2.5, Stroke::new(1.0, Color32::from_black_alpha(180)));
+        let top = pos2(x + 1.0, (vel_area.max.y - vh).round() + 0.5);
+        let x_end = (x_of(n.start + n.length) - 1.0).max(x + 4.0);
+        vp.line_segment([pos2(top.x + 2.5, top.y), pos2(x_end, top.y)], Stroke::new(1.0, c));
+        vp.circle_filled(top, 2.5, gray(0x1e));
+        vp.circle_stroke(top, 2.5, Stroke::new(1.0, c));
     }
     // Velocity scale (1 / 64 / 127) in the key column.
     let sp = ui.painter_at(Rect::from_min_max(pos2(rect.min.x, vel_area.min.y - 4.0), pos2(vel_area.min.x, rect.max.y)));
@@ -798,8 +820,10 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 let (a, b) = (beat_at(band.min.x).max(0.0), beat_at(band.max.x).max(0.0));
                 app.pr_time_sel =
                     (b - a > 1e-6).then_some((snap_round(a), snap_round(b).max(snap_round(a) + if free { b - a } else { grid })));
-                np.rect_filled(band, CornerRadius::ZERO, Color32::from_white_alpha(18));
-                np.rect_stroke(band, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_white_alpha(120)), egui::StrokeKind::Inside);
+                // Live 12: dashed white rectangle, no fill.
+                let b = band.shrink(0.5);
+                let pts = [b.left_top(), b.right_top(), b.right_bottom(), b.left_bottom(), b.left_top()];
+                np.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, gray(0xd0)), 4.0, 3.0));
             }
             NoteDrag::Ruler => {
                 write = false;
@@ -857,10 +881,6 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let x = x_of(pos);
         gp.line_segment([pos2(x, ruler.min.y), pos2(x, rect.max.y)], Stroke::new(1.5, Color32::WHITE));
     }
-}
-
-fn c_or(c: Color32) -> Color32 {
-    shade(c, 1.1)
 }
 
 // ============================ Devices ============================

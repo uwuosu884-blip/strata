@@ -363,7 +363,7 @@ fn egui_body(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
 /// 17 px title: clip colour square, name (double-click renames), save button (audio).
 fn title_bar(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let (r, resp) = ui.allocate_exact_size(vec2(LEFT_W, 17.0), Sense::click());
-    let notes_focus = app.focus_detail && !app.note_sel.is_empty();
+    let notes_focus = matches!(clip.content, ClipContent::Midi { .. }) && !app.note_sel.is_empty();
     let (bg, fg) = if notes_focus { (gray(0x3c), gray(0xc6)) } else { (Color32::from_rgb(0x85, 0xa5, 0xc2), gray(0x20)) };
     let p = ui.painter().clone();
     p.rect_filled(r, 0.0, bg);
