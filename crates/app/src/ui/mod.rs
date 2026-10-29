@@ -265,6 +265,9 @@ impl DawApp {
             }
         }
         // Shift variants first: consume_key(COMMAND, k) also matches Ctrl+Shift+k.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::T)) {
+            self.add_return_track();
+        }
         if cmd_shift(Key::T) {
             self.add_track(TrackKind::Midi);
         }

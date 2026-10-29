@@ -302,6 +302,72 @@ pub fn knob_ex(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f
     (resp.on_hover_text(format!("Pan {} · drag · double-click: centre", pan_label(*v))), changed)
 }
 
+/// Send level ↔ knob position (0 = −inf at 7 o'clock, 1 = 0 dB at 5 o'clock),
+/// on the meter scale so the knob feels like Live's.
+pub fn send_pos(db: f32) -> f32 {
+    if db <= daw_project::SEND_OFF_DB + 1e-3 {
+        return 0.0;
+    }
+    let f0 = meter_frac(0.0);
+    ((1.0 - meter_frac(db)) / (1.0 - f0)).clamp(0.0, 1.0)
+}
+pub fn send_db(pos: f32) -> f32 {
+    if pos <= 1e-3 {
+        return daw_project::SEND_OFF_DB;
+    }
+    let f0 = meter_frac(0.0);
+    meter_db(1.0 - pos.clamp(0.0, 1.0) * (1.0 - f0)).clamp(daw_project::SEND_OFF_DB, 0.0)
+}
+
+/// Live send knob (unipolar): dark 300° track, light value arc from the
+/// minimum, dark pointer; `enabled = false` draws it greyed (no interaction).
+pub fn send_knob(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, db: &mut f32, enabled: bool) -> (egui::Response, bool) {
+    let rect = Rect::from_center_size(c, vec2(r * 2.0 + 4.0, r * 2.0 + 4.0));
+    let resp = ui.interact(rect, id, if enabled { Sense::click_and_drag() } else { Sense::hover() });
+    let mut changed = false;
+    let mut pos = send_pos(*db);
+    let d = if enabled { endless_drag(ui, &resp) } else { Vec2::ZERO };
+    if resp.double_clicked() {
+        pos = if pos > 0.0 { 0.0 } else { 1.0 };
+        changed = true;
+    } else if d != Vec2::ZERO {
+        let k = if ui.input(|i| i.modifiers.shift) { 0.001 } else { 0.006 };
+        let np = (pos - (d.y - d.x) * k).clamp(0.0, 1.0);
+        if (np - pos).abs() > 1e-6 {
+            pos = np;
+            changed = true;
+        }
+    }
+    if changed {
+        *db = send_db(pos);
+    }
+    let p = ui.painter();
+    let hot = enabled && (resp.hovered() || resp.dragged());
+    let (track, arc, ptr) = if enabled {
+        (gray(0x11), if hot { gray(0xd0) } else { gray(0xa8) }, if hot { gray(0x60) } else { gray(0x18) })
+    } else {
+        (gray(0x2a), gray(0x5a), gray(0x2a))
+    };
+    // 300° with the gap at the bottom: t = 0 → 7 o'clock (−inf), 1 → 5 o'clock.
+    let ang = |t: f32| std::f32::consts::PI * (2.0 / 3.0 + t * 5.0 / 3.0);
+    let pts = |a0: f32, a1: f32| -> Vec<egui::Pos2> {
+        (0..=24)
+            .map(|i| {
+                let a = a0 + (a1 - a0) * i as f32 / 24.0;
+                c + vec2(a.cos(), a.sin()) * r
+            })
+            .collect()
+    };
+    p.add(egui::Shape::line(pts(ang(0.0), ang(1.0)), Stroke::new(2.0, track)));
+    if pos > 0.005 {
+        p.add(egui::Shape::line(pts(ang(0.0), ang(pos)), Stroke::new(2.0, arc)));
+    }
+    let a = ang(pos);
+    p.line_segment([c, c + vec2(a.cos(), a.sin()) * (r - 1.0)], Stroke::new(2.0, ptr));
+    let tip = if *db <= daw_project::SEND_OFF_DB { "-inf dB".to_string() } else { format!("{:.1} dB", db) };
+    (resp.on_hover_text(format!("Send {tip} · drag · double-click: 0 dB / off")), changed)
+}
+
 /// Live meter / fader scale (fraction from the top): near-linear to −36 dB,
 /// compressed below, measured from Live's mixer.
 const METER_PTS: [(f32, f32); 8] =

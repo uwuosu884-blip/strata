@@ -150,9 +150,14 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     } else {
         app.arr_row_h
     };
+    // Return rows: pinned above Main (Live), 17 px each, 3 px separator above
+    // the first and 2 px between (the last one's is Main's).
+    let nret = app.project.returns.len();
+    let ret_h = if nret > 0 { 3.0 + nret as f32 * (RET_H + 2.0) - 2.0 } else { 0.0 };
+    let master_h = master_h - if nret > 0 { 1.0 } else { 0.0 };
     let body = Rect::from_min_max(
         pos2(full.min.x, full.min.y + RULER_H),
-        pos2(full.max.x, (full.max.y - master_h - TIME_H).max(full.min.y + RULER_H + 20.0)),
+        pos2(full.max.x, (full.max.y - master_h - TIME_H - ret_h).max(full.min.y + RULER_H + 20.0)),
     );
     let lanes = Rect::from_min_max(body.min, pos2(lanes_x1, body.max.y));
     let x0 = full.min.x;
@@ -253,13 +258,18 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     lanes_interaction(app, ui, &g, &lr);
     update_gesture(app, ui, &g);
     let mb = full.max.y - TIME_H;
+    let rb = body.max.y + ret_h;
+    if nret > 0 {
+        return_rows(app, ui, &g, body.max.y, rb, lanes_x1, full.max.x);
+    }
     master_row(
         app,
         ui,
         &g,
-        Rect::from_min_max(pos2(full.min.x, body.max.y), pos2(lanes_x1, mb)),
-        Rect::from_min_max(pos2(lanes_x1, body.max.y), pos2(full.max.x, mb)),
+        Rect::from_min_max(pos2(full.min.x, rb), pos2(lanes_x1, mb)),
+        Rect::from_min_max(pos2(lanes_x1, rb), pos2(full.max.x, mb)),
         io_w,
+        if nret > 0 { 2.0 } else { 3.0 },
     );
     time_ruler(
         app,
@@ -1058,13 +1068,76 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     }
 }
 
+const RET_H: f32 = 17.0;
+
+/// Return track rows between the lanes and Main (y0..y1), collapsed like Live's
+/// (17 px): colour name area with ⊙, an empty Audio To box, activator letter,
+/// S and the (fixed) Post switch, plus a peak meter.
+fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, lanes_x1: f32, x1: f32) {
+    let p = ui.painter().clone();
+    p.rect_filled(Rect::from_min_max(pos2(g.x0, y0), pos2(x1, y1)), CornerRadius::ZERO, sep());
+    let bpb = app.project.beats_per_bar.max(1) as f64;
+    let n0 = app.project.returns.len();
+    for k in 0..n0 {
+        if app.project.returns.len() != n0 {
+            ui.ctx().request_repaint();
+            return;
+        }
+        let top = y0 + 3.0 + k as f32 * (RET_H + 2.0);
+        let lane = Rect::from_min_max(pos2(g.x0, top), pos2(lanes_x1, top + RET_H));
+        paint_bars(&ui.painter_at(lane), lane, g, bpb, false);
+        let head = Rect::from_min_max(pos2(lanes_x1 + 2.0, top), pos2(x1, top + RET_H));
+        let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + g.io_w);
+        let left = Rect::from_min_max(head.min, pos2(split - g.io_w - 2.0, head.max.y));
+        let right = Rect::from_min_max(pos2(split, head.min.y), head.max);
+        let r = &app.project.returns[k];
+        let (col, mute, solo, name) = (rgb(r.color), r.mute, r.solo, r.name.clone());
+        p.rect_filled(left, CornerRadius::ZERO, col);
+        p.rect_filled(right, CornerRadius::ZERO, panel());
+        let row1 = head.min.y + 2.0;
+        let tc = text_on(col);
+        let cbtn = Rect::from_min_size(pos2(left.min.x + 2.0, row1 - 1.0), vec2(15.0, BOX_H + 2.0));
+        draw_collapse_button(&p, cbtn.center(), true, tc);
+        let name_rect = Rect::from_min_max(pos2(cbtn.max.x + 2.0, row1 - 1.0), pos2(left.max.x - 3.0, row1 + BOX_H + 1.0));
+        p.with_clip_rect(name_rect).text(name_rect.left_center(), Align2::LEFT_CENTER, &name, font(FS), tc);
+        let hr = ui.interact(left, ui.scope_id().with(("ret_head", k)), Sense::click());
+        super::menu::context(&hr, super::menu::W_TRACK, |ui| super::session::return_menu(app, ui, k));
+        if g.io_w > 0.0 {
+            let io = Rect::from_min_max(pos2(split - g.io_w, head.min.y), pos2(split - 2.0, head.max.y));
+            p.rect_filled(io, CornerRadius::ZERO, panel());
+            let b = Rect::from_min_max(pos2(io.min.x + 2.0, row1), pos2(io.max.x - 2.0, row1 + BOX_H));
+            p.rect_stroke(b, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
+        }
+        let m = app.return_meters.get(k).copied().unwrap_or([0.0; 2]);
+        let mr = Rect::from_min_max(pos2(head.max.x - 17.0, head.min.y + 2.0), pos2(head.max.x - 10.0, head.max.y - 2.0));
+        track_meter(&p, mr, m, [m[0] >= 1.0, m[1] >= 1.0]);
+        // Activator 46 · 4 · S 17 · 4 · Post 25 (Live).
+        let bx = right.min.x + 2.0;
+        let act = Rect::from_min_size(pos2(bx, row1), vec2(ACT_W, BOX_H));
+        let sr = Rect::from_min_size(pos2(act.max.x + 4.0, row1), vec2(17.0, BOX_H));
+        let pr = Rect::from_min_size(pos2(sr.max.x + 4.0, row1), vec2(25.0, BOX_H));
+        let letter = ((b'A' + (k as u8 % 26)) as char).to_string();
+        let act_col = if app.solo_silenced_returns.get(k).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
+        if rect_toggle(ui, act, ui.scope_id().with(("ret_act", k)), &letter, !mute, act_col, "Return activator (mute)").clicked() {
+            app.toggle_return(k, false, false);
+        }
+        let excl = !ui.input(|i| i.modifiers.command);
+        if rect_toggle(ui, sr, ui.scope_id().with(("ret_solo", k)), "S", solo, SOLO_BLUE, "Solo (Ctrl: add)").clicked() {
+            app.toggle_return(k, true, excl);
+        }
+        rect_toggle(ui, pr, ui.scope_id().with(("ret_post", k)), "Post", true, ACCENT, "Sends to this return are post-fader");
+    }
+}
+
 /// Master track row, pinned under the lanes (Live). Collapsed by default; no
 /// activator / solo / arm; volume and pan are always shown.
-fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect, io_w: f32) {
+fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect, io_w: f32, sep_h: f32) {
     let p = ui.painter();
-    // Live: 3 px separator above the master; its lane shows the grid in large type.
-    p.rect_filled(Rect::from_min_max(lanes.min, pos2(head.max.x, lanes.min.y + 3.0)), CornerRadius::ZERO, sep());
-    let lanes = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + 3.0), lanes.max);
+    // Live: 3 px separator above the master (2 under return rows); its lane
+    // shows the grid in large type.
+    p.rect_filled(Rect::from_min_max(lanes.min, pos2(head.max.x, lanes.min.y + sep_h)), CornerRadius::ZERO, sep());
+    let lanes = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + sep_h), lanes.max);
+    let head = Rect::from_min_max(pos2(head.min.x, head.min.y + sep_h - 3.0), head.max);
     let head = Rect::from_min_max(pos2(head.min.x + 2.0, head.min.y + 1.0), head.max);
     paint_bars(&ui.painter_at(lanes), lanes, g, app.project.beats_per_bar.max(1) as f64, false);
     let gl = match app.arr_grid {

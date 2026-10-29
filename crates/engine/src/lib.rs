@@ -570,6 +570,14 @@ impl Engine {
                         t.gain = clamp_gain(gain);
                     }
                 }
+                Command::SetSend { track, ret, gain } => {
+                    let i = self.rt_to_song.get(track as usize).copied().unwrap_or(NONE);
+                    if let Some(st) = self.song.tracks.get_mut(i as usize)
+                        && let Some(s) = st.sends.iter_mut().find(|s| s.0 == ret)
+                    {
+                        s.1 = if gain.is_finite() { gain.clamp(0.0, 4.0) } else { 0.0 };
+                    }
+                }
                 Command::SetTrackPan { track, pan } => {
                     if let Some(t) = self.tracks.get_mut(track as usize) {
                         t.pan = if pan.is_finite() { pan.clamp(-1.0, 1.0) } else { 0.0 };
@@ -1098,10 +1106,15 @@ impl Engine {
                 down[d as usize] |= down[rt];
             }
         }
+        // `feed`: only reaches a soloed return through sends (Live keeps those
+        // sends alive; the track's own output stays silent).
+        let mut feed = [false; MAX_TRACKS];
         for &i in song.order.iter().rev() {
             let st = &song.tracks[i as usize];
             let rt = st.rt as usize;
             up[rt] = tracks[rt].solo || matches!(st.output, TrackOutput::Track(d) if up[d as usize]);
+            feed[rt] = st.sends.iter().any(|&(d, _)| up[d as usize] || feed[d as usize])
+                || matches!(st.output, TrackOutput::Track(d) if feed[d as usize]);
         }
 
         // Resampling reads the main output one internal block back.
@@ -1212,7 +1225,8 @@ impl Engine {
             }
             tracks[rt].add_bus(n);
 
-            let audible = !any_solo || up[rt] || down[rt];
+            let send_only = any_solo && !up[rt] && !down[rt] && feed[rt];
+            let audible = !any_solo || up[rt] || down[rt] || feed[rt];
             if !tracks[rt].mix(n, audible) {
                 tracks[rt].send_g = [0.0; MAX_SENDS];
                 continue;
@@ -1229,6 +1243,9 @@ impl Engine {
                 }
                 t.send_g[k] = target;
                 rtn.bus_active = true;
+            }
+            if send_only && !matches!(st.output, TrackOutput::Track(_)) {
+                continue;
             }
             match st.output {
                 TrackOutput::Master => {

@@ -1,7 +1,7 @@
 //! v0.6.1 helpers: track insertion point, solo audibility, frame-rate
 //! rescaling and warped-clip stretching.
 
-use crate::{ArrangementClip, AudioOut, ClipContent, Project, Track, TrackKind};
+use crate::{ArrangementClip, AudioOut, ClipContent, Project, SEND_OFF_DB, Track, TrackKind};
 
 impl Project {
     /// Insert a new track below `after` (Live: below the selected track). A
@@ -30,38 +30,58 @@ impl Project {
     /// Tracks silenced only because other tracks are soloed (engine rule: a
     /// soloed track keeps its destinations and sources audible).
     pub fn solo_silenced(&self) -> Vec<bool> {
-        let n = self.tracks.len();
-        if !self.tracks.iter().any(|t| t.solo) {
-            return vec![false; n];
+        self.solo_silenced_all().0
+    }
+
+    /// Solo dimming for (tracks, returns), mirroring the engine: audible when
+    /// soloed, feeding a soloed track (output), fed by a soloed track (output
+    /// or send), or sending into a soloed return.
+    pub fn solo_silenced_all(&self) -> (Vec<bool>, Vec<bool>) {
+        let (n, nr) = (self.tracks.len(), self.returns.len());
+        let all = n + nr;
+        let solo: Vec<bool> = self.tracks.iter().chain(&self.returns).map(|t| t.solo).collect();
+        if !solo.iter().any(|&s| s) {
+            return (vec![false; n], vec![false; nr]);
         }
-        let dest: Vec<Option<usize>> = self
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                if t.sends_midi() {
-                    return None;
-                }
-                match t.audio_out {
-                    AudioOut::Default => self.parent_index(i),
-                    AudioOut::Track(id) => self.track_index(id),
-                    _ => None,
-                }
-                .filter(|&d| d != i)
-            })
-            .collect();
-        let (mut up, mut down): (Vec<bool>, Vec<bool>) = (self.tracks.iter().map(|t| t.solo).collect(), vec![false; n]);
-        // Soloed → everything it feeds (up); feeding a soloed track (down).
-        for _ in 0..n {
+        let ret_index = |id: u64| self.returns.iter().position(|r| r.id == id).map(|k| n + k);
+        let mut dest: Vec<Option<usize>> = vec![None; all];
+        let mut sends: Vec<Vec<usize>> = vec![Vec::new(); all];
+        for (i, t) in self.tracks.iter().enumerate() {
+            if t.sends_midi() {
+                continue;
+            }
+            dest[i] = match t.audio_out {
+                AudioOut::Default => self.parent_index(i),
+                AudioOut::Track(id) => self.track_index(id),
+                _ => None,
+            }
+            .filter(|&d| d != i);
+            sends[i] = t
+                .sends
+                .iter()
+                .enumerate()
+                .filter(|(_, db)| **db > SEND_OFF_DB)
+                .filter_map(|(k, _)| self.returns.get(k))
+                .filter_map(|r| ret_index(r.id))
+                .collect();
+        }
+        let (mut up, mut down, mut feed) = (solo.clone(), solo.clone(), vec![false; all]);
+        for _ in 0..all {
             let mut changed = false;
-            for i in 0..n {
-                if let Some(d) = dest[i] {
-                    if up[i] && !up[d] {
-                        up[d] = true;
+            for i in 0..all {
+                let outs = dest[i].into_iter().chain(sends[i].iter().copied());
+                for d in outs {
+                    let via_out = dest[i] == Some(d);
+                    if via_out && up[d] && !up[i] {
+                        up[i] = true;
                         changed = true;
                     }
-                    if (down[d] || self.tracks[d].solo) && !down[i] {
-                        down[i] = true;
+                    if down[i] && !down[d] {
+                        down[d] = true;
+                        changed = true;
+                    }
+                    if (up[d] || feed[d]) && !feed[i] && (!via_out || feed[d]) {
+                        feed[i] = true;
                         changed = true;
                     }
                 }
@@ -70,7 +90,8 @@ impl Project {
                 break;
             }
         }
-        (0..n).map(|i| !(up[i] || down[i])).collect()
+        let silenced: Vec<bool> = (0..all).map(|i| !(up[i] || down[i] || feed[i])).collect();
+        (silenced[..n].to_vec(), silenced[n..].to_vec())
     }
 
     /// Sample positions were stored at `from` Hz; move them to `to` Hz.
@@ -225,5 +246,28 @@ mod color_policy_tests {
         p.colors.random_clips = true;
         let cols: std::collections::HashSet<_> = (0..40).map(|_| p.new_clip_color(c)).collect();
         assert!(cols.len() > 3 && cols.iter().all(|x| PALETTE.contains(x)));
+    }
+}
+
+#[cfg(test)]
+mod return_solo_tests {
+    use crate::*;
+
+    #[test]
+    fn soloed_return_keeps_senders_audible() {
+        let mut p = Project::new_default();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        p.normalize();
+        p.tracks[a].sends[0] = -6.0;
+        p.returns[0].solo = true;
+        let (t, r) = p.solo_silenced_all();
+        assert!(!t[a], "sender stays");
+        assert!(t[b], "non-sender dimmed");
+        assert!(!r[0] && r[1]);
+        p.returns[0].solo = false;
+        p.tracks[a].solo = true;
+        let (t, r) = p.solo_silenced_all();
+        assert!(!t[a] && t[b] && !r[0] && r[1], "solo in place keeps the fed return");
     }
 }

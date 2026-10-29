@@ -31,6 +31,7 @@ struct Bands {
     slots: (f32, f32),
     stop: (f32, f32),
     io: Option<(f32, f32)>,
+    sends: Option<(f32, f32)>,
     mixer: (f32, f32),
     strip: (f32, f32),
     scroll_y: f32,
@@ -64,7 +65,10 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // Bands, bottom-up.
     let strip = (full.max.y - STRIP_H, full.max.y);
     let mixer = (strip.0 - 2.0 - MIXER_H, strip.0 - 2.0);
-    let io = app.show_io.then_some((mixer.0 - 2.0 - IO_H, mixer.0 - 2.0));
+    let nret = app.project.returns.len();
+    let sends = (nret > 0).then_some((mixer.0 - 2.0 - sends_h(nret), mixer.0 - 2.0));
+    let below_io = sends.map_or(mixer.0, |b| b.0);
+    let io = app.show_io.then_some((below_io - 2.0 - IO_H, below_io - 2.0));
     let above = io.map_or(mixer.0, |b| b.0);
     let stop = (above - 2.0 - STOP_H, above - 2.0);
     let header = (full.min.y, full.min.y + HEADER_H);
@@ -72,7 +76,9 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     // Scrolling: wheel = scenes, Shift+wheel / horizontal = tracks.
     let master_x = full.max.x - MASTER_W;
-    let area = Rect::from_min_max(full.min, pos2(master_x - MASTER_GAP, full.max.y));
+    // Return columns sit left of Main, pinned like it (Live).
+    let ret_x = master_x - MASTER_GAP - nret as f32 * PITCH;
+    let area = Rect::from_min_max(full.min, pos2(ret_x.max(full.min.x), full.max.y));
     let tracks = app.project.visible_tracks();
     let sid = egui::Id::unique("sess").with("session_scroll");
     let (mut sx, mut sy): (f32, f32) = ui.data(|d| d.get_temp(sid)).unwrap_or_default();
@@ -86,7 +92,7 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     sx = sx.clamp(0.0, (content_w - area.width()).max(0.0));
     sy = sy.clamp(0.0, (content_h - (slots.1 - slots.0)).max(0.0));
     ui.data_mut(|d| d.insert_temp(sid, (sx, sy)));
-    let b = Bands { header, slots, stop, io, mixer, strip, scroll_y: sy, scenes };
+    let b = Bands { header, slots, stop, io, sends, mixer, strip, scroll_y: sy, scenes };
 
     let p = ui.painter_at(full);
     p.rect_filled(full, CornerRadius::ZERO, panel());
@@ -138,8 +144,24 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
             if item(ui, "Insert MIDI Track", "Ctrl+Shift+T", true) {
                 app.add_track(TrackKind::Midi);
             }
-            item(ui, "Insert Return Track", "Ctrl+Alt+T", false);
+            if item(ui, "Insert Return Track", "Ctrl+Alt+T", app.project.returns.len() < daw_engine::MAX_SENDS) {
+                app.add_return_track();
+            }
         });
+    }
+
+    // Return columns.
+    let nr0 = app.project.returns.len();
+    for k in 0..nret {
+        if app.project.returns.len() != nr0 {
+            ui.ctx().request_repaint();
+            break;
+        }
+        let x0 = ret_x + k as f32 * PITCH;
+        if x0 < full.min.x {
+            continue;
+        }
+        return_column(app, ui, k, x0, &b);
     }
 
     // Main column, pinned right.
@@ -182,6 +204,11 @@ fn track_column(app: &mut DawApp, ui: &mut egui::Ui, t: usize, x0: f32, b: &Band
         let r = Bands::rect(x0, x1, io);
         p.rect_filled(r, CornerRadius::ZERO, bg);
         super::io::io_section(app, ui, t, r);
+    }
+    if let Some(sb) = b.sends {
+        let r = Bands::rect(x0, x1, sb);
+        p.rect_filled(r, CornerRadius::ZERO, bg);
+        sends_section(app, ui, r, SendSrc::Track(t));
     }
     let r = Bands::rect(x0, x1, b.mixer);
     p.rect_filled(r, CornerRadius::ZERO, bg);
@@ -250,10 +277,189 @@ fn master_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) {
         p.rect_filled(r, CornerRadius::ZERO, panel());
         super::io::master_io(app, ui, r);
     }
+    if let Some(sb) = b.sends {
+        let r = Bands::rect(x0, x1, sb);
+        p.rect_filled(r, CornerRadius::ZERO, panel());
+        post_buttons(app, ui, r);
+    }
     let r = Bands::rect(x0, x1, b.mixer);
     p.rect_filled(r, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
     master_strip(app, ui, r);
     p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, mcol);
+}
+
+/// Return column: header, empty slots / stop row, Audio To, greyed sends, strip.
+fn return_column(app: &mut DawApp, ui: &mut egui::Ui, k: usize, x0: f32, b: &Bands) {
+    let x1 = x0 + COL_W;
+    let p = ui.painter().clone();
+    p.rect_filled(Rect::from_min_max(pos2(x0, b.header.0), pos2(x0 + PITCH, b.strip.1)), CornerRadius::ZERO, sep());
+    return_header(app, ui, k, Bands::rect(x0, x1, b.header));
+    let Some(r) = app.project.returns.get(k) else { return };
+    let col = rgb(r.color);
+    p.with_clip_rect(b.slot_band(x0, x1)).rect_filled(b.slot_band(x0, x1), CornerRadius::ZERO, panel());
+    p.rect_filled(Bands::rect(x0, x1, b.stop), CornerRadius::ZERO, panel());
+    if let Some(io) = b.io {
+        let r = Bands::rect(x0, x1, io);
+        p.rect_filled(r, CornerRadius::ZERO, panel());
+        super::io::return_io(app, ui, k, r);
+    }
+    if let Some(sb) = b.sends {
+        let r = Bands::rect(x0, x1, sb);
+        p.rect_filled(r, CornerRadius::ZERO, panel());
+        sends_section(app, ui, r, SendSrc::Return(k));
+    }
+    let r = Bands::rect(x0, x1, b.mixer);
+    p.rect_filled(r, CornerRadius::ZERO, panel());
+    return_strip(app, ui, k, r);
+    p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, col);
+}
+
+/// Return header: colour bar + name; right-click = insert / delete.
+pub(super) fn return_header(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect: Rect) {
+    let Some(r) = app.project.returns.get(k) else { return };
+    let col = rgb(r.color);
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::ZERO, col);
+    p.with_clip_rect(rect.shrink2(vec2(2.0, 0.0))).text(
+        rect.left_center() + vec2(4.0, 0.0),
+        Align2::LEFT_CENTER,
+        &r.name,
+        bold(FS),
+        text_on(col),
+    );
+    let resp = ui.interact(rect, egui::Id::unique("sess").with(("ret_header", k)), Sense::click());
+    super::menu::context(&resp, super::menu::W_TRACK, |ui| return_menu(app, ui, k));
+}
+
+/// Return track context menu (Live order, unsupported items greyed).
+pub(super) fn return_menu(app: &mut DawApp, ui: &mut egui::Ui, k: usize) {
+    use super::menu::{item, sep};
+    item(ui, "Cut", "Ctrl+X", false);
+    item(ui, "Copy", "Ctrl+C", false);
+    item(ui, "Duplicate", "Ctrl+D", false);
+    if item(ui, "Delete", "Del", true) {
+        app.edit(|p| p.delete_return(k));
+    }
+    sep(ui);
+    item(ui, "Rename", "Ctrl+R", false);
+    sep(ui);
+    item(ui, "Insert Audio Track", "Ctrl+T", false);
+    item(ui, "Insert MIDI Track", "Ctrl+Shift+T", false);
+    if item(ui, "Insert Return Track", "Ctrl+Alt+T", app.project.returns.len() < daw_engine::MAX_SENDS) {
+        app.add_return_track();
+    }
+}
+
+/// Sends band height for `n` returns: 21 px + one 17 px knob step each (Live:
+/// 55 px for two), capped at four steps (the rest scroll).
+pub(super) fn sends_h(n: usize) -> f32 {
+    21.0 + 17.0 * n.min(4) as f32
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SendSrc {
+    Track(usize),
+    Return(usize),
+}
+
+/// Sends band: one knob per return, staggered left/right (A upper-left, B
+/// lower-right, …) with the letter in the knob's gap and "Sends" top-right.
+/// Return tracks show greyed knobs (no return → return sends). Wheel scrolls
+/// when more than four returns exist.
+pub(super) fn sends_section(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect, src: SendSrc) {
+    let n = app.project.returns.len();
+    let o = rect.min;
+    let p = ui.painter_at(rect);
+    p.text(o + vec2(47.0, 10.5), Align2::LEFT_CENTER, "Sends", font(FS), text());
+    let sid = egui::Id::unique("sess").with("sends_scroll");
+    let mut off: f32 = ui.data(|d| d.get_temp(sid)).unwrap_or(0.0);
+    let max_off = (n.saturating_sub(4) as f32 * 17.0).max(0.0);
+    if max_off > 0.0 && ui.rect_contains_pointer(rect) {
+        off -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    off = off.clamp(0.0, max_off);
+    ui.data_mut(|d| d.insert_temp(sid, off));
+    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    cui.set_clip_rect(rect.intersect(ui.clip_rect()));
+    for k in 0..n {
+        let c = o + vec2(if k % 2 == 0 { 28.5 } else { 61.5 }, 17.5 + 17.0 * k as f32 - off);
+        if c.y < rect.min.y - 14.0 || c.y > rect.max.y + 14.0 {
+            continue;
+        }
+        let (mut db, enabled, id) = match src {
+            SendSrc::Track(t) => {
+                let tr = &app.project.tracks[t];
+                let audio = !(tr.kind == TrackKind::Midi && tr.sends_midi());
+                (app.project.send_db(t, k), audio, egui::Id::unique("sess").with(("send", tr.id, k)))
+            }
+            SendSrc::Return(r) => (daw_project::SEND_OFF_DB, false, egui::Id::unique("sess").with(("rsend", r, k))),
+        };
+        let (resp, changed) = send_knob(&mut cui, c, 12.0, id, &mut db, enabled);
+        let letter = ((b'A' + (k as u8 % 26)) as char).to_string();
+        cui.painter().text(c + vec2(0.0, 12.0), Align2::CENTER_CENTER, letter, font(FS), if enabled { text() } else { dim() });
+        if let SendSrc::Track(t) = src {
+            if resp.drag_started() || resp.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_send(t, k, db);
+            }
+        }
+    }
+}
+
+/// Main strip's Sends band: one "Post" switch per return, staggered like the
+/// knobs with a lead line from the left edge. All sends are post-fader here.
+pub(super) fn post_buttons(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
+    let n = app.project.returns.len();
+    let o = rect.min;
+    let p = ui.painter_at(rect);
+    p.text(o + vec2(53.0, 10.5), Align2::LEFT_CENTER, "Sends", font(FS), text());
+    for k in 0..n.min(4) {
+        let b = Rect::from_min_size(o + vec2(if k % 2 == 0 { 22.0 } else { 56.0 }, 13.0 + 17.0 * k as f32), vec2(24.0, 11.0));
+        p.hline(o.x + 1.0..=b.min.x - 2.0, b.min.y + 5.5, Stroke::new(1.0, gray(0x5d)));
+        p.rect_filled(b, CornerRadius::ZERO, ORANGE);
+        p.text(b.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, "Post", font(FS), gray(0x18));
+        ui.interact(b, egui::Id::unique("sess").with(("post", k)), Sense::hover())
+            .on_hover_text("Sends to this return are post-fader (pre-fader sends are not supported)");
+    }
+}
+
+/// Return mixer: like a track strip (pill, pan, fader) with the letter activator
+/// and Solo; no arm.
+pub(super) fn return_strip(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect: Rect) {
+    let o = rect.min;
+    let Some(r) = app.project.returns.get(k) else { return };
+    let (mute, solo, mut db, mut pan) = (r.mute, r.solo, r.gain_db, r.pan);
+    let levels = app.return_meters.get(k).copied().unwrap_or([0.0; 2]);
+    let id = |s: &str| egui::Id::unique("sess").with((s, k));
+    peak_pill(ui, Rect::from_min_size(o + vec2(7.0, 6.0), vec2(35.0, 13.0)), id("rpeak"), levels);
+    let (r2, changed2) =
+        fader_meter(ui, Rect::from_min_max(o + vec2(46.0, 6.0), o + vec2(93.0, 114.0)), id("rfader"), &mut db, levels, false);
+    if r2.drag_started() || r2.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed2 {
+        app.set_return_gain(k, db);
+    }
+    let (r, changed) = knob(ui, o + vec2(24.0, 42.0), 12.0, id("rpan"), &mut pan);
+    if r.drag_started() || r.double_clicked() {
+        app.begin_gesture();
+    }
+    if changed {
+        app.set_return_pan(k, pan);
+    }
+    let ctrl = ui.input(|i| i.modifiers.command);
+    let letter = ((b'A' + (k as u8 % 26)) as char).to_string();
+    let act = Rect::from_min_size(o + vec2(13.0, 57.0), vec2(23.0, 23.0));
+    let act_col = if app.solo_silenced_returns.get(k).copied().unwrap_or(false) { solo_dimmed(ACCENT) } else { ACCENT };
+    if rect_toggle(ui, act, id("ract"), &letter, !mute, act_col, "Return activator (mute)").clicked() {
+        app.toggle_return(k, false, false);
+    }
+    let sr = Rect::from_min_size(o + vec2(13.0, 84.0), vec2(23.0, 13.0));
+    if rect_toggle(ui, sr, id("rsolo"), "S", solo, Color32::from_rgb(0x5a, 0xa8, 0xff), "Solo (Ctrl: add)").clicked() {
+        app.toggle_return(k, true, !ctrl);
+    }
 }
 
 fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect) {

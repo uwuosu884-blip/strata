@@ -145,6 +145,8 @@ pub struct DawApp {
     pub track_status: Vec<TrackSnapshot>,
     pub meter: [f32; 2],
     pub track_meters: Vec<[f32; 2]>,
+    /// Peak meters of the return tracks (same falloff as `track_meters`).
+    pub return_meters: Vec<[f32; 2]>,
     pub clipped: bool,
     pub cpu_display: f32,
     /// Current (peak-held) CPU load; `cpu_display` is the average.
@@ -270,6 +272,7 @@ pub struct DawApp {
     pub master_selected: bool,
     /// Per track: silenced only by another track's solo (dimmed activator).
     pub solo_silenced: Vec<bool>,
+    pub solo_silenced_returns: Vec<bool>,
     /// Browser preview: on/off and the key currently playing.
     pub preview_on: bool,
     pub preview: Option<String>,
@@ -311,6 +314,7 @@ impl DawApp {
             outbox: Vec::new(),
             status,
             track_status: Vec::new(),
+            return_meters: Vec::new(),
             meter: [0.0; 2],
             track_meters: Vec::new(),
             clipped: false,
@@ -391,6 +395,7 @@ impl DawApp {
             show_browser: true,
             master_selected: false,
             solo_silenced: Vec::new(),
+            solo_silenced_returns: Vec::new(),
             preview_on: true,
             preview: None,
         };
@@ -471,7 +476,7 @@ impl DawApp {
 
     /// Per-frame housekeeping before drawing.
     pub fn begin_frame(&mut self) {
-        self.solo_silenced = self.project.solo_silenced();
+        (self.solo_silenced, self.solo_silenced_returns) = self.project.solo_silenced_all();
         self.poll_preview();
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.25);
@@ -486,6 +491,14 @@ impl DawApp {
             self.meter[ch] = p.max(self.meter[ch] * fall);
             if p >= 1.0 {
                 self.clipped = true;
+            }
+        }
+        self.return_meters.resize(self.project.returns.len(), [0.0; 2]);
+        for (k, m) in self.return_meters.iter_mut().enumerate() {
+            let peak =
+                self.project.returns.get(k).and_then(|r| self.slots.get(r.id)).map(|rt| self.engine.track(rt).peak).unwrap_or_default();
+            for (d, &p) in m.iter_mut().zip(&peak) {
+                *d = p.max(*d * fall);
             }
         }
         self.track_meters.resize(self.project.tracks.len(), [0.0; 2]);
@@ -898,6 +911,73 @@ impl DawApp {
         self.project.tracks[track].gain_db = db;
         if let Some(rt) = self.rt(track) {
             self.send_now(Command::SetTrackGain { track: rt, gain: db_to_gain(db) });
+        }
+    }
+
+    /// Runtime track of return `k`.
+    pub fn ret_rt(&self, k: usize) -> Option<u16> {
+        self.slots.get(self.project.returns.get(k)?.id)
+    }
+
+    pub fn set_return_gain(&mut self, k: usize, db: f32) {
+        let Some(r) = self.project.returns.get_mut(k) else { return };
+        r.gain_db = db;
+        self.dirty = true;
+        if let Some(rt) = self.ret_rt(k) {
+            self.send_now(Command::SetTrackGain { track: rt, gain: db_to_gain(db) });
+        }
+    }
+
+    pub fn set_return_pan(&mut self, k: usize, pan: f32) {
+        let Some(r) = self.project.returns.get_mut(k) else { return };
+        r.pan = pan;
+        self.dirty = true;
+        if let Some(rt) = self.ret_rt(k) {
+            self.send_now(Command::SetTrackPan { track: rt, pan });
+        }
+    }
+
+    /// Return activator / solo (Ctrl-less solo is exclusive among returns, like tracks).
+    pub fn toggle_return(&mut self, k: usize, solo: bool, exclusive: bool) {
+        if k >= self.project.returns.len() {
+            return;
+        }
+        self.edit(|p| {
+            if solo {
+                let on = !p.returns[k].solo;
+                if exclusive {
+                    for t in p.tracks.iter_mut().chain(p.returns.iter_mut()) {
+                        t.solo = false;
+                    }
+                }
+                p.returns[k].solo = on;
+            } else {
+                p.returns[k].mute = !p.returns[k].mute;
+            }
+        });
+    }
+
+    /// Ctrl+Alt+T: append a return track.
+    pub fn add_return_track(&mut self) {
+        if self.project.returns.len() >= daw_engine::MAX_SENDS {
+            self.toast("Maximum number of return tracks reached");
+            return;
+        }
+        self.edit(|p| p.add_return());
+    }
+
+    /// Send level of `track` to return `k` (dB). Level changes go straight to
+    /// the engine; switching a send on / off recompiles (the song's send list).
+    pub fn set_send(&mut self, track: usize, k: usize, db: f32) {
+        let Some(old) = self.project.tracks.get(track).and_then(|t| t.sends.get(k)).copied() else { return };
+        let off = daw_project::SEND_OFF_DB;
+        let db = db.clamp(off, 0.0);
+        self.project.tracks[track].sends[k] = db;
+        self.dirty = true;
+        let ret = self.project.returns.get(k).and_then(|r| self.slots.get(r.id));
+        match (old > off, db > off, self.rt(track), ret) {
+            (true, true, Some(t), Some(r)) => self.send_now(Command::SetSend { track: t, ret: r, gain: db_to_gain(db) }),
+            _ => self.needs_compile = true,
         }
     }
 

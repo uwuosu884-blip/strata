@@ -41,6 +41,13 @@ pub enum Command {
         track: u16,
         pan: f32,
     },
+    /// Change an existing send's level (track rt → return rt, linear gain).
+    /// Adding / removing sends needs a new song.
+    SetSend {
+        track: u16,
+        ret: u16,
+        gain: f32,
+    },
     SetTrackMute {
         track: u16,
         mute: bool,

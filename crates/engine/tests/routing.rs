@@ -276,3 +276,25 @@ fn post_fader_sends_feed_return_tracks() {
     s.prepare();
     assert!(s.tracks[0].sends.is_empty());
 }
+
+#[test]
+fn soloed_return_keeps_its_senders_and_set_send_retunes() {
+    let (mut e, mut h, mut input) = engine4();
+    // Track 0 (input 0.1) → Master and a 0.5 send to return rt 1 (→ Master).
+    let song = |solo_ret: bool| {
+        Song::new(vec![
+            SongTrack { output: TrackOutput::Master, sends: vec![(1, 0.5)], ..ext(0, 0, false, Monitor::In) },
+            SongTrack { rt: 1, output: TrackOutput::Master, solo: solo_ret, ..Default::default() },
+        ])
+    };
+    let level = |e: &mut Engine, input: &mut rtrb::Producer<f32>| ch(&run(e, input, 4800, 2), 2, 0);
+    h.set_song(song(false)).unwrap();
+    let both = level(&mut e, &mut input);
+    h.set_song(song(true)).unwrap();
+    let ret_only = level(&mut e, &mut input);
+    assert!(both > ret_only + 0.01, "direct path silenced: {both} vs {ret_only}");
+    assert!(ret_only > 0.01, "the soloed return still gets the send");
+    // SetSend changes the level of an existing send without a new song.
+    h.send(Command::SetSend { track: 0, ret: 1, gain: 0.0 }).unwrap();
+    assert!(level(&mut e, &mut input).abs() < 1e-4, "send at 0 → return silent");
+}

@@ -633,7 +633,7 @@ impl Project {
         let id = self.alloc_id();
         let letter = (b'A' + (k % 26) as u8) as char;
         // Live's return colours: light blue-grey family.
-        const COLORS: [[u8; 3]; 4] = [[0x96, 0xb8, 0xd9], [0xd3, 0xb4, 0xdd], [0xb5, 0xd6, 0x8c], [0xe8, 0xc1, 0x8a]];
+        const COLORS: [[u8; 3]; 4] = [[0x25, 0xff, 0xa8], [0x87, 0xff, 0x67], [0xff, 0x94, 0xa6], [0x5b, 0xb0, 0xff]];
         self.returns.push(Track {
             id,
             name: format!("{letter} Return"),

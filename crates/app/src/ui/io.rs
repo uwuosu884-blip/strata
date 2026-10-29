@@ -473,8 +473,8 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let cur = tr.audio_out;
     let parent = tr.group;
     let type_text = match cur {
-        AudioOut::Default => parent.map_or_else(|| "Master".to_string(), |g| track_name(app, g)),
-        AudioOut::Master => "Master".into(),
+        AudioOut::Default => parent.map_or_else(|| "Main".to_string(), |g| track_name(app, g)),
+        AudioOut::Master => "Main".into(),
         AudioOut::Ext { .. } => "Ext. Out".into(),
         AudioOut::Track(id) => track_name(app, id),
     };
@@ -492,7 +492,7 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
                 pick = Some(AudioOut::Default);
             }
             let master_sel = cur == AudioOut::Master || (cur == AudioOut::Default && parent.is_none());
-            if entry(ui, master_sel, "Master", None) {
+            if entry(ui, master_sel, "Main", None) {
                 pick = Some(if parent.is_some() { AudioOut::Master } else { AudioOut::Default });
             }
             if entry(ui, matches!(cur, AudioOut::Ext { .. }), "Ext. Out", None) {
@@ -633,6 +633,37 @@ fn midi_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
 
 /// Master column In/Out block: the main output's device channels.
 /// Main column In/Out: Cue Out / Main Out at the bottom of the block (Live).
+/// Return track In/Out: only "Audio To" (Main / Ext. Out), on the tracks' row.
+pub fn return_io(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect: Rect) {
+    let inner = Rect::from_min_max(rect.min + vec2(4.0, 0.0), rect.max - vec2(4.0, 0.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+    let ui = &mut child;
+    ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+    ui.spacing_mut().interact_size.y = 13.0;
+    ui.spacing_mut().button_padding = vec2(2.0, 0.0);
+    ui.spacing_mut().combo_width = 0.0;
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    let cw = inner.width();
+    let Some(r) = app.project.returns.get(k) else { return };
+    let cur = r.audio_out;
+    ui.add_space(72.0);
+    io_caption(ui, "Audio To", 7.0, 3.0);
+    let ext = matches!(cur, AudioOut::Ext { .. });
+    let mut pick = None;
+    egui::ComboBox::from_id_salt(("ret_out", k)).width(cw).selected_text(small(if ext { "Ext. Out" } else { "Main" })).show_ui(ui, |ui| {
+        if entry(ui, !ext, "Main", None) {
+            pick = Some(AudioOut::Default);
+        }
+        if entry(ui, ext, "Ext. Out", None) {
+            pick = Some(if ext { cur } else { AudioOut::Ext { ch: 0, stereo: true } });
+        }
+    });
+    empty_box(ui, cw);
+    if let Some(o) = pick {
+        app.edit(|p| p.returns[k].audio_out = o);
+    }
+}
+
 pub fn master_io(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
     let inner = Rect::from_min_max(pos2(rect.min.x + 4.0, rect.max.y - 64.0), rect.max - vec2(4.0, 0.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
