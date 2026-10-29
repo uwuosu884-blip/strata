@@ -309,15 +309,14 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         let e = x - 0.5 * out;
         egui::Shape::convex_polygon(vec![pos2(e, y_tip), pos2(e, y_far), pos2(e + MARK * out, y_far)], gray(0x91), Stroke::NONE)
     };
-    // Active loop: 1 px grey lines at both ends from the brace down to the time
-    // ruler, each ending in a triangle outside the loop (right angle at the bottom).
+    // Active loop (hh-loop-active): 1 px grey lines at both ends from the brace
+    // down to the time ruler; no triangles at the bottom.
     if app.project.loop_enabled {
         let (y0, yb) = (full.min.y + 35.0 + 11.0, mb + 2.0);
         let x1 = g.to_x(app.project.loop_start).round() + 0.5;
         let x2 = (g.to_x(app.project.loop_end).round() + 0.5).max(x1 + 16.0);
-        for (x, out) in [(x1, -1.0f32), (x2, 1.0)] {
+        for x in [x1, x2] {
             marks.line_segment([pos2(x, y0), pos2(x, yb)], Stroke::new(1.0, gray(0x91)));
-            marks.add(edge_tri(x, out, yb, yb + MARK));
         }
     }
     // Time selection: only triangles, outside the range, at the bottom of the loop
@@ -412,12 +411,15 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     let bx1 = g.to_x(ls).round() + 0.5;
     let bx2 = (g.to_x(le).round() + 0.5).max(bx1 + 16.0);
     let brace = Rect::from_min_max(pos2(bx1, band.min.y + 0.5), pos2(bx2, band.min.y + 10.5));
-    let col = if app.project.loop_enabled { ACCENT } else { gray(0x91) };
-    p.rect_filled(brace, CornerRadius::ZERO, panel());
+    // hh-loop-active: an active loop fills the brace #5c; the outline and the
+    // inward triangles (rows +1..+9, tip at +5, 7 px deep) stay #91.
+    let col = gray(0x91);
+    let fill = if app.project.loop_enabled { gray(0x5c) } else { panel() };
+    p.rect_filled(brace, CornerRadius::ZERO, fill);
     p.rect_stroke(brace, CornerRadius::ZERO, Stroke::new(1.0, col), egui::StrokeKind::Middle);
     for (x, d) in [(bx1, 1.0f32), (bx2, -1.0)] {
         let y = brace.min.y;
-        p.add(egui::Shape::closed_line(vec![pos2(x, y + 2.0), pos2(x + 7.0 * d, y + 5.0), pos2(x, y + 8.0)], Stroke::new(1.0, col)));
+        p.add(egui::Shape::line(vec![pos2(x, y + 1.0), pos2(x + 7.0 * d, y + 5.0), pos2(x, y + 9.0)], Stroke::new(1.0, col)));
     }
     let brace = Rect::from_min_max(pos2(bx1, band.min.y), pos2(bx2, band.min.y + 11.0));
     let edge_at = |pos: Pos2| -> Option<bool> {
@@ -466,8 +468,9 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             p.line_segment([pos2(x, ry + 15.5), pos2(x + 2.0, ry + 15.5)], Stroke::new(1.0, mark));
             p.text(pos2(x + 4.0, ry + 15.0), Align2::LEFT_CENTER, l, font(FS), gray(0x92));
         } else {
+            // Sub-beat ticks: dimmer than the numbered markers (hh-loop-active ≈ #4b).
             let h = if on_beat { 3.0 } else { 2.0 };
-            p.line_segment([pos2(x, yb - h), pos2(x, yb)], Stroke::new(1.0, mark));
+            p.line_segment([pos2(x, yb - h), pos2(x, yb)], Stroke::new(1.0, gray(0x4e)));
         }
         v += tick_step;
     }
@@ -1988,17 +1991,21 @@ fn midi_activity(app: &DawApp, t: usize) -> f32 {
     v
 }
 
-/// Live track meter: a column of dots lit bottom-up (green → yellow → red).
+/// Live MIDI activity meter, adaptive (hh-midi-dots-adaptive): tracks with at
+/// least 88 px of content get 6 px dots on an 8 px pitch from the top + 6;
+/// shorter ones get 2 px dots on a 4 px pitch from the top + 4, filling the
+/// height. `r` is the track content inset by 2 px vertically. Lit bottom-up.
 pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
-    // ~8.6 px pitch, spread so the top and bottom dots touch the ends of `r`
-    // (lines up with the stereo meters on other tracks).
-    let n = ((r.height() + 2.0) / 8.6).floor().max(1.0) as usize;
-    let pitch = if n > 1 { (r.height() - 6.0) / (n - 1) as f32 } else { 0.0 };
+    let (top, h) = (r.min.y - 2.0, r.height() + 4.0);
+    let big = h >= 88.0;
+    let (pitch, first, rad) = if big { (8.0, 9.0, 3.0) } else { (4.0, 5.0, 1.15) };
+    let n = if big { ((h - 8.0) / 8.0).floor() } else { ((h - 5.0) / 4.0).floor() }.max(1.0) as usize;
     let lit = (level * n as f32).round() as usize;
     for i in 0..n {
-        let c = pos2(r.center().x, r.max.y - 3.0 - i as f32 * pitch);
-        let col = if i < lit {
-            let f = i as f32 / n as f32;
+        let c = pos2(r.center().x, top + first + i as f32 * pitch);
+        let k = n - 1 - i; // index from the bottom
+        let col = if k < lit {
+            let f = k as f32 / n as f32;
             if f > 0.85 {
                 Color32::from_rgb(0xff, 0x4a, 0x3a)
             } else if f > 0.65 {
@@ -2009,7 +2016,7 @@ pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
         } else {
             gray(0x14)
         };
-        p.circle_filled(c, 3.0, col);
+        p.circle_filled(c, rad, col);
     }
 }
 

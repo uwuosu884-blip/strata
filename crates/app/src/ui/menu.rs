@@ -37,6 +37,45 @@ pub fn context(resp: &Response, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// Same frame as `context`, opened by a left click on `resp` and right-aligned
+/// below it (the CPU chooser).
+pub fn dropdown(resp: &Response, width: f32, add: impl FnOnce(&mut Ui)) {
+    let frame = Frame::new().fill(fill()).stroke(Stroke::new(1.0, line())).inner_margin(0).corner_radius(CornerRadius::ZERO);
+    egui::Popup::menu(resp).frame(frame).width(width).align(egui::RectAlign::BOTTOM_END).gap(2.0).show(|ui| {
+        ui.set_width(width - 2.0);
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        ui.add_space(1.0);
+        add(ui);
+        ui.add_space(1.0);
+    });
+}
+
+/// 17 px check row with a 103 × 13 level field (#36 border, #1e inside, orange
+/// bar, centred text) 3 px from the right edge. Toggles on click (menu stays open).
+pub fn meter_row(ui: &mut Ui, label: &str, checked: bool, level: Option<f32>) -> bool {
+    let (rect, resp) = row(ui, 17.0, true);
+    let p = ui.painter();
+    let y = rect.center().y;
+    if checked {
+        check_mark(p, pos2(rect.min.x + CHECK_X, y - 3.0), line());
+    }
+    p.text(pos2(rect.min.x + TEXT_X, y), Align2::LEFT_CENTER, label, font(FS), label_col(true));
+    let f = Rect::from_min_size(pos2(rect.max.x - 3.0 - 103.0, rect.min.y + 2.0), vec2(103.0, 13.0));
+    p.rect_filled(f, CornerRadius::ZERO, gray(0x36));
+    let inner = f.shrink(1.0);
+    p.rect_filled(inner, CornerRadius::ZERO, gray(0x1e));
+    let text = match level {
+        Some(l) => {
+            let w = (l.clamp(0.0, 1.0) * inner.width()).floor().max(1.0);
+            p.rect_filled(Rect::from_min_size(inner.min, vec2(w, inner.height())), CornerRadius::ZERO, super::theme::ORANGE);
+            format!("{:.0} %", l * 100.0)
+        }
+        None => "---".into(),
+    };
+    p.text(inner.center(), Align2::CENTER_CENTER, text, font(FS), label_col(true));
+    resp.clicked()
+}
+
 /// Full-width row; returns its rect and response (hover highlight painted).
 fn row(ui: &mut Ui, h: f32, enabled: bool) -> (Rect, Response) {
     let w = ui.available_width();

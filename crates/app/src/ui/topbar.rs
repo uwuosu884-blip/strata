@@ -358,10 +358,17 @@ impl DawApp {
         }
         label(ui, r, &format!("{:.1} kHz", sr as f32 / 1000.0), text());
         let r = g.r(1762.0, 1815.0);
-        tb_box(ui, r, "cpu", false, true, "CPU load of the audio thread");
-        p.rect_filled(Rect::from_min_size(r.min - vec2(2.0, 0.0), vec2(1.0, r.height())), 0.0, ORANGE);
-        p.text(r.center() - vec2(4.0, 0.0), Align2::CENTER_CENTER, format!("{:.0} %", self.cpu_display * 100.0), font(FS), text());
+        let cpu_resp = tb_box(ui, r, "cpu", false, true, "CPU load of the audio thread (click for options)");
+        let o = self.cpu;
+        let overload = o.warn && self.cpu_current >= 1.0;
+        if o.enabled {
+            let shown = if o.text_current { self.cpu_current } else { self.cpu_display };
+            let col = if overload { Color32::from_rgb(0xff, 0x40, 0x30) } else { ORANGE };
+            p.rect_filled(Rect::from_min_size(r.min - vec2(2.0, 0.0), vec2(1.0, r.height())), 0.0, col);
+            p.text(r.center() - vec2(4.0, 0.0), Align2::CENTER_CENTER, format!("{:.0} %", shown * 100.0), font(FS), text());
+        }
         arrow_down(&p, r, text());
+        self.cpu_menu(&cpu_resp);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(g.r(1818.0, 1845.0)));
         self.output_box(&mut child);
         // Master output meter in the 8 px box.
@@ -480,5 +487,49 @@ mod tests {
         assert_eq!(super::bbs(16.0, 4, true), "4. 0. 0");
         assert_eq!(super::bbs(5.75, 4, false), "2. 2. 4");
         assert_eq!(super::bbs(1.5, 3, true), "0. 1. 2");
+    }
+}
+
+impl DawApp {
+    /// CPU chooser menu (hh-cpu-context-menu: 197 px wide, rows measured at 1.0).
+    fn cpu_menu(&mut self, resp: &egui::Response) {
+        use super::menu;
+        let mut o = self.cpu;
+        let (avg, cur) = (self.cpu_display, self.cpu_current);
+        let mut engine = false;
+        let mut configure = false;
+        let engine_on = self.engine_on;
+        menu::dropdown(resp, 197.0, |ui| {
+            if menu::check_item(ui, "Enable CPU Meter", "", o.enabled, true) {
+                o.enabled = !o.enabled;
+            }
+            menu::sep(ui);
+            if menu::meter_row(ui, "Average", o.average, (o.enabled && o.average).then_some(avg)) {
+                o.average = !o.average;
+            }
+            if menu::meter_row(ui, "Current", o.current, (o.enabled && o.current).then_some(cur)) {
+                o.current = !o.current;
+            }
+            ui.add_space(5.0);
+            menu::caption(ui, "Meter Text Shows:", 15.0);
+            if let Some(i) = menu::choice_row(ui, 14.0, &[(15.0, "Average", !o.text_current), (81.0, "Current", o.text_current)]) {
+                o.text_current = i == 1;
+            }
+            menu::sep(ui);
+            if menu::check_item(ui, "Warn on Current CPU Overload", "", o.warn, true) {
+                o.warn = !o.warn;
+            }
+            menu::sep(ui);
+            engine = menu::check_item(ui, "Audio Engine On", "Ctrl+Shift+Alt+E", engine_on, true);
+            configure = menu::item(ui, "Configure Audio...", "", true);
+            ui.ctx().request_repaint();
+        });
+        self.cpu = o;
+        if engine {
+            self.toggle_audio_engine();
+        }
+        if configure {
+            self.open_settings(crate::app::SettingsTab::Audio);
+        }
     }
 }

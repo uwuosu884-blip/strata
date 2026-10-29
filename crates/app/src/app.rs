@@ -147,6 +147,12 @@ pub struct DawApp {
     pub track_meters: Vec<[f32; 2]>,
     pub clipped: bool,
     pub cpu_display: f32,
+    /// Current (peak-held) CPU load; `cpu_display` is the average.
+    pub cpu_current: f32,
+    /// CPU meter context menu (hh-cpu-context-menu).
+    pub cpu: CpuMeterOpts,
+    /// "Audio Engine On" (off = null device, nothing processed to hardware).
+    pub engine_on: bool,
 
     pub view: View,
     pub selected_track: usize,
@@ -235,6 +241,8 @@ pub struct DawApp {
     pub sel_scene: usize,
     /// Selected *empty* session slot (track, scene); clip slots use `selected_clip`.
     pub empty_slot: Option<(usize, usize)>,
+    /// Last computer-keyboard octave / velocity change (shown briefly in the status bar).
+    pub kb_changed: Option<Instant>,
     pub pr_grid: crate::arr_ops::GridMode,
     pub detail_mode: DetailMode,
     /// Last mouse press was in the detail panel (keys like Del/Ctrl+D/0 act on notes).
@@ -307,6 +315,9 @@ impl DawApp {
             track_meters: Vec::new(),
             clipped: false,
             cpu_display: 0.0,
+            cpu_current: 0.0,
+            cpu: CpuMeterOpts::default(),
+            engine_on: true,
             view: View::Session,
             selected_track: 0,
             track_sel: Vec::new(),
@@ -361,6 +372,7 @@ impl DawApp {
             arr_lanes_w: 800.0,
             sel_scene: 0,
             empty_slot: None,
+            kb_changed: None,
             pr_grid: crate::arr_ops::GridMode::Adaptive(0),
             detail_mode: DetailMode::Device,
             cv: Default::default(),
@@ -483,6 +495,8 @@ impl DawApp {
             }
         }
         self.cpu_display += (self.status.cpu_load - self.cpu_display) * (dt * 4.0).min(1.0);
+        // Current: instantaneous load with a short (≈0.3 s) release.
+        self.cpu_current = self.status.cpu_load.max(self.cpu_current - dt * 3.0).max(0.0);
         for (i, p) in self.engine.input_peaks().iter().enumerate() {
             self.input_meters[i] = p.max(self.input_meters[i] * fall);
             self.input_clip[i] |= *p >= 1.0;
@@ -566,6 +580,19 @@ impl DawApp {
         if rt != self.auto_arm {
             self.auto_arm = rt;
             self.send_now(Command::SetAutoArm(rt));
+        }
+    }
+
+    /// Toggle "Audio Engine On": off swaps in the silent null device.
+    pub fn toggle_audio_engine(&mut self) {
+        self.engine_on = !self.engine_on;
+        let opts = AudioOptions { force_null: !self.engine_on, ..self.audio_opts.clone() };
+        let keep = self.audio_opts.force_null;
+        self.restart_audio(opts);
+        // Remember the user's own force_null so turning back on restores it.
+        self.audio_opts.force_null = keep;
+        if !self.engine_on {
+            self.toast("Audio Engine Off".to_string());
         }
     }
 
@@ -1195,18 +1222,22 @@ impl DawApp {
             match key {
                 Key::Z => {
                     self.kb.octave = (self.kb.octave - 1).max(-1);
+                    self.kb_changed = Some(Instant::now());
                     return true;
                 }
                 Key::X => {
                     self.kb.octave = (self.kb.octave + 1).min(8);
+                    self.kb_changed = Some(Instant::now());
                     return true;
                 }
                 Key::C => {
                     self.kb.velocity = self.kb.velocity.saturating_sub(20).max(1);
+                    self.kb_changed = Some(Instant::now());
                     return true;
                 }
                 Key::V => {
                     self.kb.velocity = (self.kb.velocity + 20).min(127);
+                    self.kb_changed = Some(Instant::now());
                     return true;
                 }
                 _ => {}
@@ -1413,5 +1444,23 @@ mod tests {
         assert_eq!(loop_guess(&mk(8.0), 120.0), (16.0, Some(120.0)));
         // Short one-shot at 120 BPM: 0.3 s = 0.6 beats → 0.75.
         assert_eq!(loop_guess(&mk(0.3), 120.0), (0.75, None));
+    }
+}
+
+/// CPU meter menu options (Live: Enable CPU Meter / Average / Current /
+/// Meter Text Shows / Warn on Current CPU Overload).
+#[derive(Clone, Copy, Debug)]
+pub struct CpuMeterOpts {
+    pub enabled: bool,
+    pub average: bool,
+    pub current: bool,
+    /// Meter text shows Current instead of Average.
+    pub text_current: bool,
+    pub warn: bool,
+}
+
+impl Default for CpuMeterOpts {
+    fn default() -> Self {
+        Self { enabled: true, average: true, current: false, text_current: false, warn: false }
     }
 }

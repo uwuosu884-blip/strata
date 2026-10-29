@@ -314,15 +314,13 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
 
-/// JetBrainsMono Nerd Font (OFL) embedded: Medium for UI text, SemiBold for titles.
+/// Ableton Sans Small (Live's UI face): Regular for UI text, Bold for titles.
 ///
-/// * `JetBrainsMonoNerdFont-Medium.ttf`: the unmodified Nerd Font (TrueType
-///   hinting). Used below 9.5 px and as fallback for every family, so Nerd
-///   icons (private-use code points) still render.
-/// * `JetBrainsMonoNF-*-auto.ttf`: fontTools subsets without the icon ranges
-///   and with the TrueType instructions stripped. egui/skrifa then uses its
-///   auto-hinter, which (with `preserve_linear_metrics` off) also snaps stems
-///   horizontally: the TT interpreter only grid-fits vertically, which blurs.
+/// * `AbletonSansSmall-*.ttf`: the unmodified fonts (TrueType hinting), used
+///   below 9.5 px, where the auto-hinter spaces glyphs unevenly.
+/// * `AbletonSansSmall-*-auto.ttf`: fontTools copies with the TrueType
+///   instructions stripped, so egui/skrifa uses its auto-hinter, which (with
+///   `preserve_linear_metrics` off) also snaps stems horizontally.
 pub fn install_fonts(ctx: &egui::Context) {
     use egui::epaint::text::{FontTweak, HintingTarget, SmoothHinting};
     let mut fonts = FontDefinitions::default();
@@ -332,22 +330,21 @@ pub fn install_fonts(ctx: &egui::Context) {
         subpixel_binning: Some(false),
         ..Default::default()
     };
+    // Ableton Sans Small with its own TrueType hinting: matches Live's glyph
+    // advances at 10 px exactly (measured on hh-cpu-context-menu).
     for (name, bytes) in [
-        ("jb", &include_bytes!("../../assets/JetBrainsMonoNF-Medium-auto.ttf")[..]),
-        ("jb-tt", &include_bytes!("../../assets/JetBrainsMonoNerdFont-Medium.ttf")[..]),
-        ("jb-bold", &include_bytes!("../../assets/JetBrainsMonoNF-SemiBold-auto.ttf")[..]),
+        ("as", &include_bytes!("../../assets/AbletonSansSmall-Regular.ttf")[..]),
+        ("as-bold", &include_bytes!("../../assets/AbletonSansSmall-Bold.ttf")[..]),
     ] {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).tweak(tweak()).into());
     }
+    // egui's built-in faces stay only as glyph fallback (symbols, CJK-less scripts).
     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
-    let with = |first: &[&str]| first.iter().map(|s| s.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
-    // Auto-hinted face for normal text (crisper than the TrueType hints at 10 px);
-    // the TT-hinted face for 8 px, where the auto-hinter spaces glyphs unevenly.
-    let main: &[&str] = &["jb", "jb-tt"];
-    fonts.families.insert(FontFamily::Proportional, with(main));
-    fonts.families.insert(FontFamily::Monospace, with(main));
-    fonts.families.insert(FontFamily::Name("small".into()), with(&["jb-tt"]));
-    fonts.families.insert(FontFamily::Name("bold".into()), with(&["jb-bold", "jb-tt"]));
+    let with = |first: &str| std::iter::once(first.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
+    fonts.families.insert(FontFamily::Proportional, with("as"));
+    fonts.families.insert(FontFamily::Monospace, with("as"));
+    fonts.families.insert(FontFamily::Name("small".into()), with("as"));
+    fonts.families.insert(FontFamily::Name("bold".into()), with("as-bold"));
     ctx.set_fonts(fonts);
 }
 

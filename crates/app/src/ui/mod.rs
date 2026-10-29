@@ -35,7 +35,7 @@ impl eframe::App for DawApp {
     /// not egui's focus navigation, and piano keys must not trigger widgets.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         if matches!(self.dialog, Some(Dialog::ConfirmDiscard(_))) {
-            // Keyboard-driven dialog: arrows / Enter / S D C (see `dialogs`), not egui focus.
+            // Keyboard-driven dialog: arrows / Enter / Y N C (see `save_changes_dialog`), not egui focus.
             raw.events.retain(|e| match e {
                 egui::Event::Key { modifiers, key, pressed, .. } if !modifiers.command && !modifiers.alt && *key != Key::Escape => {
                     if *pressed {
@@ -205,7 +205,7 @@ impl DawApp {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if self.dialog.is_some() {
-            // Plain keys drive the dialog (arrows / Enter / S D C in "Unsaved Changes").
+            // Plain keys drive the dialog (arrows / Enter / Y N C in "Save changes").
             for ev in self.key_events.drain(..) {
                 if let egui::Event::Key { key, pressed: true, .. } = ev {
                     self.dialog_keys.push(key);
@@ -219,6 +219,9 @@ impl DawApp {
         let typing = ctx.egui_wants_keyboard_input();
         let cmd = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
         let cmd_shift = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, k));
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT | Modifiers::ALT, Key::E)) {
+            self.toggle_audio_engine();
+        }
         if cmd_shift(Key::Z) {
             self.redo();
         }
@@ -824,38 +827,35 @@ impl DawApp {
         // Message field: toasts, else the insert marker / time selection (Live).
         let main = seg(x0 + 42.0, rx(1555.0));
         p.rect_filled(main, CornerRadius::same(3), panel());
-        let mut msg = String::new();
-        let mut col = theme::text();
-        if let Some((m, at)) = &self.message {
-            if at.elapsed() < Duration::from_secs(4) {
-                msg = m.clone();
-                col = gray(0xe6);
-            } else {
-                self.message = None;
-            }
+        // Insert mark / time selection always; toasts and (for 4 s after a change)
+        // the computer keyboard's octave and velocity follow it.
+        let bpb = self.project.beats_per_bar.max(1);
+        let spb = 60.0 / self.project.tempo_bpm.max(1.0);
+        let pos = |b: f64| topbar::bbs(b, bpb, false).replace(' ', "");
+        let len = |b: f64| topbar::bbs(b, bpb, true).replace(' ', "");
+        let time = |b: f64| {
+            let s = (b * spb).max(0.0);
+            format!("{}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64)
+        };
+        let mut msg = match self.time_sel {
+            Some(ts) if ts.end - ts.start > 1e-9 => format!(
+                "Time Selection  Start: {}  End: {}  Length: {} (Duration: {})",
+                pos(ts.start),
+                pos(ts.end),
+                len(ts.end - ts.start),
+                time(ts.end - ts.start)
+            ),
+            _ => format!("Insert Mark {} (Time: {})", pos(self.play_start), time(self.play_start)),
+        };
+        let col = theme::text();
+        let recent = |at: &std::time::Instant| at.elapsed() < Duration::from_secs(4);
+        if self.kb_changed.as_ref().is_some_and(recent) {
+            msg = format!("{msg}    Computer MIDI Keyboard: Octave C{}  Velocity {}", self.kb.octave, self.kb.velocity);
         }
-        if msg.is_empty() {
-            let bpb = self.project.beats_per_bar.max(1);
-            let spb = 60.0 / self.project.tempo_bpm.max(1.0);
-            let pos = |b: f64| topbar::bbs(b, bpb, false).replace(' ', "");
-            let len = |b: f64| topbar::bbs(b, bpb, true).replace(' ', "");
-            let time = |b: f64| {
-                let s = (b * spb).max(0.0);
-                format!("{}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64)
-            };
-            msg = match self.time_sel {
-                Some(ts) if ts.end - ts.start > 1e-9 => format!(
-                    "Time Selection Start: {}  End: {}  Length: {} (Duration: {})",
-                    pos(ts.start),
-                    pos(ts.end),
-                    len(ts.end - ts.start),
-                    time(ts.end - ts.start)
-                ),
-                _ => format!("Insert Mark {} (Time: {})", pos(self.play_start), time(self.play_start)),
-            };
-            if self.kb.enabled {
-                msg = format!("{msg}  ·  Computer MIDI Keyboard: octave C{}, velocity {}", self.kb.octave, self.kb.velocity);
-            }
+        match &self.message {
+            Some((m, at)) if recent(at) => msg = format!("{msg}    {m}"),
+            Some(_) => self.message = None,
+            None => {}
         }
         p.with_clip_rect(main.shrink2(vec2(6.0, 0.0))).text(main.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, msg, fs.clone(), col);
         // ▶ box + field (health warnings live here).
@@ -939,6 +939,116 @@ impl DawApp {
         p.line_segment([g + vec2(2.0, 5.0), g + vec2(5.0, 2.0)], egui::Stroke::new(1.0, theme::ORANGE));
     }
 
+    /// "Save changes" dialog (hh-save-changes, 414 × 139 at 100 %): #20 title bar
+    /// (31 px, Live icon, ×), #36 body with the warning triangle, an 11 px message
+    /// and three 98 × 13 pill buttons (#1e, #11 outline; the highlighted one gets
+    /// a #91 ring 1 px outside). ←/→/Tab move the highlight, Enter/Space
+    /// activates, Y / N / C pick directly, Esc cancels.
+    fn save_changes_dialog(&mut self, ctx: &egui::Context, pending: PendingAction, keys: &[Key]) {
+        use egui::{Align2, CornerRadius, Rect, Sense, Shape, Stroke, vec2};
+        let focus_id = egui::Id::unique("confirm_focus");
+        let mut focus: usize = ctx.data(|d| d.get_temp(focus_id)).unwrap_or(1);
+        let mut choice: Option<usize> = None;
+        for k in keys {
+            match k {
+                Key::ArrowLeft => focus = (focus + 2) % 3,
+                Key::ArrowRight | Key::Tab => focus = (focus + 1) % 3,
+                Key::Enter | Key::Space => choice = Some(focus),
+                Key::Y => choice = Some(0),
+                Key::N => choice = Some(1),
+                Key::C => choice = Some(2),
+                _ => {}
+            }
+        }
+        let name =
+            self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
+        let size = vec2(414.0, 139.0);
+        let screen = ctx.content_rect();
+        let o = (screen.center() - size * 0.5).round();
+        egui::Area::new(egui::Id::unique("save_changes")).order(egui::Order::Foreground).fixed_pos(o).show(ctx, |ui| {
+            let (win, _) = ui.allocate_exact_size(size, Sense::click());
+            let p = ui.painter();
+            let at = |x: f32, y: f32| win.min + vec2(x, y);
+            // Soft shadow, window, title bar.
+            for i in 1..=8 {
+                let a = (6 - i.min(6)) as u8 * 6;
+                p.rect_filled(win.expand(i as f32), CornerRadius::same(8 + i as u8), egui::Color32::from_black_alpha(a));
+            }
+            p.rect_filled(win, CornerRadius::same(8), gray(0x20));
+            p.rect_filled(
+                Rect::from_min_max(at(1.0, 31.0), at(size.x - 1.0, size.y - 1.0)),
+                CornerRadius { nw: 0, ne: 0, sw: 7, se: 7 },
+                gray(0x36),
+            );
+            // Live icon (11 × 9 at +11,+9).
+            let icon = Rect::from_min_size(at(10.0, 8.0), vec2(13.0, 11.0));
+            p.rect_filled(icon, CornerRadius::same(1), gray(0x12));
+            p.text(icon.center(), Align2::CENTER_CENTER, "Live", theme::bold(6.0), gray(0xda));
+            // Close ×: 10 × 10 at +394,+10.
+            let xr = Rect::from_min_size(at(394.0, 10.0), vec2(10.0, 10.0));
+            let xs = Stroke::new(1.3, gray(0xe8));
+            p.line_segment([xr.left_top(), xr.right_bottom()], xs);
+            p.line_segment([xr.right_top(), xr.left_bottom()], xs);
+            let close_resp = ui.interact(xr.expand(6.0), ui.make_persistent_id("sc_close"), Sense::click());
+            if close_resp.clicked() {
+                choice = Some(2);
+            }
+            // Warning triangle (#b5): hull of r = 3 circles at the inner
+            // vertices gives Live's rounded corners (outer 17..71 × 47..95).
+            let hull = {
+                let mut pts: Vec<egui::Pos2> = Vec::new();
+                for c in [at(43.0, 50.0), at(20.0, 92.0), at(68.0, 92.0)] {
+                    for k in 0..24 {
+                        let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                        pts.push(c + 3.0 * vec2(a.cos(), a.sin()));
+                    }
+                }
+                convex_hull(pts)
+            };
+            p.add(Shape::convex_polygon(hull, gray(0xb5), Stroke::NONE));
+            p.add(Shape::convex_polygon(vec![at(40.4, 61.0), at(44.6, 61.0), at(43.7, 78.0), at(41.3, 78.0)], gray(0x36), Stroke::NONE));
+            p.circle_filled(at(42.5, 85.0), 2.5, gray(0x36));
+            // Message: 11 px, baseline at +72.
+            p.text(
+                at(89.0, 69.5),
+                Align2::LEFT_CENTER,
+                format!("Save changes to \"{name}\" before closing?"),
+                theme::font(12.0),
+                gray(0xb5),
+            );
+            // Buttons.
+            for (i, (label, x)) in [("Yes", 56.0), ("No", 158.0), ("Cancel", 260.0)].into_iter().enumerate() {
+                let b = Rect::from_min_size(at(x, 106.0), vec2(98.0, 13.0));
+                let resp = ui.interact(b, ui.make_persistent_id(("sc_btn", i)), Sense::click());
+                if resp.hovered() && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO) {
+                    focus = i;
+                }
+                if resp.clicked() {
+                    choice = Some(i);
+                }
+                p.rect_filled(b, CornerRadius::same(6), gray(0x1e));
+                p.rect_stroke(b, CornerRadius::same(6), Stroke::new(1.0, gray(0x11)), egui::StrokeKind::Inside);
+                if i == focus {
+                    p.rect_stroke(b.expand(1.0), CornerRadius::same(7), Stroke::new(1.0, gray(0x91)), egui::StrokeKind::Inside);
+                }
+                p.text(b.center() + vec2(1.0, 0.0), Align2::CENTER_CENTER, label, theme::font(theme::FS), gray(0xb5));
+            }
+        });
+        ctx.data_mut(|d| d.insert_temp(focus_id, focus));
+        let Some(c) = choice else { return };
+        ctx.data_mut(|d| d.remove::<usize>(focus_id));
+        self.dialog = None;
+        match c {
+            0 => {
+                if self.save() {
+                    self.run_pending(pending);
+                }
+            }
+            1 => self.run_pending(pending),
+            _ => {}
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.clone() else { return };
         let mut close = false;
@@ -960,8 +1070,13 @@ impl DawApp {
             }
             return;
         }
-        let scenes = self.project.scenes.len();
         let keys = std::mem::take(&mut self.dialog_keys);
+        if let Dialog::ConfirmDiscard(pending) = &dialog {
+            let pending = pending.clone();
+            self.save_changes_dialog(ctx, pending, &keys);
+            return;
+        }
+        let scenes = self.project.scenes.len();
         egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             match &mut dialog {
                 Dialog::Open(path) | Dialog::SaveAs(path) => {
@@ -1035,54 +1150,7 @@ impl DawApp {
                         }
                     });
                 }
-                Dialog::ConfirmDiscard(pending) => {
-                    ui.label("The project has unsaved changes.");
-                    // ←/→ (Tab) move the highlight, Enter/Space activates; S / D / C directly.
-                    let focus_id = egui::Id::unique("confirm_focus");
-                    let mut focus: usize = ui.data(|d| d.get_temp(focus_id)).unwrap_or(0);
-                    let mut choice: Option<usize> = None;
-                    for k in keys.iter() {
-                        match k {
-                            Key::ArrowLeft => focus = (focus + 2) % 3,
-                            Key::ArrowRight | Key::Tab => focus = (focus + 1) % 3,
-                            Key::Enter | Key::Space => choice = Some(focus),
-                            Key::S => choice = Some(0),
-                            Key::D => choice = Some(1),
-                            Key::C => choice = Some(2),
-                            _ => {}
-                        }
-                    }
-                    ui.horizontal(|ui| {
-                        for (i, label) in ["Save (S)", "Don't Save (D)", "Cancel (C)"].into_iter().enumerate() {
-                            let mut b = egui::Button::new(label).min_size(egui::vec2(96.0, 24.0));
-                            if i == focus {
-                                b = b.stroke(egui::Stroke::new(2.0, ACCENT));
-                            }
-                            let r = ui.add(b);
-                            if r.hovered() && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO) {
-                                focus = i;
-                            }
-                            if r.clicked() {
-                                choice = Some(i);
-                            }
-                        }
-                    });
-                    ui.data_mut(|d| d.insert_temp(focus_id, focus));
-                    if let Some(c) = choice {
-                        let pa = pending.clone();
-                        action = match c {
-                            0 => Some(Box::new(move |a: &mut DawApp| {
-                                if a.save() {
-                                    a.run_pending(pa);
-                                }
-                            })),
-                            1 => Some(Box::new(move |a: &mut DawApp| a.run_pending(pa))),
-                            _ => None,
-                        };
-                        close = true;
-                        ui.data_mut(|d| d.remove::<usize>(focus_id));
-                    }
-                }
+                Dialog::ConfirmDiscard(_) => {}
                 Dialog::Settings(_) => {}
                 Dialog::About => {
                     ui.label("daw: a small, fast Rust DAW.");
@@ -1198,5 +1266,38 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, id: 
         } else {
             app.commit_rename();
         }
+    }
+}
+
+/// Convex hull (monotone chain), clockwise in screen space, for egui's
+/// `convex_polygon`.
+fn convex_hull(mut pts: Vec<egui::Pos2>) -> Vec<egui::Pos2> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let cross = |o: egui::Pos2, a: egui::Pos2, b: egui::Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let mut h: Vec<egui::Pos2> = Vec::with_capacity(pts.len() * 2);
+    for pass in 0..2 {
+        let start = h.len();
+        let it: Box<dyn Iterator<Item = &egui::Pos2>> = if pass == 0 { Box::new(pts.iter()) } else { Box::new(pts.iter().rev()) };
+        for &p in it {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], p) <= 0.0 {
+                h.pop();
+            }
+            h.push(p);
+        }
+        h.pop();
+    }
+    h
+}
+
+#[cfg(test)]
+mod hull_tests {
+    use super::convex_hull;
+    use eframe::egui::pos2;
+
+    #[test]
+    fn hull_drops_interior_points() {
+        let h = convex_hull(vec![pos2(0.0, 0.0), pos2(4.0, 0.0), pos2(2.0, 1.0), pos2(4.0, 4.0), pos2(0.0, 4.0), pos2(1.0, 2.0)]);
+        assert_eq!(h.len(), 4);
+        assert!(!h.contains(&pos2(2.0, 1.0)) && !h.contains(&pos2(1.0, 2.0)));
     }
 }
