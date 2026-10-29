@@ -196,8 +196,8 @@ fn leaf(
 ) {
     let resp = row(ui, indent, None, ic, name, st.selected.as_deref() == Some(key), Sense::click_and_drag());
     resp.dnd_set_drag_payload(payload);
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    if resp.dragged() {
+        super::cursors::set(ui.ctx(), super::cursors::Cur::Drag);
     }
     if resp.clicked() || resp.drag_started() {
         st.selected = Some(key.to_string());

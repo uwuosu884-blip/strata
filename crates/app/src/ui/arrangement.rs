@@ -10,6 +10,7 @@
 //! Headers: click/Shift+click select, drag = reorder / move in or out of groups,
 //! double-click = rename, ⊙ = collapse.
 
+use super::cursors::Cur;
 use super::theme::*;
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
@@ -429,10 +430,8 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         let (dl, dr) = ((pos.x - brace.min.x).abs(), (pos.x - brace.max.x).abs());
         if dl.min(dr) > 5.0 { None } else { Some(dl <= dr) }
     };
-    if let Some(h) = resp.hover_pos()
-        && edge_at(h).is_some()
-    {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    if let Some(left) = resp.hover_pos().and_then(edge_at) {
+        super::cursors::set(ui.ctx(), if left { Cur::DragLeftEdge } else { Cur::DragRightEdge });
     }
     // Beat ruler (21 px): ┌ markers standing on the bottom edge at grid lines, numbers
     // to their right; short ticks on every other grid line (sub-beats).
@@ -477,7 +476,31 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
     // Playhead triangle under the brace (inverted, see arrangement_view).
     // Drag a brace corner = resize, the brace body = move, elsewhere = draw a new range.
     // None of these switch looping on (click the brace or Ctrl+L for that).
+    // Beat-time ruler: drag up/down zooms around the grabbed beat (it stays under
+    // the pointer, so a sideways drag scrolls), like Live; Zoom cursor.
+    let beat_row = Rect::from_min_max(pos2(ruler.min.x, ry), pos2(ruler.max.x, yb));
+    let zid = resp.id.with("ruler_zoom");
+    let zoom_anchor: Option<f64> = ui.data(|d| d.get_temp(zid));
+    if zoom_anchor.is_some() || resp.hover_pos().is_some_and(|h| beat_row.contains(h)) {
+        super::cursors::set(ui.ctx(), Cur::Zoom);
+    }
+    if let Some(anchor) = zoom_anchor {
+        if resp.dragged() {
+            let (dy, px) = ui.input(|i| (i.pointer.delta().y, i.pointer.latest_pos().map_or(0.0, |p| p.x)));
+            let x0 = g.to_x(app.arr_scroll as f64);
+            app.arr_zoom = (app.arr_zoom * (dy * 0.01).exp()).clamp(1.5, 600.0);
+            app.arr_scroll = (anchor - ((px - x0) / app.arr_zoom) as f64).max(0.0) as f32;
+            app.follow_paused |= app.status.playing;
+        } else {
+            ui.data_mut(|d| d.remove::<f64>(zid));
+        }
+    }
     if resp.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin())
+        && beat_row.contains(pos)
+    {
+        ui.data_mut(|d| d.insert_temp(zid, g.beat_at(pos.x)));
+    } else if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin())
     {
         app.begin_gesture();
@@ -618,10 +641,14 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         let tr = ui.interact(title, ui.scope_id().with(("aclip_title", id)), Sense::click_and_drag());
         let er = ui.interact(redge, ui.scope_id().with(("aclip_edge", id)), Sense::drag());
         let el = ui.interact(ledge, ui.scope_id().with(("aclip_ledge", id)), Sense::drag());
-        if er.hovered() || er.dragged() || el.hovered() || el.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        } else if tr.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        // Live: "[" / "]" on the trim edges, Drag (Ctrl: DragCopy) while moving.
+        if er.hovered() || er.dragged() {
+            super::cursors::set(ui.ctx(), Cur::DragRightEdge);
+        } else if el.hovered() || el.dragged() {
+            super::cursors::set(ui.ctx(), Cur::DragLeftEdge);
+        } else if tr.dragged() {
+            let copy = ui.input(|i| i.modifiers.command);
+            super::cursors::set(ui.ctx(), if copy { Cur::DragCopy } else { Cur::Drag });
         }
         let mode = ui.input(|i| SelMode::from_mods(&i.modifiers));
         if tr.clicked() {
@@ -865,7 +892,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Tracks { ids }));
     }
     if hr.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        super::cursors::set(ui.ctx(), Cur::Drag);
     }
     if let Some(item) = hr.dnd_release_payload::<DragItem>()
         && let Some(def) = super::instrument_for(&item)

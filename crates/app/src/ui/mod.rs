@@ -3,6 +3,7 @@
 pub(crate) mod arrangement;
 mod browser;
 pub mod clip;
+pub mod cursors;
 mod detail;
 mod invert;
 mod io;
@@ -172,6 +173,7 @@ impl eframe::App for DawApp {
 
         self.dialogs(&ctx);
         drag_preview(&ctx);
+        cursors::paint(&ctx);
         self.end_frame();
         self.update_title(&ctx);
 

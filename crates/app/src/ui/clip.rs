@@ -1354,11 +1354,13 @@ pub fn marker_strip(
     let gid = id.with("grab");
     let near = |x: f32, b: f64| (x - x_of(b)).abs() < 5.0;
     if let Some(pt) = r.hover_pos() {
-        let resize = near(pt.x, clip.start)
-            || (!clip.looping && near(pt.x, clip.start + clip.length))
-            || (clip.looping && (near(pt.x, ls) || near(pt.x, le)));
-        if resize {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        // Live: start / loop-start show "[", end / loop-end "]".
+        let left = near(pt.x, clip.start) || (clip.looping && near(pt.x, ls));
+        let right = (!clip.looping && near(pt.x, clip.start + clip.length)) || (clip.looping && near(pt.x, le));
+        if left {
+            super::cursors::set(ui.ctx(), super::cursors::Cur::DragLeftEdge);
+        } else if right {
+            super::cursors::set(ui.ctx(), super::cursors::Cur::DragRightEdge);
         }
     }
     if r.drag_started()

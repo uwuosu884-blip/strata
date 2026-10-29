@@ -419,6 +419,9 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     let kr = ui.interact(keys, ui.scope_id().with("pr_keys"), Sense::click_and_drag());
     let held_id = ui.scope_id().with("pr_key_held");
     let held: Option<u8> = ui.data(|d| d.get_temp(held_id)).flatten();
+    if kr.hovered() || kr.is_pointer_button_down_on() {
+        super::cursors::set(ui.ctx(), super::cursors::Cur::Speaker);
+    }
     let want = if kr.is_pointer_button_down_on() {
         ui.ctx().pointer_latest_pos().filter(|pt| keys.contains(*pt)).map(|pt| pitch_at(pt.y).clamp(0, 127) as u8).or(held)
     } else {
@@ -461,7 +464,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         app.pr_audition = !app.pr_audition;
     }
     if let Some((_, true)) = hit {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        super::cursors::set(ui.ctx(), super::cursors::Cur::DragRightEdge);
     }
 
     // Interaction
