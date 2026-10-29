@@ -17,6 +17,7 @@ pulseaudio = ["cpal/pulseaudio"] # Linux; needs libpulse-dev
 asio = ["cpal/asio"]             # Windows low-latency; needs ASIO SDK + LLVM/clang
 
 [dependencies]
+hound.workspace = true
 daw-engine.workspace = true
 daw-project.workspace = true
 daw-core.workspace = true

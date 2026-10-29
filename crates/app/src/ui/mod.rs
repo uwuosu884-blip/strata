@@ -4,6 +4,7 @@ pub(crate) mod arrangement;
 mod browser;
 pub mod clip;
 pub mod cursors;
+mod cview;
 mod detail;
 mod invert;
 mod io;
@@ -364,7 +365,8 @@ impl DawApp {
         if cmd(Key::R) {
             self.rename_selection();
         }
-        if cmd(Key::A) {
+        // Ctrl+A inside a text field selects its text.
+        if !typing && cmd(Key::A) {
             // Piano roll focused: all notes of the clip; else all arrangement clips.
             if !(self.focus_detail && self.select_all_notes()) && self.view == View::Arrangement {
                 self.arr_sel = self.project.tracks.iter().flat_map(|t| t.arrangement.iter().map(|a| a.clip.id)).collect();
@@ -903,6 +905,9 @@ impl DawApp {
             ),
             _ => format!("Insert Mark {} (Time: {})", pos(self.play_start), time(self.play_start)),
         };
+        if let Some(h) = self.status_hover.take() {
+            msg = h;
+        }
         let col = theme::text();
         let recent = |at: &std::time::Instant| at.elapsed() < Duration::from_secs(4);
         if self.kb_changed.as_ref().is_some_and(recent) {

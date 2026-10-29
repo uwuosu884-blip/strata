@@ -5,15 +5,10 @@
 
 use super::widgets::*;
 use crate::app::{ClipRef, DawApp};
-use daw_project::clipx::{
-    self, ClipEnvelope, EnvPoint, EnvTarget, FollowAction, LAUNCH_QUANTS, LaunchMode, NOTE_NAMES, SCALES, WarpMarker, WarpMode,
-};
+use daw_project::clipx::{self, ClipEnvelope, EnvPoint, EnvTarget, FollowAction, LAUNCH_QUANTS, LaunchMode, WarpMarker};
 use daw_project::miditools::{self as mt, Generate, PKind, Transform};
 use daw_project::{Clip, ClipContent, Note};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, pos2, vec2};
-
-pub const BOX_W: f32 = 196.0;
-pub const MARKER_H: f32 = 12.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Tab {
@@ -68,7 +63,6 @@ impl ToolBase {
 pub struct ClipView {
     pub tab: Tab,
     pub panel: NotesPanel,
-    pub show_launch: bool,
     pub folded: bool,
     pub env_target: Option<EnvTarget>,
     pub mpe_lane: usize,
@@ -79,7 +73,6 @@ pub struct ClipView {
     pub auto_apply: bool,
     pub base: Option<ToolBase>,
     pub interval: i32,
-    pub transpose: i32,
     pub duration: f64,
     pub humanize: f64,
     pub follow: bool,
@@ -90,7 +83,12 @@ pub struct ClipView {
     pub sel_marker: Option<usize>,
     /// Envelope point being dragged / MPE drawing in progress.
     pub env_drag: Option<usize>,
-    pub info_edit: Option<String>,
+    /// Left-panel sections unfolded (cview::Sec).
+    pub open: [bool; 6],
+    /// Pitch & Time stretch knob (applied on release).
+    pub stretch: f64,
+    /// Piano roll Fold: only rows that hold notes.
+    pub fold: bool,
     /// Library groove picked in the chooser (added to the pool next frame).
     pub pending_groove: Option<clipx::Groove>,
     pub show_pool: bool,
@@ -101,7 +99,6 @@ impl Default for ClipView {
         Self {
             tab: Tab::Main,
             panel: NotesPanel::PitchTime,
-            show_launch: true,
             folded: false,
             env_target: None,
             mpe_lane: 0,
@@ -112,8 +109,7 @@ impl Default for ClipView {
             auto_apply: true,
             base: None,
             interval: 12,
-            transpose: 0,
-            duration: 4.0,
+            duration: 0.0,
             humanize: 0.5,
             follow: false,
             brace_sel: false,
@@ -121,7 +117,9 @@ impl Default for ClipView {
             quant_amount: 100.0,
             sel_marker: None,
             env_drag: None,
-            info_edit: None,
+            open: super::cview::OPEN_DEFAULT,
+            stretch: 1.0,
+            fold: false,
             pending_groove: None,
             show_pool: false,
         }
@@ -163,52 +161,22 @@ fn beat_field(ui: &mut egui::Ui, v: &mut f64, bpb: f64, pos: bool, range: std::o
     )
 }
 
-/// Unwarped audio: positions in min:sec (beats ↔ seconds at the song tempo).
-fn sec_field(ui: &mut egui::Ui, v: &mut f64, spb: f64, range: std::ops::RangeInclusive<f64>) -> egui::Response {
-    ui.add(
-        egui::DragValue::new(v)
-            .range(range)
-            .speed(0.05)
-            .custom_formatter(move |x, _| {
-                let t = x * spb;
-                let sign = if t < 0.0 { "-" } else { "" };
-                let t = t.abs();
-                format!("{sign}{}:{:06.3}", (t / 60.0).floor() as i64, t % 60.0)
-            })
-            .custom_parser(move |s| {
-                let s = s.trim();
-                let (neg, s) = s.strip_prefix('-').map_or((false, s), |r| (true, r));
-                let secs = match s.split_once(':') {
-                    Some((m, x)) => m.trim().parse::<f64>().ok()? * 60.0 + x.trim().parse::<f64>().ok()?,
-                    None => s.parse::<f64>().ok()?,
-                };
-                Some(if neg { -secs } else { secs } / spb)
-            }),
-    )
-}
-
 /// Collects gesture / change flags from widgets (one undo step per gesture).
 #[derive(Default)]
-struct Ed {
-    gesture: bool,
-    changed: bool,
+pub(super) struct Ed {
+    pub(super) gesture: bool,
+    pub(super) changed: bool,
 }
 
 impl Ed {
-    fn t(&mut self, r: egui::Response) -> egui::Response {
+    pub(super) fn t(&mut self, r: egui::Response) -> egui::Response {
         self.gesture |= r.drag_started() || r.gained_focus() || r.clicked();
         self.changed |= r.changed();
         r
     }
-    fn set(&mut self) {
+    pub(super) fn set(&mut self) {
         self.gesture = true;
         self.changed = true;
-    }
-}
-
-fn track_of(c: ClipRef) -> usize {
-    match c {
-        ClipRef::Slot { track, .. } | ClipRef::Arr { track, .. } => track,
     }
 }
 
@@ -243,7 +211,7 @@ pub fn region(c: &Clip) -> (f64, f64) {
     if c.looping { c.loop_range() } else { (c.start, c.start + c.length) }
 }
 
-fn commit(app: &mut DawApp, cref: ClipRef, ed: Ed, c: Clip) {
+pub(super) fn commit(app: &mut DawApp, cref: ClipRef, ed: Ed, c: Clip) {
     if ed.gesture {
         app.begin_gesture();
     }
@@ -256,7 +224,7 @@ fn commit(app: &mut DawApp, cref: ClipRef, ed: Ed, c: Clip) {
     }
 }
 
-fn audio_map(app: &DawApp, c: &Clip) -> daw_engine::WarpMap {
+pub(super) fn audio_map(app: &DawApp, c: &Clip) -> daw_engine::WarpMap {
     match &c.content {
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
             let sr = app.audio.info.sample_rate as f64;
@@ -268,307 +236,7 @@ fn audio_map(app: &DawApp, c: &Clip) -> daw_engine::WarpMap {
 
 // ---- panels -------------------------------------------------------------------------------------
 
-/// The property panels left of the editor.
-pub fn panels(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    let session = matches!(cref, ClipRef::Slot { .. });
-    egui::ScrollArea::horizontal().id_salt("cv_panels").auto_shrink([true, false]).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            framed(ui, "Clip", |ui| clip_box(app, ui, cref, clip));
-            if session && app.cv.show_launch {
-                framed(ui, "Launch", |ui| launch_box(app, ui, cref, clip));
-            }
-            let audio = matches!(clip.content, ClipContent::Audio { .. });
-            framed(ui, "", |ui| {
-                ui.horizontal(|ui| {
-                    let main = if audio { "Audio" } else { "Notes" };
-                    ui.selectable_value(&mut app.cv.tab, Tab::Main, main);
-                    ui.selectable_value(&mut app.cv.tab, Tab::Envelopes, "Envelopes");
-                    if !audio {
-                        ui.selectable_value(&mut app.cv.tab, Tab::Mpe, "MPE");
-                    }
-                });
-                if audio && app.cv.tab == Tab::Mpe {
-                    app.cv.tab = Tab::Main;
-                }
-                ui.separator();
-                match (app.cv.tab, audio) {
-                    (Tab::Main, true) => audio_box(app, ui, cref, clip),
-                    (Tab::Main, false) => notes_box(app, ui, cref, clip),
-                    (Tab::Envelopes, _) => envelopes_box(app, ui, cref, clip),
-                    (Tab::Mpe, _) => mpe_box(app, ui, cref, clip),
-                }
-            });
-        });
-    });
-}
-
-fn framed(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().fill(gray(34)).inner_margin(4.0).corner_radius(2.0).show(ui, |ui| {
-        ui.set_width(BOX_W);
-        ui.set_min_height(ui.available_height());
-        // Frame inherits the row layout: force a column.
-        ui.vertical(|ui| {
-            egui::ScrollArea::vertical().id_salt(("cv_box", title)).auto_shrink([false, false]).show(ui, |ui| {
-                if !title.is_empty() {
-                    ui.label(egui::RichText::new(title).small().strong().color(gray(170)));
-                }
-                f(ui)
-            });
-        });
-    });
-}
-
-fn clip_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    let bpb = app.project.beats_per_bar as f64;
-    // Title bar: activator · name (double-click renames; double-click on the
-    // bar folds the panels) · launch panel toggle. Right-click: colour / info.
-    let mut c = clip.clone();
-    let mut ed = Ed::default();
-    ui.horizontal(|ui| {
-        let r = ui.add(egui::Button::selectable(!c.muted, " ").min_size(vec2(14.0, 16.0))).on_hover_text("Clip Activator (0)");
-        if r.clicked() {
-            c.muted = !c.muted;
-            ed.set();
-        }
-        let w = ui.available_width() - if matches!(cref, ClipRef::Slot { .. }) { 22.0 } else { 0.0 };
-        let (r, nr) = ui.allocate_exact_size(vec2(w.max(40.0), 18.0), Sense::click());
-        let renaming = app.renaming.as_ref().is_some_and(|x| x.clip && x.id == clip.id && x.in_detail);
-        if renaming {
-            super::rename_editor(app, ui, r, clip.id, true, true);
-        } else {
-            let sel = app.arr_sel.len().max(1);
-            let p = ui.painter();
-            p.rect_filled(r, CornerRadius::same(2), rgb(clip.color));
-            if sel > 1 {
-                // Several clips selected: striped bar + count.
-                for k in 0..((r.width() / 8.0) as i32) {
-                    let x = r.min.x + k as f32 * 8.0;
-                    p.line_segment([pos2(x, r.max.y), pos2(x + 6.0, r.min.y)], Stroke::new(2.0, Color32::from_black_alpha(40)));
-                }
-            }
-            let label = if sel > 1 { format!("{} Clips", sel) } else { clip.name.clone() };
-            p.with_clip_rect(r).text(
-                r.left_center() + vec2(4.0, 0.0),
-                Align2::LEFT_CENTER,
-                label,
-                super::theme::font(11.0),
-                text_on(rgb(clip.color)),
-            );
-            if nr.double_clicked() {
-                if ui.input(|i| i.modifiers.shift) {
-                    app.cv.folded = !app.cv.folded;
-                } else {
-                    app.start_rename_clip(clip.id, true);
-                }
-            }
-            let hover = if clip.info.is_empty() {
-                "Double-click: rename · Shift+double-click: fold · right-click: colour, info".to_string()
-            } else {
-                clip.info.clone()
-            };
-            let nr = nr.on_hover_text(hover);
-            nr.context_menu(|ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.set_max_width(160.0);
-                    for col in daw_project::PALETTE {
-                        let (cr, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
-                        ui.painter().rect_filled(cr, CornerRadius::same(2), rgb(col));
-                        if resp.clicked() {
-                            c.color = col;
-                            ed.set();
-                            ui.close();
-                        }
-                    }
-                });
-                if ui.button("Assign Track Color to Clip").clicked() {
-                    c.color = app.project.tracks[track_of(cref)].color;
-                    ed.set();
-                    ui.close();
-                }
-                if ui.button("Rename (Ctrl+R)").clicked() {
-                    app.start_rename_clip(clip.id, true);
-                    ui.close();
-                }
-                ui.separator();
-                ui.label("Info Text");
-                let txt = app.cv.info_edit.get_or_insert_with(|| clip.info.clone());
-                let r = ui.add(egui::TextEdit::multiline(txt).desired_rows(2).desired_width(160.0));
-                if r.lost_focus() || ui.button("Set Info").clicked() {
-                    c.info = app.cv.info_edit.take().unwrap_or_default();
-                    ed.set();
-                }
-            });
-        }
-        if matches!(cref, ClipRef::Slot { .. }) {
-            let r = ui
-                .add(egui::Button::selectable(app.cv.show_launch, "L").min_size(vec2(18.0, 16.0)))
-                .on_hover_text("Show / hide the Launch panel");
-            if r.clicked() {
-                app.cv.show_launch = !app.cv.show_launch;
-            }
-        }
-    });
-    let pos = play_pos(app, cref);
-    let set_btn = |ui: &mut egui::Ui| {
-        ui.add_enabled(pos.is_some(), egui::Button::new("Set").small()).on_hover_text("Set to the play position").clicked()
-    };
-    egui::Grid::new("cv_clip").num_columns(3).spacing([4.0, 3.0]).show(ui, |ui| {
-        // Signature (display / grid only).
-        ui.label("Signature");
-        ui.horizontal(|ui| {
-            ed.t(ui.add(egui::DragValue::new(&mut c.sig.0).range(1..=99)));
-            ui.label("/");
-            ed.t(ui.add(egui::DragValue::new(&mut c.sig.1).range(1..=16)));
-        });
-        ui.end_row();
-        // Groove.
-        ui.label("Groove");
-        let gname = c.groove.and_then(|id| app.project.grooves.iter().find(|g| g.id == id)).map_or("None".to_string(), |g| g.name.clone());
-        egui::ComboBox::from_id_salt("cv_groove").width(96.0).selected_text(gname).show_ui(ui, |ui| {
-            if ui.selectable_label(c.groove.is_none(), "None").clicked() {
-                c.groove = None;
-                ed.set();
-            }
-            for g in &app.project.grooves {
-                if ui.selectable_label(c.groove == Some(g.id), &g.name).clicked() {
-                    c.groove = Some(g.id);
-                    ed.set();
-                }
-            }
-            ui.separator();
-            ui.label(egui::RichText::new("Library").small());
-            for g in daw_project::clipx::Groove::factory() {
-                if ui.button(&g.name).clicked() {
-                    app.cv.pending_groove = Some(g);
-                }
-            }
-        });
-        if ui
-            .add_enabled(c.groove.is_some() && matches!(c.content, ClipContent::Midi { .. }), egui::Button::new("Commit").small())
-            .on_hover_text("Write the groove into the notes")
-            .clicked()
-        {
-            app.commit_groove(cref);
-        }
-        if ui.add(egui::Button::selectable(app.cv.show_pool, "Pool").small()).on_hover_text("Groove Pool").clicked() {
-            app.cv.show_pool = !app.cv.show_pool;
-        }
-        ui.end_row();
-        // Scale.
-        ui.label("Scale");
-        ui.horizontal(|ui| {
-            if ui.add(egui::Button::selectable(c.scale.on, "#").min_size(vec2(18.0, 16.0))).on_hover_text("Scale Mode").clicked() {
-                c.scale.on = !c.scale.on;
-                ed.set();
-            }
-            egui::ComboBox::from_id_salt("cv_root").width(34.0).selected_text(NOTE_NAMES[c.scale.root as usize % 12]).show_ui(ui, |ui| {
-                for (i, n) in NOTE_NAMES.iter().enumerate() {
-                    ed.t(ui.selectable_value(&mut c.scale.root, i as u8, *n));
-                }
-            });
-        });
-        egui::ComboBox::from_id_salt("cv_scale").width(70.0).selected_text(c.scale.name()).show_ui(ui, |ui| {
-            for (i, (n, _)) in SCALES.iter().enumerate() {
-                ed.t(ui.selectable_value(&mut c.scale.scale, i as u8, *n));
-            }
-        });
-        ui.end_row();
-        // Start / End.
-        ui.label("Start");
-        let spb = 60.0 / app.project.tempo_bpm.max(1.0);
-        let secs = warp_off(&c);
-        let field = move |ui: &mut egui::Ui, v: &mut f64, pos: bool, r: std::ops::RangeInclusive<f64>| {
-            if secs { sec_field(ui, v, spb, r) } else { beat_field(ui, v, bpb, pos, r) }
-        };
-        ed.t(field(ui, &mut c.start, true, -4096.0..=4096.0));
-        if set_btn(ui) {
-            c.start = pos.unwrap_or(c.start);
-            ed.set();
-        }
-        ui.end_row();
-        if !c.looping {
-            ui.label("End");
-            let mut end = c.start + c.length;
-            let r = ed.t(field(ui, &mut end, true, (c.start + 1.0 / 16.0)..=(c.start + 4096.0)));
-            if r.changed() {
-                c.length = end - c.start;
-            }
-            if set_btn(ui) && pos.unwrap_or(0.0) > c.start {
-                c.length = pos.unwrap_or(0.0) - c.start;
-                ed.set();
-            }
-            ui.end_row();
-        }
-        // Loop.
-        ui.label("Loop");
-        let audio_unwarped = matches!(c.content, ClipContent::Audio { warp_bpm: None, .. });
-        let r =
-            ui.add_enabled(!audio_unwarped, egui::Button::selectable(c.looping, "Loop")).on_hover_text("Loop switch (audio needs Warp)");
-        if r.clicked() {
-            c.fix_loop();
-            c.looping = !c.looping;
-            ed.set();
-        }
-        ui.end_row();
-        if c.looping {
-            let (ls, le) = c.loop_range();
-            let (mut pos_v, mut len_v) = (ls, le - ls);
-            ui.label("Position");
-            let r = ed.t(beat_field(ui, &mut pos_v, bpb, true, -4096.0..=4096.0));
-            if r.changed() {
-                (c.loop_start, c.loop_end) = (pos_v, pos_v + len_v);
-            }
-            if set_btn(ui) {
-                let p0 = pos.unwrap_or(ls);
-                (c.loop_start, c.loop_end) = (p0, p0 + len_v);
-                ed.set();
-            }
-            ui.end_row();
-            ui.label("Length");
-            let r = ed.t(beat_field(ui, &mut len_v, bpb, false, (1.0 / 16.0)..=4096.0));
-            if r.changed() {
-                (c.loop_start, c.loop_end) = (pos_v, pos_v + len_v);
-                if matches!(cref, ClipRef::Slot { .. }) {
-                    c.length = len_v;
-                }
-            }
-            if set_btn(ui) && pos.unwrap_or(0.0) > ls {
-                c.loop_end = pos.unwrap_or(le);
-                c.loop_start = ls;
-                ed.set();
-            }
-            ui.end_row();
-        }
-    });
-    if c.looping
-        && matches!(c.content, ClipContent::Midi { .. })
-        && ui.small_button("Duplicate Loop").on_hover_text("Double the loop, copying its notes").clicked()
-    {
-        app.duplicate_loop(cref);
-    }
-    if let Some(mut g) = app.cv.pending_groove.take() {
-        // Library groove → pool (reusing an entry with the same name) → clip.
-        let id = match app.project.grooves.iter().find(|x| x.name == g.name) {
-            Some(x) => x.id,
-            None => {
-                app.begin_gesture();
-                g.id = app.project.grooves.iter().map(|x| x.id).max().unwrap_or(0) + 1;
-                let id = g.id;
-                app.project.grooves.push(g);
-                id
-            }
-        };
-        c.groove = Some(id);
-        ed.changed = true;
-    }
-    let crop = ui.small_button("Crop").on_hover_text("Delete everything outside the loop / markers (Ctrl+Shift+J)").clicked();
-    commit(app, cref, ed, c);
-    if crop {
-        app.crop_clip(cref);
-    }
-}
-
-fn launch_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
+pub(super) fn launch_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let bpb = app.project.beats_per_bar as f64;
     let mut c = clip.clone();
     let mut ed = Ed::default();
@@ -667,185 +335,7 @@ fn launch_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     commit(app, cref, ed, c);
 }
 
-fn audio_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    let mut c = clip.clone();
-    let mut ed = Ed::default();
-    let arr = matches!(cref, ClipRef::Arr { .. });
-    let ClipContent::Audio { sample, warp_bpm, .. } = &mut c.content else { return };
-    let sample = sample.clone();
-    ui.horizontal(|ui| {
-        let mut warp = warp_bpm.is_some();
-        if ui.add(egui::Button::selectable(warp, "WARP")).on_hover_text("Warp: follow the song tempo").clicked() {
-            warp = !warp;
-            *warp_bpm = if warp {
-                let guess = app.cache.peek(&sample).map(|b| crate::app::loop_guess(b, app.project.tempo_bpm).1);
-                Some(guess.flatten().unwrap_or(app.project.tempo_bpm))
-            } else {
-                None
-            };
-            if !warp {
-                c.looping = false;
-            }
-            ed.set();
-        }
-        if arr
-            && ui
-                .add(egui::Button::selectable(c.audio.lead, if c.audio.lead { "Leader" } else { "Follower" }))
-                .on_hover_text("Leader clips set the song tempo (bottom-most wins)")
-                .clicked()
-        {
-            c.audio.lead = !c.audio.lead;
-            ed.set();
-        }
-    });
-    let ClipContent::Audio { warp_bpm, .. } = &mut c.content else { return };
-    if let Some(bpm) = warp_bpm.as_mut() {
-        ui.horizontal(|ui| {
-            ui.label("Seg. BPM");
-            let old = *bpm;
-            let r = ed.t(ui.add(egui::DragValue::new(bpm).range(20.0..=999.0).speed(0.1).fixed_decimals(2)));
-            let mut f = if r.changed() { old / *bpm } else { 1.0 };
-            if ui.small_button("×2").clicked() {
-                *bpm = (*bpm * 2.0).min(999.0);
-                f = old / *bpm;
-                ed.set();
-            }
-            if ui.small_button("÷2").clicked() {
-                *bpm = (*bpm / 2.0).max(20.0);
-                f = old / *bpm;
-                ed.set();
-            }
-            // Markers keep their frames; their beats scale with the tempo.
-            if f != 1.0 {
-                c.audio.markers.iter_mut().for_each(|m| m.beat *= f);
-            }
-        });
-        egui::Grid::new("cv_warp").num_columns(2).spacing([4.0, 3.0]).show(ui, |ui| {
-            ui.label("Mode");
-            egui::ComboBox::from_id_salt("cv_wmode").width(100.0).selected_text(c.audio.mode.label()).show_ui(ui, |ui| {
-                for m in WarpMode::ALL {
-                    ed.t(ui.selectable_value(&mut c.audio.mode, m, m.label()));
-                }
-            });
-            ui.end_row();
-            let wp = &mut c.audio.params;
-            match c.audio.mode {
-                WarpMode::Beats => {
-                    ui.label("Preserve");
-                    egui::ComboBox::from_id_salt("cv_pres").width(100.0).selected_text(wp.preserve.label()).show_ui(ui, |ui| {
-                        for p in clipx::Preserve::ALL {
-                            ed.t(ui.selectable_value(&mut wp.preserve, p, p.label()));
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Loop");
-                    ui.horizontal(|ui| {
-                        for (m, l, tip) in [
-                            (clipx::TransientLoop::Off, "Off", "Loop Off"),
-                            (clipx::TransientLoop::Forward, "Fwd", "Loop Forward"),
-                            (clipx::TransientLoop::BackAndForth, "B-F", "Loop Back-and-Forth"),
-                        ] {
-                            ed.t(ui.selectable_value(&mut wp.loop_mode, m, l).on_hover_text(tip));
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Envelope");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.envelope).range(0.0..=100.0)));
-                    ui.end_row();
-                }
-                WarpMode::Tones => {
-                    ui.label("Grain Size");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.grain_tones).range(12.0..=100.0)));
-                    ui.end_row();
-                }
-                WarpMode::Texture => {
-                    ui.label("Grain Size");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.grain_texture).range(12.0..=100.0)));
-                    ui.end_row();
-                    ui.label("Flux");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.flux).range(0.0..=100.0)));
-                    ui.end_row();
-                }
-                WarpMode::ComplexPro => {
-                    ui.label("Formants");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.formants).range(0.0..=100.0).suffix(" %")));
-                    ui.end_row();
-                    ui.label("Envelope");
-                    ed.t(ui.add(egui::DragValue::new(&mut wp.cpro_envelope).range(8.0..=256.0)));
-                    ui.end_row();
-                }
-                WarpMode::RePitch | WarpMode::Complex => {}
-            }
-        });
-    }
-    ui.separator();
-    let mut gain = match &c.content {
-        ClipContent::Audio { gain_db, .. } => *gain_db,
-        _ => 0.0,
-    };
-    let unwarped = warp_off(&c);
-    egui::Grid::new("cv_audio").num_columns(2).spacing([4.0, 3.0]).show(ui, |ui| {
-        ui.label("Gain");
-        ed.t(ui.add(egui::DragValue::new(&mut gain).range(-60.0..=24.0).speed(0.1).suffix(" dB")));
-        ui.end_row();
-        ui.label("Transpose");
-        ui.add_enabled_ui(c.audio.mode != WarpMode::RePitch || unwarped, |ui| {
-            ed.t(ui.add(egui::DragValue::new(&mut c.audio.transpose).range(-48..=48).suffix(" st")));
-        });
-        ui.end_row();
-        ui.label("Detune");
-        ed.t(ui.add(egui::DragValue::new(&mut c.audio.detune).range(-50.0..=50.0).suffix(" ct")));
-        ui.end_row();
-    });
-    if let ClipContent::Audio { gain_db, .. } = &mut c.content {
-        *gain_db = gain;
-    }
-    ui.horizontal_wrapped(|ui| {
-        for (v, l, tip) in [(0usize, "Fade", "Clip Fade (declick)"), (1, "RAM", "Load into RAM"), (2, "HiQ", "High-quality interpolation")]
-        {
-            let on = [c.audio.fade, c.audio.ram, c.audio.hiq][v];
-            if ui.add(egui::Button::selectable(on, l)).on_hover_text(tip).clicked() {
-                match v {
-                    0 => c.audio.fade = !on,
-                    1 => c.audio.ram = !on,
-                    _ => c.audio.hiq = !on,
-                }
-                ed.set();
-            }
-        }
-    });
-    let reverse = ui.horizontal(|ui| {
-        let rev = ui.button("Reverse").on_hover_text("Reverse the sample (new file)").clicked();
-        if ui.button("Edit").on_hover_text("Open in the external sample editor").clicked() {
-            open_external(&sample);
-        }
-        rev
-    });
-    ui.separator();
-    ui.label(egui::RichText::new("Transform").small().strong());
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("cv_qgrid").width(52.0).selected_text(mt::GRIDS[app.cv.quant_grid as usize].0).show_ui(ui, |ui| {
-            for (i, (l, _)) in mt::GRIDS.iter().enumerate() {
-                ui.selectable_value(&mut app.cv.quant_grid, i as f32, *l);
-            }
-        });
-        ui.add(egui::DragValue::new(&mut app.cv.quant_amount).range(0.0..=100.0).suffix(" %"));
-    });
-    let quant = ui.button("Quantize Markers").on_hover_text("Move warp markers to transients on the grid (Ctrl+U)").clicked();
-    commit(app, cref, ed, c);
-    if reverse.inner {
-        app.reverse_clip(cref);
-    }
-    if quant {
-        app.quantize_warp(cref, mt::grid_beats(app.cv.quant_grid), app.cv.quant_amount as f64 / 100.0);
-    }
-}
-
-fn warp_off(c: &Clip) -> bool {
-    matches!(c.content, ClipContent::Audio { warp_bpm: None, .. })
-}
-
-fn open_external(path: &str) {
+pub(super) fn open_external(path: &str) {
     let p = std::path::Path::new(path);
     if !p.exists() {
         return;
@@ -859,113 +349,7 @@ fn open_external(path: &str) {
     let _ = std::process::Command::new(cmd).arg(p).spawn();
 }
 
-fn notes_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut app.cv.panel, NotesPanel::PitchTime, "Pitch & Time");
-        ui.selectable_value(&mut app.cv.panel, NotesPanel::Transform, "Transform");
-        ui.selectable_value(&mut app.cv.panel, NotesPanel::Generate, "Generate");
-    });
-    match app.cv.panel {
-        NotesPanel::PitchTime => pitch_time(app, ui, cref, clip),
-        NotesPanel::Transform | NotesPanel::Generate => tools(app, ui, cref, clip),
-    }
-}
-
-/// Pitch & Time utilities: act on the selected notes, else the whole clip.
-fn pitch_time(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
-    let scale = clip.scale.on.then_some(clip.scale);
-    type NoteOp = Box<dyn FnOnce(&mut Vec<Note>, &[usize])>;
-    let mut op: Option<NoteOp> = None;
-    ui.horizontal(|ui| {
-        ui.label(if scale.is_some() { "Transpose (deg)" } else { "Transpose" });
-        ui.add(egui::DragValue::new(&mut app.cv.transpose).range(-48..=48));
-        let n = app.cv.transpose;
-        if ui.small_button("Apply").clicked() && n != 0 {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::transpose(x, n, scale))));
-        }
-    });
-    ui.horizontal(|ui| {
-        if ui.small_button("−").on_hover_text("Down one step").clicked() {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::transpose(x, -1, scale))));
-        }
-        if ui.small_button("+").on_hover_text("Up one step").clicked() {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::transpose(x, 1, scale))));
-        }
-        if ui.add_enabled(scale.is_some(), egui::Button::new("Fit to Scale").small()).clicked() {
-            let s = clip.scale;
-            op = Some(Box::new(move |v, sel| with_sel(v, sel, |x| mt::fit_to_scale(x, s))));
-        }
-        if ui.small_button("Invert").clicked() {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::invert(x, scale))));
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Interval");
-        ui.add(egui::DragValue::new(&mut app.cv.interval).range(-48..=48));
-        let n = app.cv.interval;
-        if ui.small_button("Add Interval").clicked() {
-            op = Some(Box::new(move |v, s| {
-                let s: Vec<usize> = if s.is_empty() { (0..v.len()).collect() } else { s.to_vec() };
-                mt::add_interval(v, &s, n, scale);
-            }));
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Stretch");
-        if ui.small_button("×2").clicked() {
-            op = Some(Box::new(|v, s| with_sel(v, s, |x| stretch_sel(x, 2.0))));
-        }
-        if ui.small_button("÷2").clicked() {
-            op = Some(Box::new(|v, s| with_sel(v, s, |x| stretch_sel(x, 0.5))));
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Duration");
-        let bpb = app.project.beats_per_bar as f64;
-        beat_field(ui, &mut app.cv.duration, bpb, false, (1.0 / 16.0)..=1024.0);
-        let d = app.cv.duration;
-        if ui.small_button("Set Length").clicked() {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::set_length(x, d))));
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.add(egui::DragValue::new(&mut app.cv.humanize).range(0.0..=1.0).speed(0.01));
-        let a = app.cv.humanize;
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-        if ui.small_button("Humanize").clicked() {
-            op = Some(Box::new(move |v, s| with_sel(v, s, |x| mt::humanize(x, a, seed))));
-        }
-    });
-    ui.horizontal(|ui| {
-        if ui.small_button("Reverse").clicked() {
-            op = Some(Box::new(|v, s| with_sel(v, s, mt::reverse)));
-        }
-        if ui.small_button("Legato").clicked() {
-            op = Some(Box::new(|v, s| with_sel(v, s, mt::legato)));
-        }
-    });
-    if let Some(f) = op {
-        let sel = app.note_sel.clone();
-        app.cv.base = None;
-        app.edit(|p| {
-            if let Some(c) = DawApp::clip_mut(p, cref)
-                && let ClipContent::Midi { notes } = &mut c.content
-            {
-                f(notes, &sel);
-                for n in notes.iter_mut() {
-                    n.start = n.start.max(-c.head);
-                }
-            }
-        });
-        if !sel.is_empty() {
-            // Selection stays on the same notes (indices unchanged; additions appended).
-        } else {
-            app.note_sel.clear();
-        }
-    }
-}
-
-fn stretch_sel(x: &mut [Note], f: f64) {
+pub(super) fn stretch_sel(x: &mut [Note], f: f64) {
     let a = x.iter().map(|n| n.start).fold(f64::INFINITY, f64::min);
     if a.is_finite() {
         mt::stretch(x, a, f);
@@ -973,7 +357,7 @@ fn stretch_sel(x: &mut [Note], f: f64) {
 }
 
 /// Run `f` on the selected notes (or all), writing them back in place.
-fn with_sel(v: &mut [Note], sel: &[usize], f: impl FnOnce(&mut [Note])) {
+pub(super) fn with_sel(v: &mut [Note], sel: &[usize], f: impl FnOnce(&mut [Note])) {
     if sel.is_empty() {
         f(v);
         return;
@@ -988,7 +372,7 @@ fn with_sel(v: &mut [Note], sel: &[usize], f: impl FnOnce(&mut [Note])) {
 }
 
 /// MIDI Tools panel (Transform or Generate).
-fn tools(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
+pub(super) fn tools(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let gen_ = app.cv.panel == NotesPanel::Generate;
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -1136,7 +520,7 @@ fn tools(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     ui.label(egui::RichText::new(format!("Acts on: {target}")).small().color(Color32::GRAY));
 }
 
-fn envelopes_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
+pub(super) fn envelopes_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let audio = matches!(clip.content, ClipContent::Audio { .. });
     let list: &[EnvTarget] = if audio { &EnvTarget::AUDIO } else { &EnvTarget::MIDI };
     let cur = app.cv.env_target.filter(|t| list.contains(t)).unwrap_or(list[0]);
@@ -1184,7 +568,7 @@ fn envelopes_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip
     commit(app, cref, ed, c);
 }
 
-fn mpe_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
+pub(super) fn mpe_box(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     ui.label("Note Expression");
     for (i, l) in ["Pitch", "Slide", "Pressure"].iter().enumerate() {
         ui.selectable_value(&mut app.cv.mpe_lane, i, *l);
@@ -1326,20 +710,70 @@ pub fn marker_strip(
     p.rect_filled(rect, CornerRadius::ZERO, gray(36));
     let (ls, le) = clip.loop_range();
     let col = rgb(clip.color);
-    let brace = Rect::from_min_max(pos2(x_of(ls), rect.min.y + 2.0), pos2(x_of(le), rect.max.y - 1.0));
-    if clip.looping {
-        let c = if app.cv.brace_sel { col } else { col.gamma_multiply(0.55) };
-        p.rect_filled(brace, CornerRadius::same(2), c);
+    // Live 12 (22 px): loop brace row on top, start / end flags below.
+    let two = rect.height() >= 20.0;
+    let mid = (rect.min.y + rect.height() / 2.0).round();
+    let (brace_y, flag_y) = if two {
+        ((rect.min.y + 2.0, mid - 1.0), (mid, rect.max.y))
     } else {
-        p.rect_stroke(brace, CornerRadius::same(2), Stroke::new(1.0, gray(90)), egui::StrokeKind::Inside);
-    }
-    let flag = |x: f32, right: bool, c: Color32| {
-        let d = if right { -7.0 } else { 7.0 };
-        p.add(egui::Shape::convex_polygon(vec![pos2(x, rect.min.y), pos2(x + d, rect.min.y + 5.0), pos2(x, rect.max.y)], c, Stroke::NONE));
+        ((rect.min.y + 2.0, rect.max.y - 1.0), (rect.min.y, rect.max.y))
     };
-    flag(x_of(clip.start), false, gray(225));
-    if !clip.looping {
-        flag(x_of(clip.start + clip.length), true, gray(225));
+    let brace = Rect::from_min_max(pos2(x_of(ls), brace_y.0), pos2(x_of(le), brace_y.1));
+    if two {
+        // Measured (hh-piano-roll-note-selected): brace row #3c between #91 lines,
+        // marker row #36; outlined #5d flags 7×11 with #91 edges.
+        let _ = brace;
+        let row1 = Rect::from_min_max(pos2(rect.min.x, rect.min.y), pos2(rect.max.x, mid));
+        let row2 = Rect::from_min_max(pos2(rect.min.x, mid), rect.max);
+        p.rect_filled(row1, CornerRadius::ZERO, gray(0x36));
+        p.rect_filled(row2, CornerRadius::ZERO, gray(0x36));
+        let lc = if !clip.looping {
+            gray(0x5d)
+        } else if app.cv.brace_sel {
+            super::theme::SEL_BLUE
+        } else {
+            gray(0x91)
+        };
+        let br = Rect::from_min_max(pos2(x_of(ls), row1.min.y), pos2(x_of(le), row1.max.y));
+        if clip.looping {
+            p.rect_filled(br, CornerRadius::ZERO, gray(0x3c));
+        }
+        p.line_segment([pos2(br.min.x, br.min.y + 0.5), pos2(br.max.x, br.min.y + 0.5)], Stroke::new(1.0, lc));
+        p.line_segment([pos2(br.min.x, br.max.y - 0.5), pos2(br.max.x, br.max.y - 0.5)], Stroke::new(1.0, lc));
+        let oflag = |x: f32, row: Rect, right: bool, edge: Color32| {
+            let d = if right { -7.0 } else { 7.0 };
+            let x = x + if right { -0.5 } else { 0.5 };
+            let pts = vec![pos2(x, row.min.y), pos2(x + d, row.center().y), pos2(x, row.max.y)];
+            p.add(egui::Shape::convex_polygon(pts.clone(), gray(0x5d), Stroke::NONE));
+            p.add(egui::Shape::line(pts, Stroke::new(1.0, edge)));
+        };
+        oflag(x_of(ls), row1, false, lc);
+        oflag(x_of(le), row1, true, lc);
+        oflag(x_of(clip.start), row2, false, gray(0x91));
+        if !clip.looping {
+            oflag(x_of(clip.start + clip.length), row2, true, gray(0x91));
+        }
+    } else {
+        if clip.looping {
+            let c = if app.cv.brace_sel { col } else { col.gamma_multiply(0.55) };
+            p.rect_filled(brace, CornerRadius::same(2), c);
+        } else {
+            p.rect_stroke(brace, CornerRadius::same(2), Stroke::new(1.0, gray(90)), egui::StrokeKind::Inside);
+        }
+        let flag = |x: f32, right: bool, c: Color32| {
+            let d = if right { -7.0 } else { 7.0 };
+            let h = flag_y.1 - flag_y.0;
+            p.add(egui::Shape::convex_polygon(
+                vec![pos2(x, flag_y.0), pos2(x + d, flag_y.0 + h.min(14.0) / 2.0), pos2(x, flag_y.0 + h.min(14.0))],
+                c,
+                Stroke::NONE,
+            ));
+            p.line_segment([pos2(x + 0.5, flag_y.0), pos2(x + 0.5, flag_y.1)], Stroke::new(1.0, c));
+        };
+        flag(x_of(clip.start), false, gray(225));
+        if !clip.looping {
+            flag(x_of(clip.start + clip.length), true, gray(225));
+        }
     }
     let id = ui.scope_id().with(("cv_markers", clip.id));
     let r = ui.interact(rect, id, Sense::click_and_drag());
@@ -1659,6 +1093,29 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         return;
     };
     let warped = warp_bpm.is_some();
+    // Hover: Live's status line "Name Start: 1.1.1 End: 1.1.4+ Length: 0.0.3+ path | 48.0 kHz | …".
+    if warped && resp.hovered() {
+        let bpb = app.project.beats_per_bar as f64;
+        let plus = |v: f64, pos: bool| {
+            let q = (v * 4.0 + 1e-6).fract() > 2e-6;
+            format!("{}{}", bbs(v, bpb, pos).replace(' ', ""), if q { "+" } else { "" })
+        };
+        let (s0, e0) = (clip.start, clip.start + clip.length);
+        let fmt = match hound::WavReader::open(sample).map(|r| r.spec()) {
+            Ok(sp) => format!(" | {} Bit | {} Ch", sp.bits_per_sample, sp.channels),
+            Err(_) => String::new(),
+        };
+        app.status_hover = Some(format!(
+            "{}  Start: {}  End: {}  Length: {}  {} | {:.1} kHz{}",
+            clip.name,
+            plus(s0, true),
+            plus(e0, true),
+            plus(e0 - s0, false),
+            sample,
+            buf.sample_rate as f64 / 1000.0,
+            fmt
+        ));
+    }
     let map = audio_map(app, clip);
     let total = buf.len() as f64;
     let (b_first, b_last) = (map.beat_at(0.0), map.beat_at(total));
@@ -1666,10 +1123,18 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let view0 = b_first.min(w0);
     let view_len = (b_last.max(w1) - view0).max(0.25);
     let env_h = if app.cv.tab == Tab::Envelopes { (rect.height() * 0.35).max(40.0) } else { 0.0 };
-    let marker = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + MARKER_H));
-    let ruler = Rect::from_min_max(pos2(rect.min.x, marker.max.y), pos2(rect.max.x, marker.max.y + 14.0));
-    let wave = Rect::from_min_max(pos2(rect.min.x, ruler.max.y), pos2(rect.max.x, rect.max.y - env_h));
-    let env_r = Rect::from_min_max(pos2(rect.min.x, wave.max.y), rect.max);
+    // Live 12 rows (measured): warped = bars ruler 17 | loop + marker rows 22 | sep |
+    // strip 16 | sep | waveform | sep | bottom strip 17. Unwarped: no bars ruler, a
+    // 15 px min:sec ruler under the waveform.
+    let top = rect.min.y;
+    let nums = Rect::from_min_max(rect.min, pos2(rect.max.x, top + if warped { 17.0 } else { 0.0 }));
+    let marker = Rect::from_min_max(pos2(rect.min.x, nums.max.y), pos2(rect.max.x, nums.max.y + 22.0));
+    let ruler = Rect::from_min_max(pos2(rect.min.x, marker.max.y + 1.0), pos2(rect.max.x, marker.max.y + 17.0));
+    let bottom = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 17.0), rect.max);
+    let secs_r =
+        Rect::from_min_max(pos2(rect.min.x, bottom.min.y - 1.0 - if warped { 0.0 } else { 15.0 }), pos2(rect.max.x, bottom.min.y - 1.0));
+    let wave = Rect::from_min_max(pos2(rect.min.x, ruler.max.y + 1.0), pos2(rect.max.x, secs_r.min.y - env_h));
+    let env_r = Rect::from_min_max(pos2(rect.min.x, wave.max.y), pos2(rect.max.x, secs_r.min.y));
     // Zoom / scroll: shared with the piano roll state (reset per clip).
     let seen = ui.scope_id().with("se_clip");
     if ui.data(|d| d.get_temp::<u64>(seen)) != Some(clip.id) {
@@ -1706,13 +1171,50 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let beat_at = |x: f32| scroll + (x - rect.min.x) as f64 / ppb;
     let bpb = app.project.beats_per_bar as f64;
     let grid = crate::arr_ops::adaptive_step(ppb, bpb, 24.0);
+    app.pr_grid_now = grid;
     let free = ui.input(|i| i.modifiers.alt);
     let snap = |b: f64| if free { b } else { (b / grid).round() * grid };
-    // Ruler + grid lines.
-    p.rect_filled(ruler, CornerRadius::ZERO, super::theme::panel());
-    // Live: alternating lighter bar bands.
+    // Strips, separators, rulers.
+    let sepc = super::theme::sep();
+    for y in [marker.max.y, ruler.max.y, bottom.min.y - 1.0] {
+        p.rect_filled(Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, y + 1.0)), CornerRadius::ZERO, sepc);
+    }
+    p.rect_filled(ruler, CornerRadius::ZERO, gray(0x30));
+    p.rect_filled(bottom, CornerRadius::ZERO, super::theme::panel());
+    p.rect_filled(wave, CornerRadius::ZERO, gray(0x3e));
+    if warped {
+        p.rect_filled(nums, CornerRadius::ZERO, gray(0x39));
+    } else {
+        // min:sec ruler under the waveform: ticks every nice time step.
+        p.rect_filled(secs_r, CornerRadius::ZERO, gray(0x39));
+        let sr = buf.sample_rate as f64;
+        let px_per_sec = ppb * map.beat_at(sr) - ppb * map.beat_at(0.0);
+        let step = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
+            .into_iter()
+            .find(|s| s * px_per_sec >= 70.0)
+            .unwrap_or(60.0);
+        let t0 = map.frame_at(scroll) / sr;
+        let mut t = (t0 / step).floor() * step;
+        let t_end = map.frame_at(scroll + visible) / sr;
+        while t <= t_end {
+            let x = x_of(map.beat_at(t * sr)).round();
+            p.line_segment([pos2(x + 0.5, secs_r.min.y), pos2(x + 0.5, secs_r.min.y + 9.0)], Stroke::new(1.0, gray(0x91)));
+            p.line_segment([pos2(x + 0.5, secs_r.min.y + 8.5), pos2(x + 2.5, secs_r.min.y + 8.5)], Stroke::new(1.0, gray(0x91)));
+            let ms = ((t.max(0.0) * 1000.0).round() as i64) % 1000;
+            let label = format!("{}:{:02}:{:03}", (t.max(0.0) / 60.0) as i64, (t.max(0.0) % 60.0) as i64, ms);
+            p.text(
+                pos2(x + 4.0, secs_r.center().y + 1.0),
+                Align2::LEFT_CENTER,
+                label,
+                super::theme::font(super::theme::FS),
+                super::theme::text(),
+            );
+            t += step;
+        }
+    }
+    // Warped: alternating lighter bar bands.
     let mut bar = (scroll / bpb).floor();
-    while bar * bpb <= scroll + visible {
+    while warped && bar * bpb <= scroll + visible {
         if (bar as i64).rem_euclid(2) == 0 {
             let r = Rect::from_min_max(pos2(x_of(bar * bpb), wave.min.y), pos2(x_of((bar + 1.0) * bpb), wave.max.y));
             p.rect_filled(r, CornerRadius::ZERO, gray(0x3e));
@@ -1723,14 +1225,24 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     while b <= scroll + visible {
         let x = x_of(b);
         let bar = (b / bpb).fract().abs() < 1e-9;
-        p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, gray(if bar { 0x2c } else { 0x34 })));
-        if bar {
-            let label = if warped {
-                format!("{}", (b / bpb).floor() as i64 + 1)
-            } else {
-                format!("{:.2}s", map.frame_at(b) / buf.sample_rate as f64)
-            };
-            p.text(pos2(x + 2.0, ruler.min.y + 1.0), Align2::LEFT_TOP, label, super::theme::font(8.0), gray(170));
+        if warped {
+            p.line_segment([pos2(x, wave.min.y), pos2(x, wave.max.y)], Stroke::new(1.0, gray(if bar { 0x2c } else { 0x34 })));
+            if bar || b.fract().abs() < 1e-9 && grid * ppb >= 40.0 {
+                let label = if bar {
+                    format!("{}", (b / bpb).floor() as i64 + 1)
+                } else {
+                    format!("{}.{}", (b / bpb).floor() as i64 + 1, (b - (b / bpb).floor() * bpb) as i64 + 1)
+                };
+                p.line_segment([pos2(x + 0.5, nums.max.y - 9.0), pos2(x + 0.5, nums.max.y)], Stroke::new(1.0, gray(0x91)));
+                p.line_segment([pos2(x + 0.5, nums.max.y - 8.5), pos2(x + 2.5, nums.max.y - 8.5)], Stroke::new(1.0, gray(0x91)));
+                p.text(
+                    pos2(x + 4.0, nums.max.y - 5.5),
+                    Align2::LEFT_CENTER,
+                    label,
+                    super::theme::font(super::theme::FS),
+                    super::theme::text(),
+                );
+            }
         }
         b += grid;
     }
@@ -1808,13 +1320,6 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     if env_h > 0.0 {
         env_lane(app, ui, env_r, cref, clip, &x_of, &beat_at, &snap);
     }
-    p.text(
-        pos2(rect.max.x - 4.0, ruler.min.y + 1.0),
-        Align2::RIGHT_TOP,
-        format!("{} · {} Hz · {:.2} s{}", buf.name, buf.sample_rate, buf.duration_secs(), if warped { "" } else { " · unwarped" }),
-        super::theme::font(8.0),
-        gray(150),
-    );
 }
 
 #[allow(clippy::too_many_arguments)]

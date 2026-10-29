@@ -7,7 +7,9 @@ use daw_engine::{DRUM_BASE_NOTE, DRUM_PADS, Wave};
 use daw_project::{Clip, ClipContent, InstrumentDef, Note, PadDef, TrackKind};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, pos2, vec2};
 
-const KEYS_W: f32 = 46.0;
+/// Key column: note names 0..29, keys 30..56 (Live 12).
+const KEYS_W: f32 = 57.0;
+const NAMES_W: f32 = 30.0;
 const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 pub fn note_name(p: u8) -> String {
@@ -56,27 +58,52 @@ fn clip_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef) {
         ClipRef::Slot { track, .. } | ClipRef::Arr { track, .. } => track,
     };
     let clip = app.clip(cref).cloned().expect("checked");
-    let h = ui.available_height();
-    ui.horizontal_top(|ui| {
-        // Panels fold away with the ◂ button (or Shift+double-click on the title).
-        let fold = ui
-            .add(egui::Button::new(if app.cv.folded { ">" } else { "<" }).small().min_size(vec2(12.0, h)))
-            .on_hover_text("Show / hide the clip panels");
-        if fold.clicked() {
-            app.cv.folded = !app.cv.folded;
-        }
-        if !app.cv.folded {
-            let max_w = (ui.available_width() * 0.6).max(super::clip::BOX_W + 8.0);
-            ui.allocate_ui(vec2(max_w, h), |ui| {
-                ui.set_max_width(max_w);
-                super::clip::panels(app, ui, cref, &clip);
-            });
-        }
-        match &clip.content {
-            ClipContent::Midi { notes } => piano_roll(app, ui, cref, track, &clip, notes),
-            ClipContent::Audio { .. } => super::clip::sample_editor(app, ui, cref, &clip),
-        }
-    });
+    // Live 12 layout: 170 px left panel | 2 px #24 | editor (17 px header + 1 px sep).
+    let rect = ui.available_rect_before_wrap();
+    ui.allocate_rect(rect, Sense::hover());
+    let mut ed_r = rect;
+    if !app.cv.folded {
+        let left = Rect::from_min_size(rect.min, vec2(super::cview::LEFT_W, rect.height()));
+        super::cview::left_panel(app, ui, left, cref, &clip);
+        ed_r.min.x = left.max.x + 2.0;
+    }
+    ui.painter().rect_filled(
+        Rect::from_min_max(pos2(ed_r.min.x - 2.0, rect.min.y), pos2(ed_r.min.x, rect.max.y)),
+        CornerRadius::ZERO,
+        super::theme::sep(),
+    );
+    let head = Rect::from_min_size(ed_r.min, vec2(ed_r.width(), super::cview::HEAD_H));
+    let (info, grid) = match &clip.content {
+        ClipContent::Midi { .. } => (None, Some(app.pr_grid_now)),
+        ClipContent::Audio { sample, warp_bpm, .. } => (Some(sample_info(app, ui, sample)), warp_bpm.map(|_| app.pr_grid_now)),
+    };
+    super::cview::editor_header(app, ui, head, &clip, info, grid);
+    let body = Rect::from_min_max(pos2(ed_r.min.x, head.max.y + 1.0), ed_r.max);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
+    child.set_clip_rect(body.intersect(ui.clip_rect()));
+    let ui = &mut child;
+    match &clip.content {
+        ClipContent::Midi { notes } => piano_roll(app, ui, cref, track, &clip, notes),
+        ClipContent::Audio { .. } => super::clip::sample_editor(app, ui, cref, &clip),
+    }
+}
+
+/// "name.wav  48.0 kHz · 32-Bit · 2 Ch" (format probed once per file).
+fn sample_info(app: &DawApp, ui: &egui::Ui, path: &str) -> String {
+    #[allow(deprecated)]
+    let id = egui::Id::new(("sample_info", path));
+    if let Some(s) = ui.data(|d| d.get_temp::<String>(id)) {
+        return s;
+    }
+    let name = std::path::Path::new(path).file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned());
+    let Some(buf) = app.cache.peek(path) else { return name };
+    let khz = buf.sample_rate as f64 / 1000.0;
+    let s = match hound::WavReader::open(path).map(|r| r.spec()) {
+        Ok(sp) => format!("{name}  {khz:.1} kHz · {}-Bit · {} Ch", sp.bits_per_sample, sp.channels),
+        Err(_) => format!("{name}  {khz:.1} kHz · {} Ch", if buf.left == buf.right { 1 } else { 2 }),
+    };
+    ui.data_mut(|d| d.insert_temp(id, s.clone()));
+    s
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,9 +137,12 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     };
     // Velocity lane height: user-resizable via the splitter above it.
     let vel_h = app.pr_vel_h.clamp(24.0, (rect.height() * 0.6).max(24.0));
-    let marker = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.min.y), pos2(rect.max.x, rect.min.y + super::clip::MARKER_H));
-    let ruler = Rect::from_min_max(pos2(rect.min.x + KEYS_W, marker.max.y), pos2(rect.max.x, marker.max.y + PR_RULER_H));
-    let grid_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, ruler.max.y), pos2(rect.max.x, rect.max.y - vel_h));
+    // Live 12 rows: bar numbers 0..16, loop / marker rows 17..38, sep, scrub strip
+    // 40..55, sep, note grid from 57.
+    let nums = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.min.y), pos2(rect.max.x, rect.min.y + 17.0));
+    let marker = Rect::from_min_max(pos2(rect.min.x + KEYS_W, nums.max.y), pos2(rect.max.x, nums.max.y + 22.0));
+    let ruler = Rect::from_min_max(pos2(rect.min.x + KEYS_W, marker.max.y + 1.0), pos2(rect.max.x, marker.max.y + 1.0 + PR_RULER_H));
+    let grid_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, ruler.max.y + 1.0), pos2(rect.max.x, rect.max.y - vel_h));
     let vel_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.max.y - vel_h + 3.0), pos2(rect.max.x, rect.max.y - 2.0));
     let len = clip.length.max(0.25);
     // Markers: notes outside [w0, w1) are silent (dark area). The view reaches
@@ -239,8 +269,10 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         if matches!(pitch % 12, 0 | 5) {
             p.line_segment([pos2(grid_area.min.x, y + row_h - 0.5), pos2(grid_area.max.x, y + row_h - 0.5)], Stroke::new(1.0, gray(0x34)));
         }
-        let key = Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.min.x + KEYS_W - 2.0, y + row_h - 1.0));
-        p.rect_filled(key, CornerRadius::ZERO, if black { gray(50) } else { gray(200) });
+        let key_x0 = if drums.is_some() { rect.min.x } else { rect.min.x + NAMES_W };
+        let key = Rect::from_min_max(pos2(key_x0, y), pos2(rect.min.x + KEYS_W - 1.0, y + row_h - 1.0));
+        p.rect_filled(Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.min.x + NAMES_W, y + row_h)), CornerRadius::ZERO, panel());
+        p.rect_filled(key, CornerRadius::ZERO, if black { gray(0x46) } else { gray(0x86) });
         let label = match &drums {
             Some(names) if pitch >= DRUM_BASE_NOTE as i32 && ((pitch - DRUM_BASE_NOTE as i32) as usize) < names.len() => {
                 Some(names[(pitch - DRUM_BASE_NOTE as i32) as usize].clone())
@@ -251,18 +283,30 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         if let Some(l) = label
             && row_h >= 7.0
         {
-            p.with_clip_rect(key).text(
-                key.left_center() + vec2(2.0, 0.0),
-                Align2::LEFT_CENTER,
-                l,
-                super::theme::font((row_h - 2.0).min(10.0)),
-                if black { Color32::WHITE } else { Color32::BLACK },
-            );
+            if drums.is_some() {
+                p.with_clip_rect(key).text(
+                    key.left_center() + vec2(2.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    l,
+                    super::theme::font(FS.min(row_h - 1.0)),
+                    gray(0x12),
+                );
+            } else {
+                // Note names sit left of the keys, bottom-aligned on the C row.
+                p.text(pos2(rect.min.x + 3.0, y + row_h - 1.0), Align2::LEFT_BOTTOM, l, super::theme::font(FS), text());
+            }
         }
     }
     // Ruler + beat lines (thinned when the grid gets denser than ~5 px).
-    let gp = ui.painter_at(Rect::from_min_max(ruler.min, rect.max));
-    gp.rect_filled(ruler, CornerRadius::ZERO, panel());
+    let gp = ui.painter_at(Rect::from_min_max(nums.min, rect.max));
+    let np0 = ui.painter_at(nums);
+    np0.rect_filled(nums, CornerRadius::ZERO, gray(0x39));
+    gp.rect_filled(Rect::from_min_max(pos2(rect.min.x, marker.max.y), pos2(rect.max.x, marker.max.y + 1.0)), CornerRadius::ZERO, sep());
+    gp.rect_filled(ruler, CornerRadius::ZERO, gray(0x30));
+    gp.rect_filled(Rect::from_min_max(pos2(rect.min.x, ruler.max.y), pos2(rect.max.x, ruler.max.y + 1.0)), CornerRadius::ZERO, sep());
+    // Corner above the keys.
+    p.rect_filled(Rect::from_min_max(rect.min, pos2(rect.min.x + KEYS_W, ruler.max.y)), CornerRadius::ZERO, panel());
+    p.rect_filled(Rect::from_min_max(rect.min, pos2(rect.min.x + KEYS_W, nums.max.y)), CornerRadius::ZERO, gray(0x46));
     // Live: every other bar is a lighter band.
     {
         let mut bar = (scroll / bpb).floor();
@@ -270,6 +314,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             if (bar as i64).rem_euclid(2) == 1 {
                 let r = Rect::from_min_max(pos2(x_of(bar * bpb), grid_area.min.y), pos2(x_of((bar + 1.0) * bpb), grid_area.max.y));
                 gp.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(5));
+                np0.rect_filled(Rect::from_min_max(pos2(r.min.x, nums.min.y), pos2(r.max.x, nums.max.y)), CornerRadius::ZERO, gray(0x3e));
             }
             bar += 1.0;
         }
@@ -289,8 +334,27 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let x = x_of(b);
         gp.line_segment([pos2(x, grid_area.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, c));
         if bar {
-            gp.line_segment([pos2(x, ruler.min.y + 6.0), pos2(x, ruler.max.y)], Stroke::new(1.0, gray(120)));
-            gp.text(pos2(x + 2.0, ruler.min.y), Align2::LEFT_TOP, format!("{}", (b / bpb) as i64 + 1), super::theme::font(8.0), gray(170));
+            // "[" tick: 9 px stem + 2 px foot at its top.
+            np0.line_segment([pos2(x + 0.5, nums.max.y - 9.0), pos2(x + 0.5, nums.max.y)], Stroke::new(1.0, gray(0x91)));
+            np0.line_segment([pos2(x + 0.5, nums.max.y - 8.5), pos2(x + 2.5, nums.max.y - 8.5)], Stroke::new(1.0, gray(0x91)));
+            np0.text(
+                pos2(x + 4.0, nums.max.y - 5.5),
+                Align2::LEFT_CENTER,
+                format!("{}", (b / bpb) as i64 + 1),
+                super::theme::font(FS),
+                text(),
+            );
+        } else if b.fract().abs() < 1e-9 && line_step * ppb >= 40.0 {
+            np0.line_segment([pos2(x + 0.5, nums.max.y - 9.0), pos2(x + 0.5, nums.max.y)], Stroke::new(1.0, gray(0x91)));
+            np0.line_segment([pos2(x + 0.5, nums.max.y - 8.5), pos2(x + 2.5, nums.max.y - 8.5)], Stroke::new(1.0, gray(0x91)));
+            let beat = (b - (b / bpb).floor() * bpb) as i64 + 1;
+            np0.text(
+                pos2(x + 4.0, nums.max.y - 5.5),
+                Align2::LEFT_CENTER,
+                format!("{}.{}", (b / bpb).floor() as i64 + 1, beat),
+                super::theme::font(FS),
+                text(),
+            );
         }
         b += line_step;
     }
@@ -446,20 +510,21 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         );
     }
     // Headphones (top-left, above the keys): preview notes while editing.
-    let hp = Rect::from_min_size(rect.min, vec2(KEYS_W - 2.0, PR_RULER_H));
+    let hp = Rect::from_min_max(pos2(rect.min.x + NAMES_W + 2.0, ruler.min.y + 1.0), pos2(rect.min.x + KEYS_W - 3.0, ruler.max.y - 1.0));
+    p.rect_filled(hp.expand(1.0), CornerRadius::same(2), gray(0x11));
     let hr = ui.interact(hp, ui.scope_id().with("pr_audition"), Sense::click());
     p.rect_filled(
         hp,
         CornerRadius::same(2),
         if app.pr_audition {
-            shade(ACCENT, 0.8)
+            ORANGE
         } else if hr.hovered() {
-            gray(70)
+            gray(0x2a)
         } else {
-            gray(50)
+            gray(0x1e)
         },
     );
-    draw_headphones(&p, hp.center(), if app.pr_audition { Color32::BLACK } else { gray(170) });
+    draw_headphones(&p, hp.center(), if app.pr_audition { Color32::BLACK } else { gray(0x8c) });
     if hr.on_hover_text("Preview notes while placing / moving them").clicked() {
         app.pr_audition = !app.pr_audition;
     }

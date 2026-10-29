@@ -659,7 +659,8 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
         sresp.request_focus();
     }
-    if sresp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+    // egui drops the focus on Escape before this runs: check lost_focus too.
+    if (sresp.has_focus() || sresp.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape)) {
         st.search.clear();
         sresp.surrender_focus();
     }

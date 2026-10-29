@@ -927,6 +927,7 @@ dependencies = [
  "daw-engine",
  "daw-project",
  "eframe",
+ "hound",
  "midir",
  "no_denormals",
  "ron",

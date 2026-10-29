@@ -247,6 +247,8 @@ pub struct DawApp {
     pub empty_slot: Option<(usize, usize)>,
     /// Last computer-keyboard octave / velocity change (shown briefly in the status bar).
     pub kb_changed: Option<Instant>,
+    /// Status-bar text from a hovered editor (shown next frame; e.g. warped sample info).
+    pub status_hover: Option<String>,
     pub pr_grid: crate::arr_ops::GridMode,
     pub detail_mode: DetailMode,
     /// Last mouse press was in the detail panel (keys like Del/Ctrl+D/0 act on notes).
@@ -380,6 +382,7 @@ impl DawApp {
             sel_scene: 0,
             empty_slot: None,
             kb_changed: None,
+            status_hover: None,
             pr_grid: crate::arr_ops::GridMode::Adaptive(0),
             detail_mode: DetailMode::Device,
             cv: Default::default(),
