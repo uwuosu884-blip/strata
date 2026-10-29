@@ -188,6 +188,10 @@ fn clip(c: &p::Clip, cache: &mut SampleCache, cx: &ClipCtx) -> e::Clip {
                     fade: a.fade,
                     gain_env,
                     transpose_env,
+                    fade_in: a.fade_in,
+                    fade_out: a.fade_out,
+                    fade_in_curve: a.fade_in_curve,
+                    fade_out_curve: a.fade_out_curve,
                 };
                 e::ClipContent::Audio(e::AudioClip {
                     sample: buf,

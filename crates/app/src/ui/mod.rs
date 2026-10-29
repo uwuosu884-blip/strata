@@ -224,6 +224,12 @@ impl DawApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT | Modifiers::ALT, Key::E)) {
             self.toggle_audio_engine();
         }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::F)) {
+            self.create_fade();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::Backspace)) {
+            self.reset_fades();
+        }
         if cmd_shift(Key::Z) {
             self.redo();
         }

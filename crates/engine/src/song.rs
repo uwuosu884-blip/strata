@@ -92,6 +92,19 @@ pub struct WarpSetup {
     /// Clip gain envelope / transpose envelope (content beats).
     pub gain_env: Vec<(f64, f32)>,
     pub transpose_env: Vec<(f64, f32)>,
+    /// Arrangement fade in / out (beats from the clip edges) and curvature.
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub fade_in_curve: f32,
+    pub fade_out_curve: f32,
+}
+
+/// Fade gain at `x` (0 = silent edge, 1 = fade done). Curvature `c` (−1..1)
+/// skews the ramp; at 0 it is Live's gentle S (fitted to hh-cips-fades).
+pub fn fade_gain(x: f64, c: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0).powf((-2.0 * c.clamp(-1.0, 1.0) as f64).exp2());
+    let (a, b) = (x.powf(1.5), (1.0 - x).powf(1.5));
+    if a + b <= 0.0 { 1.0 } else { (a / (a + b)) as f32 }
 }
 
 impl Default for WarpSetup {
@@ -106,6 +119,10 @@ impl Default for WarpSetup {
             fade: true,
             gain_env: Vec::new(),
             transpose_env: Vec::new(),
+            fade_in: 0.0,
+            fade_out: 0.0,
+            fade_in_curve: 0.0,
+            fade_out_curve: 0.0,
         }
     }
 }

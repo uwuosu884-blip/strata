@@ -32,7 +32,6 @@ const ARR_GRID_MAX: f64 = 1.0;
 /// Legs of the isosceles right triangles marking loop / selection edges.
 const MARK: f32 = 6.0;
 /// Clip outline and title/body divider.
-const CLIP_EDGE: Color32 = Color32::from_gray(0x1c);
 const TITLE_H: f32 = 14.0;
 const INDENT: f32 = 9.0;
 
@@ -685,10 +684,94 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
                 ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Resize { orig: Box::new(a), left, fpb, total }));
             }
         }
+        if !collapsed && matches!(app.project.tracks[t].arrangement[i].clip.content, ClipContent::Audio { .. }) {
+            fade_handles(app, ui, g, r, vis, t, i);
+        }
         if tr.secondary_clicked() && !app.arr_sel.contains(&id) {
             app.select_arr_clip(id, false);
         }
         super::menu::context(&tr, super::menu::W_CLIP, |ui| selection_menu(app, ui));
+    }
+}
+
+/// Live fade handles: while the pointer is over an audio clip, small squares
+/// sit at the top of the body where each fade ends (drag sideways = length) and
+/// a dot on each fade curve (drag up/down = curvature, Curve cursor).
+fn fade_handles(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, r: Rect, vis: Rect, t: usize, i: usize) {
+    let clip = &app.project.tracks[t].arrangement[i].clip;
+    let id = clip.id;
+    let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max);
+    if body.height() < 8.0 || r.width() < 12.0 {
+        return;
+    }
+    let (fi, fo, ci, co) = clip_fades(clip);
+    let len = clip.length;
+    let zoom = g.zoom as f32;
+    let xin = (body.min.x + fi as f32 * zoom).round();
+    let xout = (body.max.x - fo as f32 * zoom).round();
+    let curve_pt = |x0: f32, w: f32, c: f32, left: bool| {
+        let gm = daw_engine::fade_gain(0.5, c);
+        pos2(if left { x0 + w * 0.5 } else { x0 - w * 0.5 }, body.max.y - gm * body.height())
+    };
+    // 0 = fade-in length, 1 = fade-out length, 2 = in curve, 3 = out curve.
+    let handles = [
+        Rect::from_center_size(pos2(xin + 2.5, body.min.y + 2.5), vec2(9.0, 9.0)),
+        Rect::from_center_size(pos2(xout - 2.5, body.min.y + 2.5), vec2(9.0, 9.0)),
+        Rect::from_center_size(curve_pt(body.min.x, fi as f32 * zoom, ci, true), vec2(9.0, 9.0)),
+        Rect::from_center_size(curve_pt(body.max.x, fo as f32 * zoom, co, false), vec2(9.0, 9.0)),
+    ];
+    let gid = ui.scope_id().with(("fade_drag", id));
+    let active: Option<(usize, f64, f32)> = ui.data(|d| d.get_temp(gid));
+    let hover = ui.rect_contains_pointer(r.intersect(vis)) || active.is_some();
+    if !hover {
+        return;
+    }
+    let p = ui.painter_at(vis);
+    let edge = clip_edge(clip, app.arr_sel.contains(&id));
+    for (k, h) in handles.iter().enumerate() {
+        let shown = k < 2 || (k == 2 && fi > 0.0) || (k == 3 && fo > 0.0);
+        if !shown {
+            continue;
+        }
+        let resp = ui.interact(h.intersect(vis), ui.scope_id().with(("fade_h", id, k)), Sense::drag());
+        let hot = resp.hovered() || active.is_some_and(|a| a.0 == k);
+        if k < 2 {
+            let sq = Rect::from_center_size(h.center(), vec2(5.0, 5.0));
+            p.rect_filled(sq, CornerRadius::ZERO, if hot { Color32::WHITE } else { gray(0xd0) });
+            p.rect_stroke(sq, CornerRadius::ZERO, Stroke::new(1.0, edge), egui::StrokeKind::Outside);
+        } else {
+            p.circle_filled(h.center(), 2.5, if hot { Color32::WHITE } else { gray(0xd0) });
+            p.circle_stroke(h.center(), 2.5, Stroke::new(1.0, edge));
+        }
+        if hot {
+            super::cursors::set(ui.ctx(), if k < 2 { Cur::ResizeLeftRight } else { Cur::Curve });
+        }
+        if resp.drag_started() {
+            app.begin_gesture();
+            let (v, c) = match k {
+                0 => (fi, ci),
+                1 => (fo, co),
+                2 => (fi, ci),
+                _ => (fo, co),
+            };
+            ui.data_mut(|d| d.insert_temp(gid, (k, v, c)));
+        }
+        if resp.dragged()
+            && let Some((k, _, _)) = active
+        {
+            let d = ui.input(|inp| inp.pointer.delta());
+            let a = &mut app.project.tracks[t].arrangement[i].clip.audio;
+            match k {
+                0 => a.fade_in = (a.fade_in + (d.x / zoom) as f64).clamp(0.0, (len - a.fade_out).max(0.0)),
+                1 => a.fade_out = (a.fade_out - (d.x / zoom) as f64).clamp(0.0, (len - a.fade_in).max(0.0)),
+                2 => a.fade_in_curve = (a.fade_in_curve - d.y * 0.01).clamp(-1.0, 1.0),
+                _ => a.fade_out_curve = (a.fade_out_curve - d.y * 0.01).clamp(-1.0, 1.0),
+            }
+            app.needs_compile = true;
+        }
+        if resp.drag_stopped() {
+            ui.data_mut(|d| d.remove::<(usize, f64, f32)>(gid));
+        }
     }
 }
 
@@ -1250,8 +1333,12 @@ fn selection_menu(app: &mut DawApp, ui: &mut egui::Ui) {
         app.zoom_back_from_selection();
     }
     sep(ui);
-    item(ui, "Create Fade", "Ctrl+Alt+F", false);
-    item(ui, "Reset Fades", "Ctrl+Alt+BS", false);
+    if item(ui, "Create Fade", "Ctrl+Alt+F", app.can_create_fade()) {
+        app.create_fade();
+    }
+    if item(ui, "Reset Fades", "Ctrl+Alt+BS", has_ts || has_clip) {
+        app.reset_fades();
+    }
     let loop_label = if has_ts || has_clip {
         "Loop Selection"
     } else if app.project.loop_enabled {
@@ -1618,8 +1705,77 @@ pub fn draw_clip(
     collapsed: bool,
 ) {
     draw_clip_fill(p, r, clip, selected, sample, zoom, tempo, collapsed);
-    // 1 px dark-grey outline on top of everything (contents may touch the edges).
-    p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, CLIP_EDGE), egui::StrokeKind::Inside);
+    // hh-cips-fades: 1 px top + left edge in the darkened fill colour (×0.53);
+    // the right / bottom run straight into the lane.
+    let e = clip_edge(clip, selected);
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 1.0)), CornerRadius::ZERO, e);
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 1.0, r.max.y)), CornerRadius::ZERO, e);
+}
+
+fn clip_fill(clip: &Clip, selected: bool) -> Color32 {
+    if selected {
+        SEL_BLUE
+    } else if clip.muted {
+        disabled(rgb(clip.color))
+    } else {
+        rgb(clip.color)
+    }
+}
+
+fn clip_edge(clip: &Clip, selected: bool) -> Color32 {
+    shade(clip_fill(clip, selected), 0.53)
+}
+
+/// Arrangement fades of an audio clip: (in, out, in curve, out curve), beats.
+pub fn clip_fades(clip: &Clip) -> (f64, f64, f32, f32) {
+    match clip.content {
+        ClipContent::Audio { .. } => {
+            let a = &clip.audio;
+            let fi = a.fade_in.clamp(0.0, clip.length);
+            (fi, a.fade_out.clamp(0.0, clip.length - fi), a.fade_in_curve, a.fade_out_curve)
+        }
+        _ => (0.0, 0.0, 0.0, 0.0),
+    }
+}
+
+/// Shade the part of `body` above the fade curve (fade-in from the left edge,
+/// fade-out from the right), ×0.85 of the fill like Live.
+fn paint_fades(p: &egui::Painter, body: Rect, clip: &Clip, zoom: f64, fill: Color32) {
+    let (fi, fo, ci, co) = clip_fades(clip);
+    let col = shade(fill, 0.85);
+    let h = body.height();
+    let mut mesh = egui::Mesh::default();
+    let column = |mesh: &mut egui::Mesh, x: f32, g: f32| {
+        let i = mesh.vertices.len() as u32;
+        let y = body.max.y - g * h;
+        mesh.colored_vertex(pos2(x, body.min.y), col);
+        mesh.colored_vertex(pos2(x, y), col);
+        if i >= 2 {
+            mesh.add_triangle(i - 2, i - 1, i);
+            mesh.add_triangle(i - 1, i, i + 1);
+        }
+    };
+    let clip_r = p.clip_rect();
+    for (len, curve, left) in [(fi, ci, true), (fo, co, false)] {
+        let w = (len * zoom) as f32;
+        if w < 1.0 {
+            continue;
+        }
+        let steps = (w.ceil() as usize).clamp(2, 512);
+        for k in 0..=steps {
+            let f = k as f32 / steps as f32;
+            let (x, g) = if left {
+                (body.min.x + f * w, daw_engine::fade_gain(f as f64, curve))
+            } else {
+                (body.max.x - w + f * w, daw_engine::fade_gain(1.0 - f as f64, curve))
+            };
+            if x < clip_r.min.x - 1.0 || x > clip_r.max.x + 1.0 {
+                continue;
+            }
+            column(&mut mesh, x, g);
+        }
+        p.add(std::mem::take(&mut mesh));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1635,9 +1791,11 @@ fn draw_clip_fill(
 ) {
     // Live 12: coloured title + body with dark contents; selected = the body turns
     // light blue, the title keeps the clip colour. 1 px dark-grey outline and divider.
+    // hh-cips-fades: title and body share the clip colour; selection turns the
+    // body light blue. Contents are near-black (#18) on any colour.
     let c = if clip.muted { disabled(rgb(clip.color)) } else { rgb(clip.color) };
     let (title_bg, title_fg) = (c, text_on(c));
-    let body_bg = if selected { SEL_BLUE } else { shade(c, 0.9) };
+    let body_bg = clip_fill(clip, selected);
     if collapsed {
         p.rect_filled(r, CornerRadius::ZERO, title_bg);
         p.with_clip_rect(r.intersect(p.clip_rect())).text(
@@ -1653,7 +1811,7 @@ fn draw_clip_fill(
     let title = Rect::from_min_size(r.min, vec2(r.width(), 15.0_f32.min(r.height())));
     p.rect_filled(title, CornerRadius::ZERO, title_bg);
     if r.height() > title.height() + 1.0 {
-        p.rect_filled(Rect::from_min_max(pos2(r.min.x, title.max.y), pos2(r.max.x, title.max.y + 1.0)), CornerRadius::ZERO, CLIP_EDGE);
+        p.rect_filled(Rect::from_min_max(pos2(r.min.x, title.max.y), pos2(r.max.x, title.max.y + 1.0)), CornerRadius::ZERO, shade(c, 0.53));
     }
     p.with_clip_rect(title.intersect(p.clip_rect())).text(
         title.left_center() + vec2(3.0, 0.0),
@@ -1662,12 +1820,13 @@ fn draw_clip_fill(
         font(FS),
         title_fg,
     );
-    let body = Rect::from_min_max(pos2(r.min.x, title.max.y + 1.0), pos2(r.max.x, r.max.y - 1.0));
+    let body = Rect::from_min_max(pos2(r.min.x, title.max.y + 1.0), r.max);
     let visible = body.intersect(p.clip_rect());
     if visible.width() <= 0.0 {
         return;
     }
-    let ink = if selected { Color32::from_gray(0x22) } else { shade(c, 0.28) };
+    let ink = Color32::from_gray(0x18);
+    paint_fades(&p.with_clip_rect(visible), body, clip, zoom, body_bg);
     match &clip.content {
         ClipContent::Midi { notes } => {
             if notes.is_empty() {

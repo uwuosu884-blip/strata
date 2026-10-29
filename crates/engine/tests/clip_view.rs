@@ -167,3 +167,29 @@ fn warp_modes_keep_or_change_pitch() {
         assert!((f - expect).abs() < expect * 0.04, "{mode:?}: {f} Hz, want {expect}");
     }
 }
+
+#[test]
+fn arrangement_fades_shape_the_clip() {
+    // 4-beat sine clip at 120 BPM (0.5 s per beat): fade in 1 beat, fade out 1 beat.
+    let mut c = sine_clip(StretchMode::RePitch, 1.0);
+    if let ClipContent::Audio(a) = &mut c.content {
+        a.warp.fade_in = 1.0;
+        a.warp.fade_out = 1.0;
+    }
+    let (mut e, mut h) = engine();
+    let t = SongTrack { arrangement: vec![ArrangementClip { start: 0.0, clip: c }], ..audio_track(0, midi_clip(1.0, &[])) };
+    h.set_song(Song::new(vec![t])).unwrap();
+    send_all(&mut h, &[Command::SetTempo(120.0), Command::Play]);
+    let out = left(&render(&mut e, 96_000, 480));
+    let peak = |a: usize, b: usize| out[a..b].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    // Beat = 24 000 samples. Start of the fade is near silent, the middle is full.
+    assert!(peak(0, 1_200) < 0.05, "fade-in start {}", peak(0, 1_200));
+    assert!(peak(9_000, 15_000) > 0.1 && peak(9_000, 15_000) < 0.4, "fade-in middle {}", peak(9_000, 15_000));
+    assert!(peak(30_000, 60_000) > 0.45, "body {}", peak(30_000, 60_000));
+    assert!(peak(94_000, 96_000) < 0.05, "fade-out end {}", peak(94_000, 96_000));
+    // Shape: 0 → 1, S-shaped, curvature skews it.
+    assert_eq!(fade_gain(0.0, 0.0), 0.0);
+    assert_eq!(fade_gain(1.0, 0.0), 1.0);
+    assert!((fade_gain(0.5, 0.0) - 0.5).abs() < 1e-6);
+    assert!(fade_gain(0.3, 0.8) > fade_gain(0.3, 0.0) && fade_gain(0.3, -0.8) < fade_gain(0.3, 0.0));
+}

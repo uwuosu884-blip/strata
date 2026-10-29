@@ -366,6 +366,66 @@ impl DawApp {
 
     // ----- commands -------------------------------------------------------------
 
+    /// Audio clips a time selection touches: (track, index, covers start, covers end).
+    fn fade_targets(&self, ts: &TimeSel) -> Vec<(usize, usize, bool, bool)> {
+        let mut v = Vec::new();
+        for t in self.time_sel_tracks(ts) {
+            for (i, a) in self.project.tracks[t].arrangement.iter().enumerate() {
+                let (s, e) = (a.start, a.start + a.clip.length);
+                if matches!(a.clip.content, ClipContent::Audio { .. }) && ts.start < e - EPS && ts.end > s + EPS {
+                    v.push((t, i, ts.start <= s + EPS, ts.end >= e - EPS));
+                }
+            }
+        }
+        v
+    }
+
+    /// Ctrl+Alt+F availability: a time selection touching an audio clip's edge.
+    pub fn can_create_fade(&self) -> bool {
+        self.time_sel.is_some_and(|ts| self.fade_targets(&ts).iter().any(|&(_, _, a, b)| a != b))
+    }
+
+    /// Ctrl+Alt+F: a time selection over a clip's start becomes its fade-in,
+    /// over its end its fade-out (Live).
+    pub fn create_fade(&mut self) {
+        let Some(ts) = self.time_sel else { return };
+        let targets = self.fade_targets(&ts);
+        if !targets.iter().any(|&(_, _, a, b)| a != b) {
+            self.toast("Select a range at a clip's start or end to create a fade");
+            return;
+        }
+        self.edit(|p| {
+            for (t, i, at_start, at_end) in targets {
+                let a = &mut p.tracks[t].arrangement[i];
+                let len = a.clip.length;
+                let fx = &mut a.clip.audio;
+                if at_start && !at_end {
+                    fx.fade_in = (ts.end - a.start).clamp(0.0, len - fx.fade_out.min(len));
+                } else if at_end && !at_start {
+                    fx.fade_out = (a.start + len - ts.start).clamp(0.0, len - fx.fade_in.min(len));
+                }
+            }
+        });
+    }
+
+    /// Ctrl+Alt+Backspace: remove the fades of the selected clips (or the clips
+    /// in the time selection).
+    pub fn reset_fades(&mut self) {
+        let mut ids: Vec<(usize, usize)> = self.arr_sel.iter().filter_map(|&id| self.project.find_arrangement_clip(id)).collect();
+        if let Some(ts) = self.time_sel {
+            ids.extend(self.fade_targets(&ts).into_iter().map(|(t, i, _, _)| (t, i)));
+        }
+        if ids.is_empty() {
+            return;
+        }
+        self.edit(|p| {
+            for (t, i) in ids {
+                let fx = &mut p.tracks[t].arrangement[i].clip.audio;
+                (fx.fade_in, fx.fade_out, fx.fade_in_curve, fx.fade_out_curve) = (0.0, 0.0, 0.0, 0.0);
+            }
+        });
+    }
+
     /// Ctrl+L: loop the time selection (or the selected clips) and enable the loop.
     pub fn loop_selection(&mut self) {
         let range = match self.time_sel {
@@ -1143,6 +1203,41 @@ mod app_tests {
             a.project.add_track(TrackKind::Midi);
         }
         a
+    }
+
+    #[test]
+    fn fades_from_time_selection_reset_and_split() {
+        use super::TimeSel;
+        let mut a = tracks(1);
+        a.project.tracks[0].kind = TrackKind::Audio;
+        let id = a.project.alloc_id();
+        let c = Clip {
+            id,
+            length: 8.0,
+            content: ClipContent::Audio { sample: "factory:Kick".into(), offset_frames: 0.0, warp_bpm: Some(120.0), gain_db: 0.0 },
+            ..Default::default()
+        };
+        a.project.tracks[0].arrangement.push(ArrangementClip { start: 4.0, clip: c });
+        a.time_sel = Some(TimeSel::new(2.0, 5.5, 0, 0));
+        assert!(a.can_create_fade());
+        a.create_fade();
+        a.time_sel = Some(TimeSel::new(10.0, 13.0, 0, 0));
+        a.create_fade();
+        let fx = |a: &DawApp| a.project.tracks[0].arrangement[0].clip.audio.clone();
+        assert_eq!((fx(&a).fade_in, fx(&a).fade_out), (1.5, 2.0));
+        // Inside only: no fade possible.
+        a.time_sel = Some(TimeSel::new(6.0, 7.0, 0, 0));
+        assert!(!a.can_create_fade());
+        // Split keeps the fades at the outer edges.
+        let fpb = a.fpb_fn();
+        let tail = a.project.split_arrangement_clip(0, id, 8.0, fpb).unwrap();
+        let arr = &a.project.tracks[0].arrangement;
+        assert_eq!((arr[0].clip.audio.fade_in, arr[0].clip.audio.fade_out), (1.5, 0.0));
+        assert_eq!((arr[1].clip.id, arr[1].clip.audio.fade_in, arr[1].clip.audio.fade_out), (tail, 0.0, 2.0));
+        a.time_sel = None;
+        a.arr_sel = vec![id, tail].into_iter().collect();
+        a.reset_fades();
+        assert!(a.project.tracks[0].arrangement.iter().all(|c| c.clip.audio.fade_in == 0.0 && c.clip.audio.fade_out == 0.0));
     }
 
     #[test]

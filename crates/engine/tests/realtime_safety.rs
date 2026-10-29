@@ -32,6 +32,9 @@ fn big_song(variant: usize) -> Song {
         transpose: 3.0,
         gain_env: vec![(0.0, 1.0), (2.0, 0.2)],
         transpose_env: vec![(0.0, 0.0), (1.0, -5.0)],
+        fade_in: 0.25,
+        fade_out: 0.5,
+        fade_in_curve: 0.4,
         ..Default::default()
     };
     let mut audio = Clip::new(

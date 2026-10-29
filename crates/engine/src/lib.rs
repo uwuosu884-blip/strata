@@ -31,7 +31,7 @@ pub use instruments::synth::{SynthParams, Wave};
 pub use sample::{PEAK_BLOCK, SampleBuffer};
 pub use song::{
     ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_TRACKS, MIDI_ALL_INS,
-    MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup,
+    MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup, fade_gain,
 };
 pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};

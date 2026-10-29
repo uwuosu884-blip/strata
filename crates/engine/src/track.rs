@@ -424,9 +424,21 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
             let loop_len = clip.loop_end - clip.loop_start;
             let fade = w.fade;
             // Distance (samples) to the nearest discontinuity: clip edges and loop wraps.
+            // User fades (arrangement), relative to the clip's own edges.
+            let user_fade = |local: f64| -> f32 {
+                let mut g = 1.0;
+                if w.fade_in > 0.0 && local < w.fade_in {
+                    g *= crate::song::fade_gain(local / w.fade_in, w.fade_in_curve);
+                }
+                if w.fade_out > 0.0 && lim.is_finite() && lim - local < w.fade_out {
+                    g *= crate::song::fade_gain((lim - local) / w.fade_out, w.fade_out_curve);
+                }
+                g
+            };
             let edge_gain = |local: f64| -> f32 {
+                let uf = user_fade(local);
                 if !fade {
-                    return 1.0;
+                    return uf;
                 }
                 let mut d = local.min(lim - local);
                 if clip.looping && loop_len > 1e-9 {
@@ -438,7 +450,7 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
                         d = d.min(clip.loop_end - u);
                     }
                 }
-                ramp(d / ctx.bps)
+                ramp(d / ctx.bps) * uf
             };
             let gain_at = |c: f64| -> f32 { if w.gain_env.is_empty() { a.gain } else { a.gain * NoteMpe::eval(&w.gain_env, c, 1.0) } };
             let local0 = ctx.beat0 + first as f64 * ctx.bps - origin;

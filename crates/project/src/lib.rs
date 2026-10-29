@@ -1131,8 +1131,13 @@ impl Project {
         if let (false, ClipContent::Midi { notes }) = (a.clip.has_loop(), &mut a.clip.content) {
             notes.retain(|n| n.start >= s0 && n.start < s0 + cut);
         }
+        // Fades stay at the outer edges: the head keeps the fade-in, the tail the fade-out.
+        a.clip.audio.fade_out = 0.0;
+        a.clip.audio.fade_in = a.clip.audio.fade_in.min(cut);
+        tail.clip.audio.fade_in = 0.0;
         tail.start = at;
         tail.clip.length -= cut;
+        tail.clip.audio.fade_out = tail.clip.audio.fade_out.min(tail.clip.length);
         tail.clip.id = new_id;
         let fpb = frames_per_beat(&tail.clip);
         tail.clip.cut_front(cut, fpb);

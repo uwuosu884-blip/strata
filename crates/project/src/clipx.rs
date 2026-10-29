@@ -118,6 +118,12 @@ pub struct AudioProps {
     pub lead: bool,
     /// User-edited transients (sample frames); None = detected.
     pub transients: Option<Vec<f64>>,
+    /// Arrangement fades (Live: drag the clip's top corners): lengths in beats
+    /// from the clip start / end, curvature −1..1 (0 = Live's default S-curve).
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub fade_in_curve: f32,
+    pub fade_out_curve: f32,
 }
 
 impl Default for AudioProps {
@@ -133,6 +139,10 @@ impl Default for AudioProps {
             ram: false,
             lead: false,
             transients: None,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            fade_in_curve: 0.0,
+            fade_out_curve: 0.0,
         }
     }
 }
