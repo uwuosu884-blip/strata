@@ -92,6 +92,11 @@ pub struct ClipView {
     /// Library groove picked in the chooser (added to the pool next frame).
     pub pending_groove: Option<clipx::Groove>,
     pub show_pool: bool,
+    /// Audio Pitch knob selected: Up/Down = ±1 st, Shift = ±12 (queued by the shortcuts).
+    pub pitch_focus: bool,
+    pub pitch_nudge: i32,
+    /// The knob was drawn since the last shortcuts pass.
+    pub pitch_drawn: bool,
 }
 
 impl Default for ClipView {
@@ -122,6 +127,9 @@ impl Default for ClipView {
             fold: false,
             pending_groove: None,
             show_pool: false,
+            pitch_focus: false,
+            pitch_nudge: 0,
+            pitch_drawn: false,
         }
     }
 }
@@ -1086,7 +1094,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let p = ui.painter_at(rect);
     p.rect_filled(rect, CornerRadius::ZERO, gray(0x39));
-    let ClipContent::Audio { sample, warp_bpm, .. } = &clip.content else { return };
+    let ClipContent::Audio { sample, warp_bpm, gain_db, .. } = &clip.content else { return };
     let Some(buf) = app.cache.peek(sample).cloned() else {
         let msg = app.cache.error(sample).map_or("Loading…".to_string(), |e| format!("Missing sample: {e}"));
         p.text(rect.center(), Align2::CENTER_CENTER, msg, super::theme::font(11.0), Color32::GRAY);
@@ -1246,39 +1254,13 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         }
         b += grid;
     }
-    // Waveform: per column, min/max of the peak blocks its beat span covers.
-    let col = gray(0x1a); // Live: dark waveform on the light editor
-    let mid = wave.center().y;
-    let half = wave.height() * 0.45;
-    let pk = &buf.peaks;
-    let mut x = wave.min.x;
-    while x < wave.max.x {
-        let (f0, f1) = (map.frame_at(beat_at(x)), map.frame_at(beat_at(x + 1.0)));
-        if f1 > 0.0 && f0 < total {
-            let block = daw_engine::PEAK_BLOCK as f64;
-            let (mut lo, mut hi) = (0.0f32, 0.0f32);
-            if f1 - f0 < block * 2.0 {
-                // Zoomed in: raw samples (peak blocks would draw as steps).
-                let a = (f0.max(0.0) as usize).min(buf.len() - 1);
-                let b = (f1.min(total).ceil() as usize).clamp(a + 1, buf.len());
-                for &v in &buf.left[a..b] {
-                    lo = lo.min(v);
-                    hi = hi.max(v);
-                }
-            } else {
-                let i0 = (f0.max(0.0) / block) as usize;
-                let i1 = ((f1.min(total) / block) as usize).max(i0 + 1).min(pk.len());
-                let step = ((i1 - i0) / 64).max(1);
-                let mut i = i0;
-                while i < i1 {
-                    lo = lo.min(pk[i].0);
-                    hi = hi.max(pk[i].1);
-                    i += step;
-                }
-            }
-            p.line_segment([pos2(x, mid - hi * half), pos2(x, mid - lo * half)], Stroke::new(1.0, col));
-        }
-        x += 1.0;
+    // Waveform (gain-scaled, cut at the editor).
+    {
+        let col = gray(0x1a); // Live: dark waveform on the light editor
+        let body = wave.shrink2(vec2(0.0, wave.height() * 0.05));
+        let fx = |x: f32| Some(map.frame_at(beat_at(x)));
+        let src = super::wave::Source::of(&buf);
+        super::wave::draw(&p.with_clip_rect(wave.intersect(p.clip_rect())), body, wave, &src, &fx, daw_project::db_to_gain(*gain_db), col);
     }
     // Outside the markers: dimmed.
     for (a, z) in [(f64::NEG_INFINITY, w0), (w1, f64::INFINITY)] {

@@ -947,11 +947,24 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     // Pitch: knob (semitones) + st / ct boxes.
     p.text(o + vec2(134.0, 131.0), Align2::CENTER_CENTER, "Pitch", font(FS), text());
     let kc = o + vec2(134.0, 150.0);
-    let st = c.audio.transpose as f32;
     let pitch_ok = c.audio.mode != WarpMode::RePitch || !warped;
     // Same design as the mixer pan knob (bipolar: ±48 st).
     let kresp = ui.interact(Rect::from_center_size(kc, vec2(28.0, 28.0)), ui.make_persistent_id("cv_pitch"), Sense::click_and_drag());
-    super::widgets::knob_paint(&p, kc, 12.0, st / 48.0, kresp.hovered() || kresp.dragged(), true);
+    // Click selects the knob (arrow keys then step it); a press elsewhere deselects.
+    app.cv.pitch_drawn = true;
+    if kresp.is_pointer_button_down_on() {
+        app.cv.pitch_focus = true;
+    } else if ui.input(|i| i.pointer.any_pressed()) {
+        app.cv.pitch_focus = false;
+    }
+    let nudge = std::mem::take(&mut app.cv.pitch_nudge);
+    if pitch_ok && nudge != 0 {
+        c.audio.transpose = (c.audio.transpose + nudge).clamp(-48, 48) as _;
+        ed.gesture = true;
+        ed.changed = true;
+    }
+    let st = c.audio.transpose as f32;
+    super::widgets::knob_paint(&p, kc, 12.0, st / 48.0, kresp.hovered() || kresp.dragged() || app.cv.pitch_focus, true);
     if pitch_ok && kresp.drag_started() {
         ed.gesture = true;
     }

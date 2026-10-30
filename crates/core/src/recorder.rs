@@ -1,7 +1,7 @@
 //! Recorder thread: drains the engine's record rings continuously (so they
 //! never overflow) and assembles finished takes for the GUI to turn into clips.
 
-use daw_engine::{RecordEvent, RecorderPorts};
+use daw_engine::{PEAK_BLOCK, Peak, RecordEvent, RecorderPorts};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -58,6 +58,37 @@ impl Take {
     }
 }
 
+/// One lane of the take in progress, for drawing it while recording.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveLane {
+    pub track: u16,
+    pub mono: bool,
+    /// The channels differed so far (a stereo input fed mono content draws as mono).
+    pub stereo: bool,
+    /// Waveform blocks (L, R) of every complete `PEAK_BLOCK` frames so far.
+    pub wave: [Vec<Peak>; 2],
+}
+
+/// The take being recorded (or just stopped and not yet finished).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveTake {
+    pub active: bool,
+    /// Changes with every new take (GUI copies incrementally within one).
+    pub generation: u64,
+    pub start_beat: f64,
+    /// Set once stopped.
+    pub end_beat: Option<f64>,
+    pub lanes: Vec<LiveLane>,
+    /// Finished notes and held ones (`end_beat` = NaN while held).
+    pub notes: Vec<RecordedNote>,
+}
+
+impl LiveTake {
+    pub fn frames(&self) -> usize {
+        self.lanes.first().map_or(0, |l| l.wave[0].len() * PEAK_BLOCK)
+    }
+}
+
 /// A take in progress: start beat/position and lane layout.
 #[derive(Clone)]
 struct Open {
@@ -81,6 +112,10 @@ struct State {
     recording: bool,
     /// End position of the last take; audio after it belongs to the next take.
     last_stop: u64,
+    live: LiveTake,
+    /// Stream position up to which `live` has been summarised.
+    live_pos: u64,
+    live_width: usize,
 }
 
 impl State {
@@ -88,6 +123,21 @@ impl State {
         match ev {
             RecordEvent::Started { beat, pos, lanes, n_lanes, mono } => {
                 self.current = Some(Open { beat, pos, lanes: lanes[..n_lanes as usize].to_vec(), mono });
+                let generation = self.live.generation + 1;
+                self.live = LiveTake {
+                    active: true,
+                    generation,
+                    start_beat: beat,
+                    end_beat: None,
+                    lanes: lanes[..n_lanes as usize]
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &track)| LiveLane { track, mono: mono & (1 << k) != 0, stereo: false, wave: Default::default() })
+                        .collect(),
+                    notes: Vec::new(),
+                };
+                self.live_pos = pos;
+                self.live_width = n_lanes as usize * 2;
                 self.notes.clear();
                 self.open.clear();
                 self.recording = true;
@@ -101,6 +151,7 @@ impl State {
                     let mut notes = std::mem::take(&mut self.notes);
                     notes.sort_by(|a, b| a.start_beat.total_cmp(&b.start_beat));
                     self.finishing.push((open, beat, pos, notes));
+                    self.live.end_beat = Some(beat);
                     self.last_stop = self.last_stop.max(pos);
                 }
                 self.recording = false;
@@ -118,6 +169,30 @@ impl State {
                     self.notes.push(RecordedNote { track, pitch, velocity, start_beat: s, end_beat: beat.max(s), clip_pos: pos });
                 }
             }
+        }
+    }
+
+    /// Summarise newly arrived audio of the current take into `live`.
+    fn update_live(&mut self) {
+        let w = self.live_width;
+        if self.current.is_none() || w == 0 {
+            return;
+        }
+        let blk = (PEAK_BLOCK * w) as u64;
+        let mut l = vec![0.0f32; PEAK_BLOCK];
+        let mut r = vec![0.0f32; PEAK_BLOCK];
+        while self.live_pos >= self.base && self.live_pos + blk <= self.base + self.audio.len() as u64 {
+            let a = (self.live_pos - self.base) as usize;
+            let raw = &self.audio[a..a + blk as usize];
+            for (k, lane) in self.live.lanes.iter_mut().enumerate() {
+                for (i, f) in raw.chunks_exact(w).enumerate() {
+                    (l[i], r[i]) = (f[2 * k], f[2 * k + 1]);
+                }
+                lane.stereo |= !lane.mono && l != r;
+                lane.wave[0].push(Peak::of(&l));
+                lane.wave[1].push(Peak::of(&r));
+            }
+            self.live_pos += blk;
         }
     }
 
@@ -198,12 +273,47 @@ impl Recorder {
         while let Ok(ev) = ports.events.pop() {
             s.on_event(ev);
         }
+        s.update_live();
         s.finish_ready();
+        let busy = s.current.is_some() || !s.finishing.is_empty();
+        s.live.active = busy;
     }
 
     /// Finished takes since the last call.
     pub fn take_finished(&self) -> Vec<Take> {
         std::mem::take(&mut self.state.lock().unwrap().done)
+    }
+
+    /// Update `out` to the take in progress (copies only what is new).
+    pub fn live(&self, out: &mut LiveTake) {
+        let s = self.state.lock().unwrap();
+        let lv = &s.live;
+        if !lv.active {
+            out.active = false;
+            return;
+        }
+        if out.generation != lv.generation || out.lanes.len() != lv.lanes.len() {
+            *out = lv.clone();
+        } else {
+            for (o, l) in out.lanes.iter_mut().zip(&lv.lanes) {
+                o.stereo = l.stereo;
+                for c in 0..2 {
+                    let n = o.wave[c].len();
+                    o.wave[c].extend_from_slice(&l.wave[c][n.min(l.wave[c].len())..]);
+                }
+            }
+            out.active = true;
+            out.end_beat = lv.end_beat;
+        }
+        // Notes: finished ones plus those still held.
+        out.notes.clear();
+        out.notes.extend_from_slice(&s.notes);
+        for f in &s.finishing {
+            out.notes.extend_from_slice(&f.3);
+        }
+        for (&(track, pitch), &(velocity, start, clip_pos)) in &s.open {
+            out.notes.push(RecordedNote { track, pitch, velocity, start_beat: start, end_beat: f64::NAN, clip_pos });
+        }
     }
 
     pub fn is_recording(&self) -> bool {
@@ -257,6 +367,7 @@ mod tests {
         }
         let mut out = vec![0.0f32; 1024];
         let mut counter = 0.0f32;
+        let mut seen = LiveTake::default();
         for i in 0..200 {
             // Feed a ramp so we can verify continuity of the captured audio.
             let mut buf = Vec::with_capacity(1024);
@@ -277,6 +388,25 @@ mod tests {
                 _ => {}
             }
             engine.process(&mut out, 2);
+            if i == 100 {
+                // The take in progress is visible while recording.
+                std::thread::sleep(Duration::from_millis(30));
+                let mut lv = LiveTake::default();
+                rec.live(&mut lv);
+                assert!(lv.active && lv.end_beat.is_none());
+                assert_eq!(lv.lanes.len(), 2);
+                assert!(!lv.lanes[0].mono && lv.lanes[1].mono);
+                assert!(lv.lanes[0].stereo && !lv.lanes[1].stereo);
+                assert!(lv.frames() > 50 * 512 && lv.frames() <= 101 * 512, "{}", lv.frames());
+                assert!(lv.lanes[0].wave[0][1].max > 0.0 && lv.lanes[0].wave[1][1].min < 0.0);
+                assert!(lv.notes.iter().any(|n| n.pitch == 60 && n.end_beat.is_finite()));
+                assert!(lv.notes.iter().any(|n| n.pitch == 64 && n.end_beat.is_nan()), "held note");
+                let before = lv.lanes[0].wave[0].clone();
+                std::thread::sleep(Duration::from_millis(10));
+                rec.live(&mut lv);
+                assert_eq!(&lv.lanes[0].wave[0][..before.len()], &before[..], "incremental copy keeps the prefix");
+                seen = lv;
+            }
             if i % 7 == 0 {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -284,6 +414,14 @@ mod tests {
         assert!(rec.flush(Duration::from_secs(5)));
         let takes = rec.take_finished();
         assert_eq!(takes.len(), 1);
+        let mut lv = LiveTake::default();
+        rec.live(&mut lv);
+        assert!(!lv.active, "finished takes leave the live view");
+        // The preview matches the finished take.
+        let l: Vec<f32> = takes[0].lanes[0].audio.iter().step_by(2).copied().collect();
+        let fin = daw_engine::peaks_of(&l);
+        let n = seen.lanes[0].wave[0].len();
+        assert_eq!(&fin[..n], &seen.lanes[0].wave[0][..], "live blocks = finished audio");
         let t = &takes[0];
         assert_eq!(t.start_beat, 0.0);
         assert_eq!(t.lanes.len(), 2, "one lane per armed audio track");

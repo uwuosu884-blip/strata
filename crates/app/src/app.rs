@@ -210,6 +210,8 @@ pub struct DawApp {
     pub dialog_keys: Vec<eframe::egui::Key>,
     /// Session recording into (track id, scene).
     pub session_rec: Option<(u64, usize)>,
+    /// The take being recorded, drawn growing in place (Live).
+    pub live_rec: daw_core::LiveTake,
     rec_counter: u32,
     pub dialog: Option<Dialog>,
     pub message: Option<(String, Instant)>,
@@ -360,6 +362,7 @@ impl DawApp {
             device_lists: None,
             dialog_keys: Vec::new(),
             session_rec: None,
+            live_rec: Default::default(),
             rec_counter: 0,
             dialog: None,
             message: None,
@@ -580,6 +583,11 @@ impl DawApp {
         let takes = self.recorder.as_ref().map(|r| r.take_finished()).unwrap_or_default();
         for t in takes {
             self.apply_take(t);
+        }
+        if let Some(r) = &self.recorder {
+            r.live(&mut self.live_rec);
+        } else {
+            self.live_rec.active = false;
         }
         self.engine.collect_garbage();
         self.update_midi_target();
@@ -1193,6 +1201,28 @@ impl DawApp {
         key
     }
 
+    /// Frames a recording on track `i` is shifted by: "Keep Monitoring Latency"
+    /// (In/Auto) keeps the monitoring delay; resampling has none.
+    pub fn rec_latency(&self, i: usize) -> usize {
+        let Some(t) = self.project.tracks.get(i) else { return 0 };
+        if t.audio_in == daw_project::AudioIn::Resampling {
+            0
+        } else if t.keep_monitor_latency && t.monitor_mode() != Monitor::Off {
+            self.audio.info.output_latency_frames()
+        } else {
+            self.audio.info.round_trip_frames()
+        }
+    }
+
+    /// Track `i` records real audio (an external input needs an open device).
+    pub fn rec_audio_ok(&self, i: usize) -> bool {
+        self.project.tracks.get(i).is_some_and(|t| {
+            t.audio_in == daw_project::AudioIn::Resampling
+                || self.audio.info.input.is_ok()
+                || !matches!(t.audio_in, daw_project::AudioIn::Ext { .. })
+        })
+    }
+
     /// Turn a finished take into clips.
     pub fn apply_take(&mut self, mut take: Take) {
         let len = (take.end_beat - take.start_beat).max(0.0);
@@ -1208,19 +1238,8 @@ impl DawApp {
                 continue;
             }
             let Some(lane) = rts[i].and_then(|rt| take.lanes.iter_mut().find(|l| l.track == rt)) else { continue };
-            let keep = t.keep_monitor_latency && t.monitor_mode() != Monitor::Off;
-            let resampling = t.audio_in == daw_project::AudioIn::Resampling;
-            let latency = if resampling {
-                0 // internal: no device latency
-            } else if keep {
-                self.audio.info.output_latency_frames()
-            } else {
-                self.audio.info.round_trip_frames()
-            };
-            lane.compensate_latency(latency);
-            if !lane.audio.is_empty()
-                && (resampling || self.audio.info.input.is_ok() || !matches!(t.audio_in, daw_project::AudioIn::Ext { .. }))
-            {
+            lane.compensate_latency(self.rec_latency(i));
+            if !lane.audio.is_empty() && self.rec_audio_ok(i) {
                 audio_keys[i] = Some(String::new());
             }
         }

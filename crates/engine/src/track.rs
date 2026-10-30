@@ -53,6 +53,11 @@ pub(crate) struct FwdEvent {
 
 /// Timing of the segment being rendered.
 pub(crate) struct SegCtx {
+    /// Transport beat where this segment's note window ends at the latest
+    /// (the arrangement loop end; ∞ otherwise).
+    pub cap: f64,
+    /// Clip-audio de-click ramp: (gain at sample 0, change per sample).
+    pub fade: (f32, f32),
     pub beat0: f64,
     pub bps: f64,
     pub n: usize,
@@ -255,6 +260,15 @@ impl TrackRt {
             }
         }
         let ClipOut { l, r, events, n_events, exprs, n_expr, .. } = out;
+        // Play / stop / jump de-click on the clip audio (before the instrument).
+        if covered && ctx.fade != (1.0, 0.0) {
+            let (g0, dg) = ctx.fade;
+            for i in 0..n {
+                let g = (g0 + dg * i as f32).clamp(0.0, 1.0);
+                l[i] *= g;
+                r[i] *= g;
+            }
+        }
         let exprs: &[Expr; MAX_EXPR] = exprs;
         let _ = n_expr;
         // Clip envelopes → mixer / controllers (block rate).
@@ -515,7 +529,7 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
             let u0 = clip.start + (ctx.beat0 - origin);
             let u1 = u0 + n as f64 * ctx.bps;
             let lo_u = u0.max(clip.start) - EPS;
-            let hi_u = (u1 - EPS).min(clip.start + lim - EPS);
+            let hi_u = (u1 - EPS).min(clip.start + lim - EPS).min(clip.start + (ctx.cap - origin) - EPS);
             if hi_u <= lo_u {
                 return true;
             }

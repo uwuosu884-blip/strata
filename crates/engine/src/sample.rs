@@ -5,8 +5,10 @@ pub struct SampleBuffer {
     pub sample_rate: u32,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
-    /// Min/max of the mono mix per `PEAK_BLOCK` frames, for waveform drawing.
-    pub peaks: Vec<(f32, f32)>,
+    /// The channels differ (a mono file / mono recording has L == R).
+    pub stereo: bool,
+    /// Waveform summary per channel (L, R): one [`Peak`] per `PEAK_BLOCK` frames.
+    pub wave: [Vec<Peak>; 2],
     /// Detected transients (frames, ascending) — Beats-mode segments and
     /// warp-marker suggestions.
     pub transients: Vec<f64>,
@@ -14,21 +16,48 @@ pub struct SampleBuffer {
 
 pub const PEAK_BLOCK: usize = 256;
 
+/// Min / max / mean square of a run of samples (waveform drawing).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Peak {
+    pub min: f32,
+    pub max: f32,
+    pub ms: f32,
+}
+
+impl Peak {
+    pub fn of(samples: &[f32]) -> Self {
+        let (mut min, mut max, mut sq) = (0.0f32, 0.0f32, 0.0f32);
+        for &v in samples {
+            min = min.min(v);
+            max = max.max(v);
+            sq += v * v;
+        }
+        Self { min, max, ms: if samples.is_empty() { 0.0 } else { sq / samples.len() as f32 } }
+    }
+
+    /// Union of two summaries (`n` = sample counts, for the mean square).
+    pub fn merge(self, o: Peak, n: f32, m: f32) -> Self {
+        Self { min: self.min.min(o.min), max: self.max.max(o.max), ms: (self.ms * n + o.ms * m) / (n + m).max(1.0) }
+    }
+}
+
+/// Per-block summaries of one channel.
+pub fn peaks_of(ch: &[f32]) -> Vec<Peak> {
+    ch.chunks(PEAK_BLOCK).map(Peak::of).collect()
+}
+
 impl SampleBuffer {
     pub fn new(name: impl Into<String>, sample_rate: u32, left: Vec<f32>, right: Vec<f32>) -> Self {
         assert_eq!(left.len(), right.len(), "channel length mismatch");
-        let peaks = left
-            .chunks(PEAK_BLOCK)
-            .zip(right.chunks(PEAK_BLOCK))
-            .map(|(l, r)| {
-                l.iter().zip(r).fold((0.0f32, 0.0f32), |(lo, hi), (a, b)| {
-                    let m = 0.5 * (a + b);
-                    (lo.min(m), hi.max(m))
-                })
-            })
-            .collect();
+        let stereo = left != right;
+        let wave = [peaks_of(&left), if stereo { peaks_of(&right) } else { Vec::new() }];
         let transients = detect_transients(&left, &right, sample_rate);
-        Self { name: name.into(), sample_rate, left, right, peaks, transients }
+        Self { name: name.into(), sample_rate, left, right, stereo, wave, transients }
+    }
+
+    /// Waveform blocks of channel `ch` (mono buffers share L).
+    pub fn wave_ch(&self, ch: usize) -> &[Peak] {
+        if self.stereo && ch == 1 { &self.wave[1] } else { &self.wave[0] }
     }
 
     pub fn mono(name: impl Into<String>, sample_rate: u32, data: Vec<f32>) -> Self {
@@ -97,8 +126,11 @@ mod tests {
     #[test]
     fn peaks_cover_buffer() {
         let s = SampleBuffer::mono("t", 48_000, vec![0.5; PEAK_BLOCK * 3 + 1]);
-        assert_eq!(s.peaks.len(), 4);
-        assert_eq!(s.peaks[0], (0.0, 0.5));
+        assert!(!s.stereo);
+        assert_eq!(s.wave_ch(1).len(), 4);
+        assert_eq!(s.wave[0][0], Peak { min: 0.0, max: 0.5, ms: 0.25 });
+        let st = SampleBuffer::new("s", 48_000, vec![0.5; 10], vec![-0.5; 10]);
+        assert!(st.stereo && st.wave_ch(1)[0].min == -0.5);
     }
 }
 

@@ -144,3 +144,19 @@ fn removing_a_track_from_the_song_silences_it() {
     // set_song() already freed the first old song; the second comes back now.
     assert_eq!(h.collect_garbage(), 1, "old songs come back for deallocation");
 }
+
+/// Loop start on a clip's first note with a loop length that isn't a whole
+/// number of samples: the wrap must not skip that note on later passes, nor
+/// fire a note sitting exactly on the loop end.
+#[test]
+fn arrangement_loop_replays_note_on_loop_start() {
+    let (mut e, mut h) = engine();
+    let mut t = track(0, vec![]);
+    let (a, b) = (1.0, 2.000_013);
+    t.arrangement = vec![ArrangementClip { start: a, clip: midi_clip(4.0, &[0.0, b - a]) }];
+    h.set_song(Song::new(vec![t])).unwrap();
+    send_all(&mut h, &[Command::SetLoop { enabled: true, start: a, end: b }, Command::SetPosition(a), Command::Play]);
+    let out = left(&render(&mut e, SPB * 5, 256));
+    // 5 beats of a ~1 beat loop: 5 passes (the last one starts at ~4.99996).
+    assert_eq!(nonzero(&out).len(), 5, "first note must play on every pass: {:?}", nonzero(&out));
+}

@@ -10,6 +10,34 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.7] - 2026-10-30
+
+### Added
+- **Waveform styles** (temporary chooser in Settings > Theme & Colors >
+  Waveform): 1 Min/Max Lines (old look), 2 Min/Max Filled (anti-aliased shape,
+  default), 3 Peak + RMS (Audacity), 4 RMS, 5 Mirrored Peak, 6 Min/Max dB.
+  The unchosen styles will be removed in the next version.
+- Stereo samples draw as two lanes (L above R) when the clip is tall enough;
+  mono samples (L == R) as one. Sample blocks now keep per-channel min / max /
+  mean square; far zoomed in, the samples are joined by a line.
+- **Recording shows live**: arrangement takes appear at the playhead and grow
+  while recording (audio waveform and MIDI notes, held notes stretch); a slot
+  being recorded into shows as the clip being made.
+- Pitch knob (audio Clip View): click selects it, Up/Down = ±1 st,
+  Shift+Up/Down = ±12 st; a click elsewhere deselects.
+- The Settings window and the "Save changes" dialog can be moved by their
+  title bar (position kept for the session).
+
+### Fixed
+- Clip gain now scales the drawn waveform (arrangement, Clip View sample
+  editor); what overflows is cut at the clip / lane border. Audio is unchanged.
+- Clicks when starting or stopping playback inside sounding audio: clip audio
+  fades in / out over 4 ms. A take still ends exactly where Stop was pressed.
+- Arrangement loop: a MIDI note exactly on the loop start was skipped on the
+  second and later passes (the wrap overshot the start by a fraction of a
+  sample); the wrap now restarts exactly at the loop start and notes on the
+  loop end are left to the next pass.
+
 ## [0.7.6] - 2026-10-30
 
 ### Added
@@ -636,7 +664,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/uwuosu884-blip/strata/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/uwuosu884-blip/strata/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...v0.7.4

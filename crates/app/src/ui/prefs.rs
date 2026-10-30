@@ -33,11 +33,14 @@ const TABS: [(SettingsTab, &str, bool); 10] = [
 /// Returns true when the window was closed.
 pub fn window(app: &mut DawApp, ctx: &egui::Context, tab: &mut SettingsTab) -> bool {
     let mut close = false;
+    // Movable by the title bar: offset from the centred position (kept for the session).
+    let off_id = egui::Id::unique("settings_window_offset");
+    let off: egui::Vec2 = ctx.data(|d| d.get_temp(off_id)).unwrap_or_default();
     egui::Window::new("Settings")
         .title_bar(false)
         .resizable(false)
         .collapsible(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .anchor(Align2::CENTER_CENTER, off)
         .fixed_size([W, H])
         .frame(egui::Frame::NONE.fill(panel()).stroke(Stroke::new(1.0, outline())).shadow(ctx.global_style().visuals.window_shadow))
         .show(ctx, |ui| {
@@ -56,6 +59,15 @@ pub fn window(app: &mut DawApp, ctx: &egui::Context, tab: &mut SettingsTab) -> b
             }
             if xresp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 close = true;
+            }
+            let drag = ui.interact(title.with_max_x(xr.min.x - 2.0), ui.make_persistent_id("set_move"), Sense::drag());
+            if drag.dragged() {
+                let screen = ui.ctx().content_rect();
+                let lim = egui::vec2((screen.width() + W) * 0.5 - 60.0, (screen.height() + H) * 0.5 - TITLE_H);
+                let lim_top = (screen.height() - H) * 0.5; // title bar stays on screen
+                let o = off + drag.drag_delta();
+                let o = egui::vec2(o.x.clamp(-lim.x, lim.x), o.y.clamp(-lim_top, lim.y));
+                ui.ctx().data_mut(|d| d.insert_temp(off_id, o));
             }
             // Tab list.
             let body = Rect::from_min_max(pos2(full.left(), title.bottom()), full.max);
@@ -208,6 +220,11 @@ fn theme_page(app: &mut DawApp, ui: &mut egui::Ui) {
     let tones: Vec<(Tone, &str)> = Tone::ALL.iter().map(|v| (*v, v.label())).collect();
     chooser(ui, "Tone", &mut t.tone, &tones, true);
     onoff(ui, "High Contrast", &mut t.high_contrast);
+    ui.add_space(4.0);
+    // Temporary (0.7.7): pick the waveform drawing algorithm.
+    section(ui, "Waveform (temporary)");
+    let waves: Vec<(super::wave::WaveStyle, &str)> = super::wave::WaveStyle::ALL.iter().map(|v| (*v, v.label())).collect();
+    chooser(ui, "Waveform Style", &mut t.wave_style, &waves, true);
     ui.add_space(4.0);
     section(ui, "Customization");
     let pct = |v: f32| format!("{:.0} %", v * 100.0);

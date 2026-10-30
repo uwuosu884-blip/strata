@@ -13,6 +13,7 @@ mod prefs;
 mod session;
 pub mod theme;
 mod topbar;
+pub mod wave;
 pub mod widgets;
 
 use crate::app::{DawApp, DetailMode, Dialog, DragItem, PendingAction, View};
@@ -68,6 +69,7 @@ impl eframe::App for DawApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         theme::update(&ctx, &self.settings.theme);
+        wave::set_style(self.settings.theme.wave_style);
         {
             let t = &self.settings.theme;
             let manual = (!t.auto_assign_colors).then(|| t.default_track_color.unwrap_or(daw_project::PALETTE[0]));
@@ -251,6 +253,8 @@ impl DawApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // Knob focus only while the audio Clip View (and its Pitch knob) is shown.
+        self.cv.pitch_focus &= std::mem::take(&mut self.cv.pitch_drawn);
         if self.dialog.is_some() {
             // Plain keys drive the dialog (arrows / Enter / Y N C in "Save changes").
             for ev in self.key_events.drain(..) {
@@ -515,6 +519,12 @@ impl DawApp {
                             }
                             self.delete_selected_clip();
                         }
+                        continue;
+                    }
+                    // Pitch knob selected (audio Clip View): ±1 st, Shift ±12.
+                    Key::ArrowUp | Key::ArrowDown if self.cv.pitch_focus => {
+                        let s = if modifiers.shift { 12 } else { 1 };
+                        self.cv.pitch_nudge += if key == Key::ArrowUp { s } else { -s };
                         continue;
                     }
                     // Loop brace selected (Clip View): Up/Down move it by its length.
@@ -1067,9 +1077,24 @@ impl DawApp {
             self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
         let size = vec2(414.0, 139.0);
         let screen = ctx.content_rect();
-        let o = (screen.center() - size * 0.5).round();
+        // Movable by the title bar: offset from the centre (kept for the session).
+        let off_id = egui::Id::unique("save_changes_offset");
+        let off: egui::Vec2 = ctx.data(|d| d.get_temp(off_id)).unwrap_or_default();
+        let o = (screen.center() - size * 0.5 + off).round();
         egui::Area::new(egui::Id::unique("save_changes")).order(egui::Order::Foreground).fixed_pos(o).show(ctx, |ui| {
             let (win, _) = ui.allocate_exact_size(size, Sense::click());
+            let drag = ui.interact(
+                Rect::from_min_max(win.min, win.min + vec2(size.x - 30.0, 31.0)),
+                ui.make_persistent_id("sc_move"),
+                Sense::drag(),
+            );
+            if drag.dragged() {
+                let half = (screen.size() + size) * 0.5 - vec2(60.0, 31.0);
+                let top = (screen.height() - size.y) * 0.5;
+                let n = off + drag.drag_delta();
+                let n = vec2(n.x.clamp(-half.x, half.x), n.y.clamp(-top, half.y));
+                ui.ctx().data_mut(|d| d.insert_temp(off_id, n));
+            }
             let p = ui.painter();
             let at = |x: f32, y: f32| win.min + vec2(x, y);
             // Soft shadow, window, title bar.

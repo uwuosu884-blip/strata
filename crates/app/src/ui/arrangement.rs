@@ -709,6 +709,76 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         }
         super::menu::context(&tr, super::menu::W_CLIP, |ui| selection_menu(app, ui));
     }
+    live_preview(app, &painter, g, lane, t, collapsed);
+}
+
+/// The take being recorded, growing at the playhead over what it will replace (Live).
+fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, collapsed: bool) {
+    let lv = &app.live_rec;
+    let track = &app.project.tracks[t];
+    if !lv.active || app.session_rec.is_some() || !track.arm {
+        return;
+    }
+    let Some(rt) = app.rt(t) else { return };
+    let end = lv.end_beat.unwrap_or(app.status.beat_position);
+    let len = end - lv.start_beat;
+    if len <= 1e-6 {
+        return;
+    }
+    let audio = lv.lanes.iter().find(|l| l.track == rt);
+    let notes: Vec<daw_project::Note> = match track.kind {
+        TrackKind::Midi => {
+            // Overdub into a playing session clip: no new arrangement clip.
+            if app.track_status.get(t).is_some_and(|s| s.playing_scene.is_some()) {
+                return;
+            }
+            lv.notes
+                .iter()
+                .filter(|n| n.track == rt)
+                .map(|n| daw_project::Note {
+                    start: (n.start_beat - lv.start_beat).max(0.0),
+                    length: ((if n.end_beat.is_nan() { end } else { n.end_beat }) - n.start_beat).max(1.0 / 64.0),
+                    pitch: n.pitch,
+                    velocity: n.velocity,
+                    muted: false,
+                    mpe: 0,
+                })
+                .collect()
+        }
+        TrackKind::Audio if audio.is_some() && app.rec_audio_ok(t) => Vec::new(),
+        _ => return,
+    };
+    let (x1, x2) = (g.to_x(lv.start_beat), g.to_x(end));
+    if x2 < lane.min.x || x1 > lane.max.x {
+        return;
+    }
+    let clip = Clip {
+        name: app.project.next_clip_name(t),
+        color: track.color,
+        length: len,
+        looping: false,
+        content: ClipContent::Midi { notes },
+        ..Default::default()
+    };
+    let r = Rect::from_min_max(pos2(x1, lane.min.y), pos2(x2.max(x1 + 3.0), lane.max.y - 2.0));
+    draw_clip(p, r, &clip, false, None, g.zoom, app.project.tempo_bpm, collapsed);
+    if let (Some(la), false) = (audio, collapsed) {
+        let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max);
+        let fpb = app.audio.info.sample_rate as f64 * 60.0 / app.project.tempo_bpm.max(1.0);
+        let lat = app.rec_latency(t) as f64;
+        let src = super::wave::Source {
+            blocks: [&la.wave[0], &la.wave[1]],
+            raw: None,
+            stereo: la.stereo,
+            len: la.wave[0].len() * daw_engine::PEAK_BLOCK,
+        };
+        let fx = |x: f32| {
+            let b = g.beat_at(x) - lv.start_beat;
+            (b >= 0.0).then_some(b * fpb + lat)
+        };
+        let vis = body.intersect(p.clip_rect());
+        super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, 1.0, Color32::from_gray(0x18));
+    }
 }
 
 /// Live fade handles: while the pointer is over an audio clip, small squares
@@ -1933,7 +2003,7 @@ fn draw_clip_fill(
                 }
             }
         }
-        ClipContent::Audio { offset_frames, warp_bpm, .. } => {
+        ClipContent::Audio { offset_frames, warp_bpm, gain_db, .. } => {
             let Some(buf) = sample else {
                 p.text(body.center(), Align2::CENTER_CENTER, "loading…", super::theme::font(9.0), Color32::GRAY);
                 return;
@@ -1945,7 +2015,7 @@ fn draw_clip_fill(
                 None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / tempo.max(1.0)),
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
-            draw_wave(p, body, visible, buf, zoom, &frame_of, ink);
+            draw_wave(p, body, visible, buf, zoom, &frame_of, *gain_db, ink);
         }
     }
 }
@@ -1975,7 +2045,7 @@ pub fn draw_clip_overview(app: &DawApp, p: &egui::Painter, r: Rect, clip: &Clip,
                 }
             }
         }
-        ClipContent::Audio { offset_frames, warp_bpm, .. } => {
+        ClipContent::Audio { offset_frames, warp_bpm, gain_db, .. } => {
             let Some(buf) = app.cache.peek(sample_key(clip)) else { return };
             let sr = buf.sample_rate as f64;
             let map = match warp_bpm {
@@ -1983,7 +2053,7 @@ pub fn draw_clip_overview(app: &DawApp, p: &egui::Painter, r: Rect, clip: &Clip,
                 None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / app.project.tempo_bpm.max(1.0)),
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
-            draw_wave(p, r, r, buf, zoom, &frame_of, ink);
+            draw_wave(p, r, r, buf, zoom, &frame_of, *gain_db, ink);
         }
     }
 }
@@ -2007,7 +2077,8 @@ pub fn play_segments(clip: &Clip) -> Vec<(f64, f64, f64)> {
     v
 }
 
-/// Min/max waveform, one column per pixel, from the precomputed peak blocks.
+/// Clip waveform (see `wave`), gain-scaled and cut at the clip body.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_wave(
     p: &egui::Painter,
     body: Rect,
@@ -2015,47 +2086,23 @@ pub fn draw_wave(
     buf: &SampleBuffer,
     px_per_beat: f64,
     frame_of: &dyn Fn(f64) -> Option<f64>,
+    gain_db: f32,
     ink: Color32,
 ) {
-    if buf.is_empty() || buf.peaks.is_empty() || px_per_beat <= 0.0 {
+    if buf.is_empty() || px_per_beat <= 0.0 {
         return;
     }
-    let mid = body.center().y;
-    let h = body.height() * 0.5;
-    let block = daw_engine::PEAK_BLOCK as f64;
-    let total = buf.len() as f64;
-    let mut fpp = 1.0;
-    let mut x = visible.min.x.floor();
-    while x < visible.max.x {
-        let l0 = (x - body.min.x) as f64 / px_per_beat;
-        let Some(f0) = frame_of(l0) else { break };
-        // Frames per pixel from the neighbour (keeps the last value across loop wraps).
-        if let Some(f1) = frame_of(l0 + 1.0 / px_per_beat).filter(|f1| *f1 > f0) {
-            fpp = f1 - f0;
-        }
-        x += 1.0;
-        if f0 < 0.0 || f0 >= total {
-            continue;
-        }
-        let f1 = (f0 + fpp.max(1.0)).min(total);
-        let (mut lo, mut hi) = (0.0f32, 0.0f32);
-        if fpp < block * 2.0 {
-            // Zoomed in: read raw samples (few per pixel).
-            let (a, b) = (f0 as usize, (f1.ceil() as usize).min(buf.len()).max(f0 as usize + 1));
-            for &v in &buf.left[a.min(buf.len() - 1)..b.min(buf.len())] {
-                lo = lo.min(v);
-                hi = hi.max(v);
-            }
-        } else {
-            let (b0, b1) = ((f0 / block) as usize, ((f1 / block).ceil() as usize).min(buf.peaks.len()).max((f0 / block) as usize + 1));
-            for &(mn, mx) in &buf.peaks[b0.min(buf.peaks.len() - 1)..b1.min(buf.peaks.len())] {
-                lo = lo.min(mn);
-                hi = hi.max(mx);
-            }
-        }
-        let x = x - 1.0;
-        p.line_segment([pos2(x, mid - hi * h), pos2(x, mid - lo * h + 0.5)], Stroke::new(1.0, ink));
-    }
+    let fx = super::wave::beat_mapper(body.min.x, px_per_beat, frame_of);
+    let clip = visible.intersect(body);
+    super::wave::draw(
+        &p.with_clip_rect(clip.intersect(p.clip_rect())),
+        body,
+        clip,
+        &super::wave::Source::of(buf),
+        &fx,
+        daw_project::db_to_gain(gain_db),
+        ink,
+    );
 }
 
 pub fn grid_label(g: f64) -> String {

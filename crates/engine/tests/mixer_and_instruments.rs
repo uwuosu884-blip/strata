@@ -264,3 +264,27 @@ fn master_pan_balances_the_mix() {
     let (l, r) = (left(&out)[9000], right(&out)[9000]);
     assert!((l - 0.5).abs() < 1e-3 && (r - 0.5).abs() < 1e-3, "centre is unity: {l} {r}");
 }
+
+/// Play / stop inside sounding audio: short fades instead of a click.
+#[test]
+fn transport_start_and_stop_fade_clip_audio() {
+    let (mut e, mut h) = engine();
+    let mut t = track(0, vec![]);
+    t.arrangement = vec![ArrangementClip { start: 0.0, clip: dc_clip(0.5) }];
+    h.set_song(Song::new(vec![t])).unwrap();
+    send_all(&mut h, &[Command::SetPosition(1.0), Command::Play]);
+    let fade = (SR * 0.004) as usize;
+    let out = left(&render(&mut e, 2400, 256));
+    assert!(out[0] < 0.01, "starts silent: {}", out[0]);
+    assert!(out[fade / 2] > 0.1 && out[fade / 2] < 0.4, "ramping: {}", out[fade / 2]);
+    assert!(out[1..fade].windows(2).all(|w| w[1] >= w[0]), "monotonic fade-in");
+    assert!((out[fade + 10] - 0.5).abs() < 1e-3 && (out[2000] - 0.5).abs() < 1e-3);
+    h.send(Command::Stop).unwrap();
+    let out = left(&render(&mut e, 2400, 256));
+    assert!(out[0] > 0.4, "fade-out starts at the level: {}", out[0]);
+    assert!(out[..fade].windows(2).all(|w| w[1] <= w[0]), "monotonic fade-out");
+    assert!(out[fade + 1..].iter().all(|v| v.abs() < 1e-6), "silent after the fade");
+    assert!(!h.snapshot().playing);
+    // The playhead stays where Stop was pressed.
+    assert!((h.snapshot().beat_position - (1.0 + 2400.0 / SPB as f64)).abs() < 1e-6, "{}", h.snapshot().beat_position);
+}

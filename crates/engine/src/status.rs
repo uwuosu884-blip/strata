@@ -62,8 +62,14 @@ fn clean(p: f32) -> u32 {
 
 impl SharedStatus {
     pub fn publish_transport(&self, t: &Transport) {
-        self.playing.store(t.playing, Relaxed);
-        self.beat_position.store(t.beat_position.to_bits(), Relaxed);
+        self.publish_transport_as(t, t.playing, t.beat_position);
+    }
+
+    /// Transport with an overridden play state / position (stop fade-out:
+    /// already "stopped" at the stop point while the tail fades).
+    pub fn publish_transport_as(&self, t: &Transport, playing: bool, beat: f64) {
+        self.playing.store(playing, Relaxed);
+        self.beat_position.store(beat.to_bits(), Relaxed);
         self.tempo.store(t.tempo().to_bits(), Relaxed);
         self.beats_per_bar.store(t.beats_per_bar, Relaxed);
     }

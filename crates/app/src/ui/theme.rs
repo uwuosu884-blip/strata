@@ -106,6 +106,8 @@ pub struct ThemeSettings {
     pub default_track_color: Option<[u8; 3]>,
     pub reduced_colors: bool,
     pub clip_color: ClipColorMode,
+    /// Temporary (0.7.7): waveform drawing algorithm.
+    pub wave_style: super::wave::WaveStyle,
 }
 
 impl Default for ThemeSettings {
@@ -123,6 +125,7 @@ impl Default for ThemeSettings {
             default_track_color: None,
             reduced_colors: false,
             clip_color: ClipColorMode::TrackColor,
+            wave_style: Default::default(),
         }
     }
 }

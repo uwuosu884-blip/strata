@@ -958,6 +958,23 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, rect: Rect, bg:
             resp.dnd_set_drag_payload(DragItem::SessionClip { track: t, scene: s });
             resp.context_menu(|ui| clip_menu(app, ui, t, s));
         }
+        None if recording_here && app.live_rec.active => {
+            // Recording into this slot: shown as the clip being made (Live).
+            let c = rgb(track.color);
+            let fill = if selected { SEL_BLUE } else { c };
+            p.rect_filled(rect, CornerRadius::ZERO, fill);
+            p.circle_filled(btn.center(), 4.5, REC_RED);
+            p.with_clip_rect(rect.shrink(1.0).intersect(ui.clip_rect())).text(
+                pos2(rect.min.x + 18.0, rect.center().y),
+                Align2::LEFT_CENTER,
+                app.project.next_clip_name(t),
+                font(FS),
+                text_on(fill),
+            );
+            if resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| launch_zone.contains(p)) {
+                app.record_into_slot(t, s); // same as Live: the button ends the take
+            }
+        }
         None => {
             p.rect_filled(rect, CornerRadius::ZERO, if selected { SEL_BLUE } else { bg });
             if armed {

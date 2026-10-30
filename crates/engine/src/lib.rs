@@ -28,7 +28,7 @@ pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
-pub use sample::{PEAK_BLOCK, SampleBuffer};
+pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
 pub use song::{
     ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_SENDS, MAX_TRACKS,
     MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup, fade_gain,
@@ -147,6 +147,8 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         n_lanes: 0,
         dropped_record_samples: 0,
         rec_pos: 0,
+        clip_gain: 1.0,
+        stopping: None,
     };
     let handle = EngineHandle {
         commands: cmd_tx,
@@ -224,6 +226,12 @@ pub struct Engine {
     dropped_record_samples: u64,
     /// Samples pushed to the recorded-audio ring so far.
     rec_pos: u64,
+    /// De-click gain on clip audio: ramps up after Play / jumps and down
+    /// during the stop fade (instrument voices are not affected).
+    clip_gain: f32,
+    /// Stop requested: (stop position, fade samples left). The transport runs
+    /// on silently fading, then stops at that position.
+    stopping: Option<(f64, usize)>,
 }
 
 /// Mutable references to two different tracks.
@@ -352,7 +360,10 @@ impl Engine {
     }
 
     fn publish(&mut self, peak: [f32; 2]) {
-        self.status.publish_transport(&self.transport);
+        match self.stopping {
+            Some((beat, _)) => self.status.publish_transport_as(&self.transport, false, beat),
+            None => self.status.publish_transport(&self.transport),
+        }
         self.status.publish_peaks(peak);
         self.status.publish_input_peaks(&self.in_peaks);
         self.in_peaks = [0.0; MAX_IO_CHANNELS];
@@ -443,9 +454,7 @@ impl Engine {
         if rt as usize >= MAX_TRACKS || self.rt_to_song[rt as usize] == NONE {
             return;
         }
-        if !self.transport.playing {
-            self.transport.playing = true;
-        }
+        self.start_transport();
         // Clip launch quantization (None = global).
         let q = match action {
             Action::Launch(s) => self.slot_clip(rt, s).and_then(|c| c.extra.launch.quantize).unwrap_or(self.quantum),
@@ -532,9 +541,16 @@ impl Engine {
 
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.commands.pop() {
+            // Anything arriving during the stop fade completes the stop first.
+            if self.stopping.is_some() {
+                self.finish_stop();
+                if matches!(cmd, Command::Stop) {
+                    continue;
+                }
+            }
             match cmd {
-                Command::Play => self.transport.playing = true,
-                Command::Stop => self.stop(),
+                Command::Play => self.start_transport(),
+                Command::Stop => self.begin_stop(),
                 Command::Rewind => self.set_position(0.0),
                 Command::SetPosition(b) => {
                     if b.is_finite() {
@@ -758,7 +774,7 @@ impl Engine {
         match (on, self.rec.state) {
             (true, RecordState::Idle) => {
                 if !self.transport.playing {
-                    self.transport.playing = true;
+                    self.start_transport();
                     self.rec = Recorder { state: RecordState::StartPending, beat };
                 } else {
                     self.rec = Recorder { state: RecordState::StartPending, beat: self.quantized(beat) };
@@ -773,7 +789,44 @@ impl Engine {
         }
     }
 
+    /// Start playing (from stopped): clip audio fades in.
+    fn start_transport(&mut self) {
+        if !self.transport.playing {
+            self.transport.playing = true;
+            self.clip_gain = 0.0;
+        }
+    }
+
+    /// Stop with a short fade-out of clip audio (no click); immediate when
+    /// already stopped or silent.
+    fn begin_stop(&mut self) {
+        if self.transport.playing && self.clip_gain > 0.0 {
+            // The take ends at the stop point, not after the fade.
+            if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
+                let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position, pos: self.rec_pos });
+            }
+            self.rec.state = RecordState::Idle;
+            self.stopping = Some((self.transport.beat_position, self.fade_len()));
+        } else {
+            self.stop();
+        }
+    }
+
+    fn finish_stop(&mut self) {
+        if let Some((beat, _)) = self.stopping.take() {
+            self.transport.beat_position = beat;
+            self.stop();
+        }
+    }
+
+    /// De-click fade length (samples): 4 ms.
+    fn fade_len(&self) -> usize {
+        ((self.sr * 0.004) as usize).max(1)
+    }
+
     fn stop(&mut self) {
+        self.stopping = None;
+        self.clip_gain = 1.0;
         self.transport.playing = false;
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
             let _ = self.rec_events.push(RecordEvent::Stopped { beat: self.transport.beat_position, pos: self.rec_pos });
@@ -794,6 +847,9 @@ impl Engine {
     }
 
     fn set_position(&mut self, beat: f64) {
+        if self.transport.playing {
+            self.clip_gain = 0.0; // jump: fade the new spot in
+        }
         let delta = beat - self.transport.beat_position;
         self.transport.beat_position = beat;
         for t in &mut self.tracks {
@@ -991,7 +1047,24 @@ impl Engine {
                     n = n.min((((next - beat0 - EPS) / bps).ceil() as usize).max(1));
                 }
             }
-            self.render_segment(done, n, bps);
+            // De-click ramp of clip audio for this segment.
+            let step = 1.0 / self.fade_len() as f32;
+            let fade = match &mut self.stopping {
+                Some((_, left)) => {
+                    n = n.min(*left).max(1);
+                    *left -= n.min(*left);
+                    (self.clip_gain, -step)
+                }
+                None if self.clip_gain < 1.0 => (self.clip_gain, step),
+                None => (1.0, 0.0),
+            };
+            self.clip_gain = (fade.0 + fade.1 * n as f32).clamp(0.0, 1.0);
+            // A segment that reaches the loop end must not fire notes at/after it.
+            let cap = match self.transport.active_loop() {
+                Some((_, end)) if playing && beat0 < end - EPS => end,
+                _ => f64::INFINITY,
+            };
+            self.render_segment(done, n, bps, cap, fade);
             if playing {
                 let mut beat = beat0 + n as f64 * bps;
                 if let Some((start, end)) = self.transport.active_loop()
@@ -999,7 +1072,9 @@ impl Engine {
                     && beat >= end - EPS
                 {
                     let jump = end - start;
-                    beat = start + (beat - end).max(0.0);
+                    // Restart exactly at the loop start (drops < 1 sample): an overshoot
+                    // would put notes on the loop start before the next window.
+                    beat = start;
                     for t in &mut self.tracks {
                         if let Some((_, origin)) = &mut t.playing {
                             *origin -= jump;
@@ -1018,11 +1093,16 @@ impl Engine {
                 self.transport.beat_position = beat;
             }
             done += n;
+            if self.stopping.is_some_and(|(_, left)| left == 0) {
+                self.finish_stop();
+            }
         }
     }
 
-    fn render_segment(&mut self, offset: usize, n: usize, bps: f64) {
+    fn render_segment(&mut self, offset: usize, n: usize, bps: f64, cap: f64, fade: (f32, f32)) {
         let ctx = SegCtx {
+            cap,
+            fade,
             beat0: self.transport.beat_position,
             bps,
             n,
