@@ -279,10 +279,16 @@ pub fn knob_ex(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f
             changed = true;
         }
     }
-    let p = ui.painter();
+    knob_paint(ui.painter(), c, r, *v, resp.hovered() || resp.dragged(), mark);
+    (resp.on_hover_text(format!("Pan {} · drag · double-click: centre", pan_label(*v))), changed)
+}
+
+/// Paints the Live knob (pan design): dark 2 px 300° ring, grey value arc from
+/// 12 o'clock, dark pointer, optional centre ▼. `v` is bipolar −1…1.
+pub fn knob_paint(p: &egui::Painter, c: egui::Pos2, r: f32, v: f32, hot: bool, mark: bool) {
     // Live: dark 2 px ring and pointer; the value arc is drawn in the text grey.
-    let col = if resp.hovered() || resp.dragged() { gray(0xd0) } else { gray(0xa8) };
-    let ptr = if resp.hovered() || resp.dragged() { gray(0x60) } else { gray(0x18) };
+    let col = if hot { gray(0xd0) } else { gray(0xa8) };
+    let ptr = if hot { gray(0x60) } else { gray(0x18) };
     // 300° track with a gap at the bottom; value arc from 12 o'clock.
     let ang = |t: f32| std::f32::consts::PI * (-0.5 + t * 5.0 / 6.0);
     let pts = |a0: f32, a1: f32| -> Vec<egui::Pos2> {
@@ -296,9 +302,9 @@ pub fn knob_ex(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f
     };
     p.add(egui::Shape::line(pts(ang(-1.0), ang(1.0)), Stroke::new(2.0, gray(0x11))));
     if v.abs() > 0.005 {
-        p.add(egui::Shape::line(pts(ang(0.0), ang(*v)), Stroke::new(2.0, col)));
+        p.add(egui::Shape::line(pts(ang(0.0), ang(v)), Stroke::new(2.0, col)));
     }
-    let a = ang(*v);
+    let a = ang(v);
     p.line_segment([c, c + vec2(a.cos(), a.sin()) * (r - 1.0)], Stroke::new(2.0, ptr));
     // Centre mark: 7 px ▼ above the ring.
     if mark {
@@ -308,7 +314,6 @@ pub fn knob_ex(ui: &mut egui::Ui, c: egui::Pos2, r: f32, id: egui::Id, v: &mut f
             Stroke::NONE,
         ));
     }
-    (resp.on_hover_text(format!("Pan {} · drag · double-click: centre", pan_label(*v))), changed)
 }
 
 /// Send level ↔ knob position (0 = −inf at 7 o'clock, 1 = 0 dB at 5 o'clock),

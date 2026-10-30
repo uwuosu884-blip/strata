@@ -154,7 +154,7 @@ impl DawApp {
     }
 
     pub fn is_track_selected(&self, t: usize) -> bool {
-        if self.sel_hidden() || self.master_selected {
+        if self.sel_hidden() || self.master_selected || self.selected_return.is_some() {
             false
         } else if self.track_sel.is_empty() {
             self.selected_track == t
@@ -229,6 +229,7 @@ impl DawApp {
 
     /// Indices invalidated (structure change): drop index-based selections.
     pub fn clear_structure_selection(&mut self) {
+        self.selected_return = None;
         self.track_sel.clear();
         self.touched_track = None;
         self.track_anchor = None;
@@ -239,6 +240,8 @@ impl DawApp {
     /// Keep selections valid after undo/redo or edits elsewhere.
     pub fn sanitize_selection(&mut self) {
         let n = self.project.tracks.len();
+        let nr = self.project.returns.len();
+        self.selected_return = self.selected_return.filter(|&k| k < nr);
         self.track_sel.retain(|&t| t < n);
         self.touched_track = self.touched_track.filter(|&t| t < n);
         self.track_anchor = self.track_anchor.filter(|&t| t < n);
@@ -264,7 +267,6 @@ impl DawApp {
         if let Some((track, index)) = self.arr_sel.first().and_then(|&id| self.project.find_arrangement_clip(id)) {
             self.selected_clip = Some(ClipRef::Arr { track, index });
             self.selected_track = track;
-            self.detail_mode = DetailMode::Clip;
         }
     }
 

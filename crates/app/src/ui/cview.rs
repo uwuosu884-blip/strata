@@ -949,18 +949,16 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let kc = o + vec2(134.0, 150.0);
     let st = c.audio.transpose as f32;
     let pitch_ok = c.audio.mode != WarpMode::RePitch || !warped;
-    p.circle_stroke(kc, 11.5, Stroke::new(2.0, gray(0x11)));
-    let ang = |v: f32| std::f32::consts::PI * (0.75 + 1.5 * (v + 48.0) / 96.0);
-    let a = ang(st);
-    p.line_segment([kc, kc + vec2(a.cos(), a.sin()) * 11.0], Stroke::new(2.0, text()));
-    if st != 0.0 {
-        let pts: Vec<Pos2> =
-            (0..=16).map(|i| ang(0.0) + (a - ang(0.0)) * i as f32 / 16.0).map(|t| kc + vec2(t.cos(), t.sin()) * 11.5).collect();
-        p.add(egui::Shape::line(pts, Stroke::new(2.0, TEAL)));
-    }
-    let kresp = ui.interact(Rect::from_center_size(kc, vec2(26.0, 26.0)), ui.make_persistent_id("cv_pitch"), Sense::click_and_drag());
+    // Same design as the mixer pan knob (bipolar: ±48 st).
+    let kresp = ui.interact(Rect::from_center_size(kc, vec2(28.0, 28.0)), ui.make_persistent_id("cv_pitch"), Sense::click_and_drag());
+    super::widgets::knob_paint(&p, kc, 12.0, st / 48.0, kresp.hovered() || kresp.dragged(), true);
     if pitch_ok && kresp.drag_started() {
         ed.gesture = true;
+    }
+    if pitch_ok && kresp.double_clicked() && c.audio.transpose != 0 {
+        c.audio.transpose = 0;
+        ed.gesture = true;
+        ed.changed = true;
     }
     let acc_id = ui.make_persistent_id("cv_pitch_acc");
     if pitch_ok && kresp.dragged() {

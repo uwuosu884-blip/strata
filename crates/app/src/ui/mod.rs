@@ -113,17 +113,8 @@ impl eframe::App for DawApp {
             .resizable(false)
             .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 9, 8)))
             .show(ui, |ui| self.status_bar(ui));
-        // Selecting a (different) clip switches the detail panel to the clip view.
-        let prev_id = egui::Id::unique("prev_selected_clip");
-        let prev: Option<Option<crate::app::ClipRef>> = ctx.data(|d| d.get_temp(prev_id));
-        if prev != Some(self.selected_clip) {
-            if self.selected_clip.is_some() {
-                self.detail_mode = DetailMode::Clip;
-            }
-            ctx.data_mut(|d| d.insert_temp(prev_id, self.selected_clip));
-        }
         // Clip View / piano roll: resizable (own remembered size); Device View: fixed.
-        let dpanel = if self.detail_mode == DetailMode::Device || self.master_selected {
+        let dpanel = if self.detail_mode == DetailMode::Device || self.master_selected || self.selected_return.is_some() {
             egui::Panel::bottom("detail_device").resizable(false).exact_size(DEVICE_VIEW_H)
         } else {
             egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
@@ -159,7 +150,12 @@ impl eframe::App for DawApp {
         ctx.data_mut(|d| d.remove::<Vec<egui::Rect>>(master_zone_id()));
         let left = if self.show_browser { 0 } else { 9 };
         // Arrangement Mixer: its own rounded panel under the Arrangement, 9 px gap.
+        let avail_h = ui.available_rect_before_wrap().height();
         let mixer_inner = (self.view == View::Arrangement && self.arr_mixer).then(|| {
+            // Keep ≥ 160 px for the Arrangement when the user enlarges the strips.
+            let extra = session::arr_mixer_height(self) - self.arr_mixer_h;
+            let hmax = (avail_h - 9.0 - 160.0 - extra).clamp(120.0, session::MIXER_H_MAX);
+            self.arr_mixer_h = self.arr_mixer_h.clamp(120.0, hmax);
             let h = session::arr_mixer_height(self);
             let r = egui::Panel::bottom("arr_mixer")
                 .show_separator_line(false)
@@ -172,7 +168,13 @@ impl eframe::App for DawApp {
                 })
                 .response
                 .rect;
-            r - m(left, 9, 9, 0)
+            let inner = r - m(left, 9, 9, 0);
+            // The 9 px gap above the panel is its resize border.
+            let hr = egui::Rect::from_min_max(egui::pos2(inner.left(), inner.top() - 8.0), egui::pos2(inner.right(), inner.top()));
+            if let Some(nh) = session::resize_handle(ui, hr, egui::Id::unique("arr_mixer_resize"), self.arr_mixer_h) {
+                self.arr_mixer_h = nh.clamp(120.0, hmax);
+            }
+            inner
         });
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(left, 9, 0, 0)))
@@ -207,10 +209,11 @@ impl eframe::App for DawApp {
         ui.painter().rect_stroke(fr, 4.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
         // A press elsewhere in the main view deselects the master.
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None })
-            && central.contains(p)
+            && (central.contains(p) || mixer_inner.is_some_and(|r| r.contains(p)))
             && !ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(master_zone_id())).is_some_and(|z| z.iter().any(|r| r.contains(p)))
         {
             self.master_selected = false;
+            self.selected_return = None;
         }
 
         self.dialogs(&ctx);
@@ -308,7 +311,7 @@ impl DawApp {
         }
         // Shift variants first: consume_key(COMMAND, k) also matches Ctrl+Shift+k.
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::M)) {
-            self.arr_mixer = !self.arr_mixer;
+            self.toggle_mixer();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::T)) {
             self.add_return_track();
@@ -499,6 +502,9 @@ impl DawApp {
                     Key::Delete | Key::Backspace => {
                         if self.focus_detail {
                             self.delete_selected_notes(); // piano roll focused: never touch clips/tracks
+                            continue;
+                        }
+                        if self.delete_selected_return() {
                             continue;
                         }
                         if !(self.view == View::Arrangement && self.delete_arrangement_selection()) {
@@ -854,6 +860,20 @@ impl DawApp {
     /// Segment edges from Live at 1920: 42–1560, 1570–1789, 1799–1863.
     /// Live 12 status bar (measured at 1920 px): ⓘ, message field 42..1555,
     /// ▶ + field 1565..1784, orange ▲ + track name ending at 1863, meter, ▾.
+    /// Status-bar Clip View box contents: the selected clip (on the selected track).
+    fn clip_overview(&self, p: &egui::Painter, r: egui::Rect) {
+        let Some(c) = self.selected_clip else { return };
+        let t = match c {
+            crate::app::ClipRef::Slot { track, .. } | crate::app::ClipRef::Arr { track, .. } => track,
+        };
+        if t != self.selected_track {
+            return;
+        }
+        if let Some(clip) = self.clip(c) {
+            arrangement::draw_clip_overview(self, &p.with_clip_rect(r), r, clip, gray(0xa0));
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         use egui::{Align2, CornerRadius, Rect, Sense, pos2, vec2};
         let mr = ui.max_rect();
@@ -919,18 +939,7 @@ impl DawApp {
             None => {}
         }
         p.with_clip_rect(main.shrink2(vec2(6.0, 0.0))).text(main.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, msg, fs.clone(), col);
-        // ▶ box + field (health warnings live here).
-        let play = seg(rx(1565.0), rx(1583.0));
-        let fld = seg(rx(1585.0), rx(1784.0));
-        p.rect_filled(play, CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, panel());
-        p.rect_filled(fld, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }, panel());
-        p.rect_filled(Rect::from_min_max(pos2(play.right(), y0), pos2(fld.left(), y1)), 0.0, theme::sep());
-        let c = play.center();
-        p.add(egui::Shape::convex_polygon(
-            vec![pos2(c.x - 2.5, c.y - 4.0), pos2(c.x + 3.5, c.y), pos2(c.x - 2.5, c.y + 4.0)],
-            gray(0x8c),
-            egui::Stroke::NONE,
-        ));
+        // Audio health warnings: right end of the message field.
         let h = &self.audio.health;
         let mut warn = Vec::new();
         let xruns = h.xruns.load(Relaxed);
@@ -948,45 +957,78 @@ impl DawApp {
             warn.push(format!("{} commands dropped", self.dropped_commands));
         }
         if !warn.is_empty() {
-            p.with_clip_rect(fld.shrink2(vec2(6.0, 0.0))).text(
-                fld.left_center() + vec2(6.0, 0.0),
-                Align2::LEFT_CENTER,
+            let wr = p.with_clip_rect(main.shrink2(vec2(6.0, 0.0))).text(
+                main.right_center() - vec2(6.0, 0.0),
+                Align2::RIGHT_CENTER,
                 warn.join(" · "),
                 fs.clone(),
                 ACCENT,
             );
             if errs > 0 {
                 let last = h.last_error.try_lock().ok().and_then(|g| g.clone()).unwrap_or_default();
-                ui.interact(fld, ui.make_persistent_id("st_err"), Sense::hover()).on_hover_text(last);
+                ui.interact(wr, ui.make_persistent_id("st_err"), Sense::hover()).on_hover_text(last);
             }
         }
-        // Orange ▲ + selected track name (right edge 1863, width = text + 12).
-        // Clicking either toggles Device / Clip view (Shift+Tab).
-        let name = if self.master_selected { "Main".to_string() } else { self.project.track_label(self.selected_track) };
+        // Live: two detail-view selectors — [▲|clip overview] = Clip View / piano
+        // roll of the selected clip, [►|track name] = Device View of the focused
+        // track. The active one has an orange ▲ and a grey outline (independent of
+        // the panel focus); clicking either part switches to it.
+        let dev_forced = self.master_selected || self.selected_return.is_some();
+        let clip_active = self.detail_mode == DetailMode::Clip && !dev_forced;
+        let name = if self.master_selected {
+            "Main".to_string()
+        } else if let Some(r) = self.selected_return.and_then(|k| self.project.returns.get(k)) {
+            r.name.clone()
+        } else {
+            self.project.track_label(self.selected_track)
+        };
         let bf = theme::bold(theme::FS);
         let tw = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), bf.clone(), egui::Color32::WHITE).size().x);
         let nr = seg(rx(1863.0) - tw.ceil() - 12.0, rx(1863.0));
-        let tri = seg(nr.left() - 20.0, nr.left() - 2.0);
+        let dtri = seg(nr.left() - 20.0, nr.left() - 2.0);
+        let fld = seg(rx(1585.0).min(dtri.left() - 210.0), dtri.left() - 10.0);
+        let ctri = seg(fld.left() - 20.0, fld.left() - 2.0);
+        let tri_box = |r: Rect, active: bool| {
+            p.rect_filled(r, CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, if active { theme::ORANGE } else { panel() });
+            let c = r.center();
+            let pts = if active {
+                vec![pos2(c.x, c.y - 3.0), pos2(c.x + 4.0, c.y + 3.0), pos2(c.x - 4.0, c.y + 3.0)]
+            } else {
+                vec![pos2(c.x - 2.5, c.y - 4.0), pos2(c.x + 3.5, c.y), pos2(c.x - 2.5, c.y + 4.0)]
+            };
+            p.add(egui::Shape::convex_polygon(pts, if active { gray(0x0c) } else { gray(0x8c) }, egui::Stroke::NONE));
+        };
+        tri_box(ctri, clip_active);
+        p.rect_filled(fld, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }, panel());
+        self.clip_overview(&p, fld.shrink2(vec2(4.0, 3.0)));
+        tri_box(dtri, !clip_active);
         p.rect_filled(nr, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }, panel());
         p.text(nr.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &name, bf, theme::text());
-        p.rect_filled(tri, CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, theme::ORANGE);
-        let c = tri.center();
-        let (a, b2) = if self.detail_mode == DetailMode::Device { (-1.0, 1.0) } else { (1.0, -1.0) };
-        p.add(egui::Shape::convex_polygon(
-            vec![pos2(c.x, c.y + 3.0 * a), pos2(c.x + 4.0, c.y + 3.0 * b2), pos2(c.x - 4.0, c.y + 3.0 * b2)],
-            gray(0x0c),
-            egui::Stroke::NONE,
-        ));
-        let resp = ui
-            .interact(tri.union(nr), ui.make_persistent_id("st_dv"), Sense::click())
-            .on_hover_text("Toggle Device / Clip View (Shift+Tab)");
-        if resp.clicked() {
-            self.detail_mode = if self.detail_mode == DetailMode::Device { DetailMode::Clip } else { DetailMode::Device };
+        let outline = if clip_active { ctri.union(fld) } else { dtri.union(nr) };
+        p.rect_stroke(outline, 4.0, egui::Stroke::new(2.0, theme::focus()), egui::StrokeKind::Outside);
+        let cresp = ui.interact(ctri.union(fld), ui.make_persistent_id("st_cv"), Sense::click()).on_hover_text("Clip View (Shift+Tab)");
+        if cresp.clicked() && self.selected_clip.is_some() {
+            self.master_selected = false;
+            self.selected_return = None;
+            self.detail_mode = DetailMode::Clip;
         }
-        // Decorative meter bars and ▾ (Live's CPU / disk overload area).
+        let dresp = ui.interact(dtri.union(nr), ui.make_persistent_id("st_dv"), Sense::click()).on_hover_text("Device View (Shift+Tab)");
+        if dresp.clicked() {
+            self.detail_mode = DetailMode::Device;
+        }
+        // Mixer switch (vertical bars): orange while the mixer is shown; click toggles
+        // it like Ctrl+Alt+M. The ▾ stays decorative.
+        let mix_on = self.mixer_shown();
+        let mcol = if mix_on { theme::ORANGE } else { gray(0x46) };
         for (i, top) in [5.0, 3.0, 0.5, 3.0].into_iter().enumerate() {
             let x = rx(1881.0 + 4.0 * i as f32);
-            p.rect_filled(Rect::from_min_max(pos2(x, y0 + 2.0 + top), pos2(x + 2.0, y0 + 17.0)), 0.0, gray(0x46));
+            p.rect_filled(Rect::from_min_max(pos2(x, y0 + 2.0 + top), pos2(x + 2.0, y0 + 17.0)), 0.0, mcol);
+        }
+        let mresp = ui
+            .interact(Rect::from_min_max(pos2(rx(1878.0), y0), pos2(rx(1897.0), y1)), ui.make_persistent_id("st_mixer"), Sense::click())
+            .on_hover_text("Show / hide the Mixer (Ctrl+Alt+M)");
+        if mresp.clicked() {
+            self.toggle_mixer();
         }
         let c = pos2(rx(1904.5), y0 + 8.5);
         p.add(egui::Shape::convex_polygon(

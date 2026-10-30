@@ -189,6 +189,11 @@ pub struct DawApp {
     pub show_io: bool,
     /// Arrangement Mixer panel under the Arrangement (Ctrl+Alt+M).
     pub arr_mixer: bool,
+    /// Session View mixer section shown (Ctrl+Alt+M / status-bar switch).
+    pub sess_mixer: bool,
+    /// User-set mixer strip heights (drag the mixer's top border).
+    pub arr_mixer_h: f32,
+    pub sess_mixer_h: f32,
     /// Top-bar Follow: the arrangement scrolls with the playhead.
     pub follow: bool,
     /// Follow suspended by a manual scroll/zoom; resumes on the next Play.
@@ -274,6 +279,8 @@ pub struct DawApp {
     pub show_browser: bool,
     /// Master track selected (its device view shows in the detail panel).
     pub master_selected: bool,
+    /// Return track selected (its header was clicked): device view, Delete removes it.
+    pub selected_return: Option<usize>,
     /// Per track: silenced only by another track's solo (dimmed activator).
     pub solo_silenced: Vec<bool>,
     pub solo_silenced_returns: Vec<bool>,
@@ -346,6 +353,9 @@ impl DawApp {
             input_clip: [false; MAX_IO_CHANNELS],
             show_io: true,
             arr_mixer: true,
+            sess_mixer: true,
+            arr_mixer_h: 139.0,
+            sess_mixer_h: 120.0,
             hover_monitor: None,
             device_lists: None,
             dialog_keys: Vec::new(),
@@ -400,6 +410,7 @@ impl DawApp {
             browser_dir,
             show_browser: true,
             master_selected: false,
+            selected_return: None,
             solo_silenced: Vec::new(),
             solo_silenced_returns: Vec::new(),
             preview_on: true,
@@ -477,7 +488,49 @@ impl DawApp {
     pub fn select_master(&mut self) {
         self.clear_structure_selection();
         self.master_selected = true;
+        self.selected_return = None;
         self.detail_mode = DetailMode::Device;
+    }
+
+    /// The mixer of the current view is visible.
+    pub fn mixer_shown(&self) -> bool {
+        match self.view {
+            View::Arrangement => self.arr_mixer,
+            View::Session => self.sess_mixer,
+        }
+    }
+
+    /// Ctrl+Alt+M: show / hide the current view's mixer.
+    pub fn toggle_mixer(&mut self) {
+        match self.view {
+            View::Arrangement => self.arr_mixer = !self.arr_mixer,
+            View::Session => self.sess_mixer = !self.sess_mixer,
+        }
+    }
+
+    /// Double-click on a clip: show it in the Clip View / piano roll.
+    pub fn open_clip_view(&mut self) {
+        self.master_selected = false;
+        self.selected_return = None;
+        self.detail_mode = DetailMode::Clip;
+    }
+
+    /// Click on a return header: select it and show its (device) chain.
+    pub fn select_return(&mut self, k: usize) {
+        self.clear_structure_selection();
+        self.master_selected = false;
+        self.selected_return = Some(k);
+        self.detail_mode = DetailMode::Device;
+    }
+
+    /// Delete the selected return track (Del).
+    pub fn delete_selected_return(&mut self) -> bool {
+        let Some(k) = self.selected_return.take() else { return false };
+        if k >= self.project.returns.len() {
+            return false;
+        }
+        self.edit(|p| p.delete_return(k));
+        true
     }
 
     /// Per-frame housekeeping before drawing.

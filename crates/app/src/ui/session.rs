@@ -32,7 +32,7 @@ struct Bands {
     stop: (f32, f32),
     io: Option<(f32, f32)>,
     sends: Option<(f32, f32)>,
-    mixer: (f32, f32),
+    mixer: Option<(f32, f32)>,
     strip: (f32, f32),
     scroll_y: f32,
     scenes: usize,
@@ -64,12 +64,22 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
 
     // Bands, bottom-up.
     let strip = (full.max.y - STRIP_H, full.max.y);
-    let mixer = (strip.0 - 2.0 - MIXER_H, strip.0 - 2.0);
     let nret = app.project.returns.len();
-    let sends = (nret > 0).then_some((mixer.0 - 2.0 - sends_h(nret), mixer.0 - 2.0));
-    let below_io = sends.map_or(mixer.0, |b| b.0);
+    // Mixer height: user-set (drag its top border), leaving room for a few slots.
+    let fixed = HEADER_H
+        + STOP_H
+        + 2.0 * SLOT_PITCH
+        + STRIP_H
+        + 12.0
+        + if app.show_io { IO_H + 2.0 } else { 0.0 }
+        + if nret > 0 { sends_h(nret) + 2.0 } else { 0.0 };
+    let mix_h = app.sess_mixer_h.min(full.height() - fixed).max(MIXER_H);
+    let mixer = app.sess_mixer.then_some((strip.0 - 2.0 - mix_h, strip.0 - 2.0));
+    let above_strip = mixer.map_or(strip.0, |m| m.0);
+    let sends = (nret > 0).then_some((above_strip - 2.0 - sends_h(nret), above_strip - 2.0));
+    let below_io = sends.map_or(above_strip, |b| b.0);
     let io = app.show_io.then_some((below_io - 2.0 - IO_H, below_io - 2.0));
-    let above = io.map_or(mixer.0, |b| b.0);
+    let above = io.map_or(below_io, |b| b.0);
     let stop = (above - 2.0 - STOP_H, above - 2.0);
     let header = (full.min.y, full.min.y + HEADER_H);
     let slots = (header.1 + 2.0, (stop.0 - 2.0).max(header.1 + 2.0));
@@ -78,7 +88,9 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let master_x = full.max.x - MASTER_W;
     // Return columns sit left of Main, pinned like it (Live).
     let ret_x = master_x - MASTER_GAP - nret as f32 * PITCH;
-    let area = Rect::from_min_max(full.min, pos2(ret_x.max(full.min.x), full.max.y));
+    // Returns get their own separator on the left too (Live).
+    let tracks_x1 = if nret > 0 { ret_x - MASTER_GAP } else { ret_x };
+    let area = Rect::from_min_max(full.min, pos2(tracks_x1.max(full.min.x), full.max.y));
     let tracks = app.project.visible_tracks();
     let sid = egui::Id::unique("sess").with("session_scroll");
     let (mut sx, mut sy): (f32, f32) = ui.data(|d| d.get_temp(sid)).unwrap_or_default();
@@ -150,7 +162,10 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
         });
     }
 
-    // Return columns.
+    // Return columns behind their own separator.
+    if nret > 0 {
+        p.rect_filled(Rect::from_min_max(pos2(tracks_x1, full.min.y), pos2(ret_x, full.max.y)), CornerRadius::ZERO, sep());
+    }
     let nr0 = app.project.returns.len();
     for k in 0..nret {
         if app.project.returns.len() != nr0 {
@@ -167,6 +182,24 @@ pub fn session_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // Main column, pinned right.
     p.rect_filled(Rect::from_min_max(pos2(master_x - MASTER_GAP, full.min.y), pos2(master_x, full.max.y)), CornerRadius::ZERO, sep());
     master_column(app, ui, master_x, &b);
+    // Drag the separator above the mixer to resize it.
+    if let Some(m) = mixer {
+        let hr = Rect::from_min_max(pos2(full.min.x, m.0 - 3.0), pos2(full.max.x, m.0 + 1.0));
+        if let Some(h) = resize_handle(ui, hr, egui::Id::unique("sess").with("mixer_resize"), mix_h) {
+            app.sess_mixer_h = h.clamp(MIXER_H, MIXER_H_MAX.min(full.height() - fixed));
+        }
+    }
+}
+
+/// Horizontal border drag (resize cursor): returns the new height for a panel
+/// below the border that was `h` tall.
+pub fn resize_handle(ui: &mut egui::Ui, r: Rect, id: egui::Id, h: f32) -> Option<f32> {
+    let resp = ui.interact(r, id, Sense::drag());
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let dy = resp.drag_delta().y;
+    (resp.dragged() && dy != 0.0).then_some(h - dy)
 }
 
 /// One track column: header, slots, stop row, In/Out, mixer, colour strip.
@@ -210,9 +243,11 @@ fn track_column(app: &mut DawApp, ui: &mut egui::Ui, t: usize, x0: f32, b: &Band
         p.rect_filled(r, CornerRadius::ZERO, bg);
         sends_section(app, ui, r, SendSrc::Track(t));
     }
-    let r = Bands::rect(x0, x1, b.mixer);
-    p.rect_filled(r, CornerRadius::ZERO, bg);
-    mixer_strip(app, ui, t, r);
+    if let Some(mb) = b.mixer {
+        let r = Bands::rect(x0, x1, mb);
+        p.rect_filled(r, CornerRadius::ZERO, bg);
+        mixer_strip(app, ui, t, r);
+    }
     if let Some(track) = app.project.tracks.get(t) {
         p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, rgb(track.color));
     }
@@ -282,19 +317,27 @@ fn master_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) {
         p.rect_filled(r, CornerRadius::ZERO, panel());
         post_buttons(app, ui, r);
     }
-    let r = Bands::rect(x0, x1, b.mixer);
-    p.rect_filled(r, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
-    master_strip(app, ui, r);
+    if let Some(mb) = b.mixer {
+        let r = Bands::rect(x0, x1, mb);
+        p.rect_filled(r, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
+        master_strip(app, ui, r);
+    }
     p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, mcol);
 }
 
-/// Arrangement Mixer strip height (Live 12: 139 px, vs 120 in Session View).
-const ARR_MIXER_H: f32 = 139.0;
+/// Mixer strip height range (Live 12 default: 139 px Arrangement, 120 Session).
+pub const MIXER_H_MAX: f32 = 420.0;
 
 /// Arrangement Mixer panel height: header, In/Out, Sends, strips, colour strip.
 pub fn arr_mixer_height(app: &DawApp) -> f32 {
     let n = app.project.returns.len();
-    HEADER_H + 2.0 + if app.show_io { IO_H + 2.0 } else { 0.0 } + if n > 0 { sends_h(n) + 2.0 } else { 0.0 } + ARR_MIXER_H + 2.0 + STRIP_H
+    HEADER_H
+        + 2.0
+        + if app.show_io { IO_H + 2.0 } else { 0.0 }
+        + if n > 0 { sends_h(n) + 2.0 } else { 0.0 }
+        + app.arr_mixer_h
+        + 2.0
+        + STRIP_H
 }
 
 /// Arrangement Mixer (Live 12, Ctrl+Alt+M): the Session View's In/Out, Sends
@@ -303,7 +346,7 @@ pub fn arrangement_mixer(app: &mut DawApp, ui: &mut egui::Ui) {
     let full = ui.available_rect_before_wrap();
     ui.allocate_rect(full, Sense::hover());
     let strip = (full.max.y - STRIP_H, full.max.y);
-    let mixer = (strip.0 - 2.0 - ARR_MIXER_H, strip.0 - 2.0);
+    let mixer = (strip.0 - 2.0 - app.arr_mixer_h, strip.0 - 2.0);
     let nret = app.project.returns.len();
     let sends = (nret > 0).then_some((mixer.0 - 2.0 - sends_h(nret), mixer.0 - 2.0));
     let below_io = sends.map_or(mixer.0, |b| b.0);
@@ -311,12 +354,14 @@ pub fn arrangement_mixer(app: &mut DawApp, ui: &mut egui::Ui) {
     let header = (full.min.y, full.min.y + HEADER_H);
     // Spare height (if any) between the header and In/Out stays panel-coloured.
     let gap = (header.1 + 2.0, (io.map_or(below_io, |b| b.0) - 2.0).max(header.1 + 2.0));
-    let b = Bands { header, slots: gap, stop: (gap.1, gap.1), io, sends, mixer, strip, scroll_y: 0.0, scenes: 0 };
+    let b = Bands { header, slots: gap, stop: (gap.1, gap.1), io, sends, mixer: Some(mixer), strip, scroll_y: 0.0, scenes: 0 };
     let p = ui.painter_at(full);
     p.rect_filled(full, CornerRadius::ZERO, panel());
     let master_x = full.max.x - MASTER_W;
     let ret_x = master_x - MASTER_GAP - nret as f32 * PITCH;
-    let area = Rect::from_min_max(full.min, pos2(ret_x.max(full.min.x), full.max.y));
+    // Returns get their own separator on the left too (Live).
+    let tracks_x1 = if nret > 0 { ret_x - MASTER_GAP } else { ret_x };
+    let area = Rect::from_min_max(full.min, pos2(tracks_x1.max(full.min.x), full.max.y));
     let tracks = app.project.visible_tracks();
     // Wheel (either axis) scrolls the strips horizontally.
     let sid = egui::Id::unique("sess").with("arr_mixer_scroll");
@@ -341,6 +386,9 @@ pub fn arrangement_mixer(app: &mut DawApp, ui: &mut egui::Ui) {
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(x0, full.min.y), pos2(x0 + COL_W, full.max.y))));
         cui.set_clip_rect(clip);
         mixer_column(app, &mut cui, t, x0, &b);
+    }
+    if nret > 0 {
+        p.rect_filled(Rect::from_min_max(pos2(tracks_x1, full.min.y), pos2(ret_x, full.max.y)), CornerRadius::ZERO, sep());
     }
     let nr0 = app.project.returns.len();
     for k in 0..nret {
@@ -378,9 +426,11 @@ fn mixer_column(app: &mut DawApp, ui: &mut egui::Ui, t: usize, x0: f32, b: &Band
         p.rect_filled(r, CornerRadius::ZERO, bg);
         sends_section(app, ui, r, SendSrc::Track(t));
     }
-    let r = Bands::rect(x0, x1, b.mixer);
-    p.rect_filled(r, CornerRadius::ZERO, bg);
-    mixer_strip(app, ui, t, r);
+    if let Some(mb) = b.mixer {
+        let r = Bands::rect(x0, x1, mb);
+        p.rect_filled(r, CornerRadius::ZERO, bg);
+        mixer_strip(app, ui, t, r);
+    }
     if let Some(track) = app.project.tracks.get(t) {
         p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, rgb(track.color));
     }
@@ -412,9 +462,11 @@ fn master_mixer_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) 
         p.rect_filled(r, CornerRadius::ZERO, panel());
         post_buttons(app, ui, r);
     }
-    let r = Bands::rect(x0, x1, b.mixer);
-    p.rect_filled(r, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
-    master_strip(app, ui, r);
+    if let Some(mb) = b.mixer {
+        let r = Bands::rect(x0, x1, mb);
+        p.rect_filled(r, CornerRadius::ZERO, if app.master_selected { gray(0x46) } else { panel() });
+        master_strip(app, ui, r);
+    }
     p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, mcol);
 }
 
@@ -426,21 +478,24 @@ fn return_column(app: &mut DawApp, ui: &mut egui::Ui, k: usize, x0: f32, b: &Ban
     return_header(app, ui, k, Bands::rect(x0, x1, b.header));
     let Some(r) = app.project.returns.get(k) else { return };
     let col = rgb(r.color);
-    p.with_clip_rect(b.slot_band(x0, x1)).rect_filled(b.slot_band(x0, x1), CornerRadius::ZERO, panel());
-    p.rect_filled(Bands::rect(x0, x1, b.stop), CornerRadius::ZERO, panel());
+    let bg = if app.selected_return == Some(k) { gray(0x46) } else { panel() };
+    p.with_clip_rect(b.slot_band(x0, x1)).rect_filled(b.slot_band(x0, x1), CornerRadius::ZERO, bg);
+    p.rect_filled(Bands::rect(x0, x1, b.stop), CornerRadius::ZERO, bg);
     if let Some(io) = b.io {
         let r = Bands::rect(x0, x1, io);
-        p.rect_filled(r, CornerRadius::ZERO, panel());
+        p.rect_filled(r, CornerRadius::ZERO, bg);
         super::io::return_io(app, ui, k, r);
     }
     if let Some(sb) = b.sends {
         let r = Bands::rect(x0, x1, sb);
-        p.rect_filled(r, CornerRadius::ZERO, panel());
+        p.rect_filled(r, CornerRadius::ZERO, bg);
         sends_section(app, ui, r, SendSrc::Return(k));
     }
-    let r = Bands::rect(x0, x1, b.mixer);
-    p.rect_filled(r, CornerRadius::ZERO, panel());
-    return_strip(app, ui, k, r);
+    if let Some(mb) = b.mixer {
+        let r = Bands::rect(x0, x1, mb);
+        p.rect_filled(r, CornerRadius::ZERO, bg);
+        return_strip(app, ui, k, r);
+    }
     p.rect_filled(Bands::rect(x0, x1, b.strip), CornerRadius::ZERO, col);
 }
 
@@ -448,8 +503,11 @@ fn return_column(app: &mut DawApp, ui: &mut egui::Ui, k: usize, x0: f32, b: &Ban
 pub(super) fn return_header(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect: Rect) {
     let Some(r) = app.project.returns.get(k) else { return };
     let col = rgb(r.color);
+    let sel = app.selected_return == Some(k);
+    let col = if sel { shade(col, 1.25) } else { col };
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::ZERO, col);
+    super::add_master_zone(ui, rect);
     p.with_clip_rect(rect.shrink2(vec2(2.0, 0.0))).text(
         rect.left_center() + vec2(4.0, 0.0),
         Align2::LEFT_CENTER,
@@ -458,6 +516,9 @@ pub(super) fn return_header(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect:
         text_on(col),
     );
     let resp = ui.interact(rect, egui::Id::unique("sess").with(("ret_header", k)), Sense::click());
+    if resp.clicked() || resp.secondary_clicked() {
+        app.select_return(k);
+    }
     super::menu::context(&resp, super::menu::W_TRACK, |ui| return_menu(app, ui, k));
 }
 
@@ -888,8 +949,11 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, rect: Rect, bg:
                     app.selected_track = t;
                 }
             }
-            if resp.double_clicked() {
-                app.launch_clip(t, s);
+            // Live: double-click opens the Clip View (launch = the ▶ button).
+            if resp.double_clicked() && !resp.interact_pointer_pos().is_some_and(|p| launch_zone.contains(p)) {
+                app.selected_clip = Some(ClipRef::Slot { track: t, scene: s });
+                app.selected_track = t;
+                app.open_clip_view();
             }
             resp.dnd_set_drag_payload(DragItem::SessionClip { track: t, scene: s });
             resp.context_menu(|ui| clip_menu(app, ui, t, s));
@@ -908,6 +972,7 @@ fn slot(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize, rect: Rect, bg:
             let midi = track.kind == TrackKind::Midi;
             if resp.double_clicked() && midi {
                 app.create_midi_clip(t, s);
+                app.open_clip_view();
             } else if resp.clicked() {
                 app.selected_track = t;
                 app.sel_scene = s;
@@ -1322,7 +1387,8 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
     let c = o + vec2(31.0, 95.0 + dy * 21.0 / 19.0);
     let mut cue = app.project.cue_gain_db;
     let mut cv = (db_to_pos(cue) * 2.0 - 1.0).clamp(-1.0, 1.0);
-    let (r, changed) = knob_ex(ui, c, 9.0, egui::Id::unique("sess").with("mcue_knob"), &mut cv, false);
+    // Same size as the pan knobs (r 12).
+    let (r, changed) = knob_ex(ui, c, 12.0, egui::Id::unique("sess").with("mcue_knob"), &mut cv, false);
     if r.drag_started() || r.double_clicked() {
         app.begin_gesture();
     }
@@ -1336,12 +1402,12 @@ fn master_strip(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
     let pts: Vec<egui::Pos2> = (0..=24)
         .map(|i| {
             let a = ang(-1.0) + (ang(cv) - ang(-1.0)) * i as f32 / 24.0;
-            c + vec2(a.cos(), a.sin()) * 9.0
+            c + vec2(a.cos(), a.sin()) * 12.0
         })
         .collect();
     let p = ui.painter();
     p.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(0x3c, 0x6a, 0xb6))));
-    let hp = c + vec2(0.0, 11.0);
+    let hp = c + vec2(0.0, 13.0);
     p.circle_stroke(hp, 2.5, Stroke::new(1.0, gray(0x83)));
     r.on_hover_text(format!(
         "Cue volume {} dB (metronome + preview)",

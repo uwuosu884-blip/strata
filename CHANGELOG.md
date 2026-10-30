@@ -10,6 +10,32 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.6] - 2026-10-30
+
+### Added
+- **Return device view**: clicking a return header (Session, Arrangement,
+  Arrangement Mixer) selects the return and shows its device chain; Del deletes it.
+- **Status-bar view selectors** (Live): [▲ | clip overview] = Clip View of the
+  selected clip, [► | track name] = Device View; the active one has an orange ▲
+  and a grey outline, independent of panel focus. Click to switch.
+- **Mixer switch** in the status bar (orange while shown) and Ctrl+Alt+M now
+  hide / show the mixer in both Session and Arrangement.
+- **Resizable mixer**: drag the border above the mixer strips (Session View) or
+  above the Arrangement Mixer; faders grow with the strips.
+
+### Changed
+- Clip clicks per Live: a click on the name bar selects the clip, a double-click
+  opens the Clip View / piano roll; a click on the clip body only sets the insert
+  marker (Shift+click extends the time selection). Session slots: click selects,
+  double-click opens the Clip View. Selecting a clip no longer switches views.
+- Piano-roll notes use the track colour (darker when softer).
+- Piano-roll top rows, key column and velocity lane use Live's greys (no #1a).
+- Cue volume knob has the pan knobs' size; the Clip View Pitch knob uses the
+  pan-knob design.
+
+### Fixed
+- Return A now has the separator line on its left (Session View and Mixer).
+
 ## [0.7.5] - 2026-10-29
 
 ### Added
@@ -610,7 +636,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/uwuosu884-blip/strata/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/uwuosu884-blip/strata/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/uwuosu884-blip/strata/compare/v0.7.2...v0.7.3

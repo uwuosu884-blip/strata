@@ -22,7 +22,7 @@ pub fn detail_panel(app: &mut DawApp, ui: &mut egui::Ui) {
     let full = ui.max_rect().size();
     ui.set_min_size(full);
     ui.set_max_size(full);
-    if app.master_selected {
+    if app.master_selected || app.selected_return.is_some() {
         device_view(app, ui);
         return;
     }
@@ -130,7 +130,8 @@ const PR_RULER_H: f32 = 16.0;
 fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, clip: &Clip, notes: &[Note]) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, CornerRadius::ZERO, gray(26));
+    // Live colours (no #1a): panel grey around, the velocity lane like the grid.
+    p.rect_filled(rect, CornerRadius::ZERO, panel());
     let drums: Option<Vec<String>> = match &app.project.tracks[track].instrument {
         InstrumentDef::Drums { pads } => Some(pads.iter().map(|d| d.name.clone()).collect()),
         _ => None,
@@ -144,6 +145,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     let ruler = Rect::from_min_max(pos2(rect.min.x + KEYS_W, marker.max.y + 1.0), pos2(rect.max.x, marker.max.y + 1.0 + PR_RULER_H));
     let grid_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, ruler.max.y + 1.0), pos2(rect.max.x, rect.max.y - vel_h));
     let vel_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.max.y - vel_h + 3.0), pos2(rect.max.x, rect.max.y - 2.0));
+    p.rect_filled(Rect::from_min_max(pos2(grid_area.min.x, grid_area.max.y), rect.max), CornerRadius::ZERO, gray(0x39));
     let len = clip.length.max(0.25);
     // Markers: notes outside [w0, w1) are silent (dark area). The view reaches
     // the furthest of the markers and note ends.
@@ -398,6 +400,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let y = y_of(n.pitch as i32);
         Rect::from_min_max(pos2(x1, y + 1.0), pos2(x2, y + row_h - 1.0))
     };
+    let note_col = rgb(app.project.tracks[track].color);
     let mut hit: Option<(usize, bool)> = None; // (index, on resize edge)
     let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
     for (i, n) in notes.iter().enumerate() {
@@ -405,10 +408,9 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let sel = app.note_sel.contains(&i);
         if r.max.y > grid_area.min.y && r.min.y < grid_area.max.y && r.max.x > grid_area.min.x && r.min.x < grid_area.max.x {
             let outside = n.start >= w1 - 1e-9 || n.start < w0 - 1e-9;
-            // Live 12 (measured): #3f fill (velocity 100; darker when softer), black
-            // 1 px border, selected = #b0ddeb border; bold white name when it fits.
-            let v = 0x2a as f32 + n.velocity as f32 * 0.21;
-            let fill = if n.muted || outside { gray(0x30) } else { gray(v.min(255.0) as u8) };
+            // Track colour (darker when softer), black 1 px border, selected =
+            // #b0ddeb border; bold name when it fits.
+            let fill = if n.muted || outside { gray(0x30) } else { shade(note_col, 0.45 + 0.55 * n.velocity as f32 / 127.0) };
             let r = Rect::from_min_max(r.min - vec2(0.0, 1.0), r.max + vec2(0.0, 1.0));
             np.rect_filled(r, CornerRadius::ZERO, fill);
             if sel {
@@ -423,7 +425,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                     Align2::LEFT_CENTER,
                     note_name(n.pitch),
                     bold(FS),
-                    if n.muted { gray(0x75) } else { gray(0xfb) },
+                    if n.muted { gray(0x75) } else { text_on(fill) },
                 );
             }
             // Note expression (MPE) pitch curve over the note.
@@ -473,7 +475,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     sp.rect_filled(
         Rect::from_min_max(pos2(rect.min.x, grid_area.max.y), pos2(vel_area.min.x - 2.0, rect.max.y)),
         CornerRadius::ZERO,
-        gray(30),
+        panel(),
     );
     // Envelope / MPE lanes draw their own scale.
     let vel_scale: &[u8] = if app.cv.tab == super::clip::Tab::Main { &[127, 64, 1] } else { &[] };
@@ -900,8 +902,9 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         gp.rect_filled(Rect::from_min_max(pos2(x, gy0 + 11.0), pos2(x + 2.0, gy0 + 12.0)), 0.0, panel());
     }
     let t = app.selected_track;
-    let midi = !app.master_selected && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
-    let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected)), Sense::hover());
+    let midi =
+        !app.master_selected && app.selected_return.is_none() && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
+    let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::hover());
     let mut fx = rect;
     let mut inst_drop_ok = false;
     if midi {

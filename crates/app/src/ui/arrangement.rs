@@ -672,8 +672,9 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             app.playhead_to_clip(id);
         }
         if tr.double_clicked() {
+            // Live: double-click on the name bar opens the Clip View (rename: Ctrl+R).
             app.select_arr_clip_mode(id, SelMode::Single);
-            app.start_rename_clip(id, false);
+            app.open_clip_view();
         }
         if tr.drag_started()
             && let Some(pos) = ui.input(|i| i.pointer.press_origin())
@@ -1098,8 +1099,10 @@ fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, l
         let right = Rect::from_min_max(pos2(split, head.min.y), head.max);
         let r = &app.project.returns[k];
         let (col, mute, solo, name) = (rgb(r.color), r.mute, r.solo, r.name.clone());
-        p.rect_filled(left, CornerRadius::ZERO, col);
-        p.rect_filled(right, CornerRadius::ZERO, panel());
+        let sel = app.selected_return == Some(k);
+        p.rect_filled(left, CornerRadius::ZERO, if sel { shade(col, 1.25) } else { col });
+        p.rect_filled(right, CornerRadius::ZERO, if sel { sel_bg() } else { panel() });
+        super::add_master_zone(ui, head);
         let row1 = head.min.y + 2.0;
         let tc = text_on(col);
         let cbtn = Rect::from_min_size(pos2(left.min.x + 2.0, row1 - 1.0), vec2(15.0, BOX_H + 2.0));
@@ -1107,6 +1110,9 @@ fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, l
         let name_rect = Rect::from_min_max(pos2(cbtn.max.x + 2.0, row1 - 1.0), pos2(left.max.x - 3.0, row1 + BOX_H + 1.0));
         p.with_clip_rect(name_rect).text(name_rect.left_center(), Align2::LEFT_CENTER, &name, font(FS), tc);
         let hr = ui.interact(left, ui.scope_id().with(("ret_head", k)), Sense::click());
+        if hr.clicked() || hr.secondary_clicked() {
+            app.select_return(k);
+        }
         super::menu::context(&hr, super::menu::W_TRACK, |ui| super::session::return_menu(app, ui, k));
         if g.io_w > 0.0 {
             let io = Rect::from_min_max(pos2(split - g.io_w, head.min.y), pos2(split - 2.0, head.max.y));
@@ -1265,9 +1271,8 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
         && shift_only
         && let Some(pos) = lr.interact_pointer_pos()
         && let Some(t) = g.track_at(pos.y)
-        && clip_at(app, t, g.beat_at(pos.x)).is_none()
     {
-        // Shift+click on empty lane space: time selection from the start marker
+        // Shift+click on lane space (clip bodies too): time selection from the start marker
         // (or the current selection) to here, across the tracks in between (Live).
         app.extend_time_selection(g.snap(g.beat_at(pos.x)), t);
     } else if lr.clicked()
@@ -1275,23 +1280,14 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
     {
         let beat = g.beat_at(pos.x);
         app.time_sel = None;
-        let mode = ui.input(|i| SelMode::from_mods(&i.modifiers));
         match g.track_at(pos.y) {
             Some(t) => {
-                match clip_at(app, t, beat) {
-                    // Clip body: select it, start point at the clicked spot (Live's insert
-                    // marker). Only the title bar jumps to the clip start.
-                    Some(id) => {
-                        app.select_arr_clip_mode(id, mode);
-                        app.set_start_marker(g.snap(beat));
-                    }
-                    None => {
-                        app.set_start_marker(g.snap(beat));
-                        if !toggle {
-                            app.arr_sel.clear();
-                            app.resync_selected_clip();
-                        }
-                    }
+                // Clip body or empty lane: insert marker only (Live); clips are
+                // selected by their name bar.
+                app.set_start_marker(g.snap(beat));
+                if !toggle {
+                    app.arr_sel.clear();
+                    app.resync_selected_clip();
                 }
                 if !toggle {
                     app.click_track(t, false);
@@ -1315,6 +1311,7 @@ fn lanes_interaction(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lr: &egui::Re
         if let Ok(id) = app.edit(|p| p.insert_midi_clip(t, start, end)) {
             app.arr_sel = vec![id];
             app.resync_selected_clip();
+            app.open_clip_view();
         }
     }
     if lr.secondary_clicked()
@@ -1949,6 +1946,44 @@ fn draw_clip_fill(
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
             draw_wave(p, body, visible, buf, zoom, &frame_of, ink);
+        }
+    }
+}
+
+/// Status-bar clip overview: the whole clip's notes / waveform squeezed into `r`.
+pub fn draw_clip_overview(app: &DawApp, p: &egui::Painter, r: Rect, clip: &Clip, ink: Color32) {
+    if clip.length <= 1e-9 || r.width() < 2.0 {
+        return;
+    }
+    let zoom = r.width() as f64 / clip.length;
+    match &clip.content {
+        ClipContent::Midi { notes } => {
+            if notes.is_empty() {
+                return;
+            }
+            let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
+            let span = (hi - lo).max(1) as f32 + 1.0;
+            let nh = (r.height() / span).clamp(1.0, 3.0);
+            for (l0, l1, u0) in play_segments(clip) {
+                let xs = r.min.x + (l0 * zoom) as f32;
+                let u1 = u0 + (l1 - l0);
+                for n in notes.iter().filter(|n| !n.muted && n.start >= u0 - 1e-9 && n.start < u1) {
+                    let x1 = xs + ((n.start - u0) * zoom) as f32;
+                    let x2 = (x1 + (n.length.min(u1 - n.start) * zoom) as f32).max(x1 + 1.0);
+                    let y = r.max.y - ((n.pitch - lo) as f32 + 1.0) / span * r.height();
+                    p.rect_filled(Rect::from_min_max(pos2(x1, y), pos2(x2, y + nh)), CornerRadius::ZERO, ink);
+                }
+            }
+        }
+        ClipContent::Audio { offset_frames, warp_bpm, .. } => {
+            let Some(buf) = app.cache.peek(sample_key(clip)) else { return };
+            let sr = buf.sample_rate as f64;
+            let map = match warp_bpm {
+                Some(b) => daw_core::compile::warp_map(clip, *offset_frames, Some(*b), sr),
+                None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / app.project.tempo_bpm.max(1.0)),
+            };
+            let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
+            draw_wave(p, r, r, buf, zoom, &frame_of, ink);
         }
     }
 }
