@@ -410,6 +410,7 @@ fn note(start: f64, length: f64, pitch: i32, velocity: f32) -> Note {
         muted: false,
         mpe: 0,
         vel_dev: 0,
+        ..Default::default()
     }
 }
 
@@ -1217,7 +1218,7 @@ mod tests {
     use super::*;
 
     fn n(start: f64, pitch: u8) -> Note {
-        Note { start, length: 1.0, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }
+        Note { start, length: 1.0, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() }
     }
     const CX: Ctx = Ctx { range: (0.0, 4.0), scale: None };
 

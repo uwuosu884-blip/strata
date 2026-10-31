@@ -10,6 +10,38 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.9] - 2026-10-31
+
+### Added
+- **Clip context menu** (right-click the clip name bar): Cut, Copy, Duplicate,
+  Delete, Zoom to / Back from Time Selection, Rename, Deactivate Clip,
+  Consolidate, Export MIDI Clip… (writes `<name>.mid` to the project folder),
+  Create / Reset Fades, Loop Selection, Crop Clip, Reverse Clip(s) (audio) and
+  the clip colour palette. Items DAW lacks are greyed.
+- **Main and return context menus**: Insert Audio / MIDI / Return Track,
+  colour palette; returns also Delete. Missing items greyed.
+- **Velocity bar ▾ "Show Lane:"** Velocity / Release Velocity / Chance lanes,
+  stacked and editable (drag a dot; selected notes or the nearest chord).
+  Per-note release velocity (note-off velocity, read from and written to
+  `.mid`; built-in synths ignore it) and chance (probability the note plays,
+  rolled by the engine). Saved in the project.
+- Touchpad pinch zooms the piano roll (Wayland / macOS; untested on hardware).
+- Dragging a clip onto the track headers auto-scrolls the arrangement right,
+  faster the further in.
+- **Selected vs. focused track**: clicking a header's coloured name part
+  selects the track (name turns light blue); any other click clears it.
+
+### Changed
+- Metronome uses the bundled Classic / Click / Wood samples (UP sample on the
+  downbeat).
+- Arrangement selection can be dragged straight up / down (one grid cell wide).
+- Empty MIDI recordings are kept as empty clips.
+
+### Fixed
+- Piano-key highlight no longer extends into the area left of the keys.
+- Piano-roll vertical zoom (Alt+wheel) is smooth: fractional rows, the pitch
+  under the cursor stays put.
+
 ## [0.7.8] - 2026-10-31
 
 ### Added
@@ -710,7 +742,9 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/uwuosu884-blip/strata/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/uwuosu884-blip/strata/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/uwuosu884-blip/strata/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/uwuosu884-blip/strata/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/uwuosu884-blip/strata/compare/v0.7.4...v0.7.5

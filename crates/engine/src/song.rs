@@ -11,7 +11,7 @@ pub const MAX_TRACKS: usize = 64;
 /// Return tracks a track can send to (Live: A–L).
 pub const MAX_SENDS: usize = 12;
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Start in beats from clip start.
     pub start: f64,
@@ -28,6 +28,34 @@ pub struct Note {
     /// (negative: dev..0) to the velocity.
     #[serde(default, skip_serializing_if = "is_zero_i8")]
     pub vel_dev: i8,
+    /// Release (note-off) velocity, 0..=127 (Live's default 64). The built-in
+    /// instruments ignore it; it is written to / read from .mid files.
+    #[serde(default = "default_rel_vel", skip_serializing_if = "is_default_rel_vel")]
+    pub rel_vel: u8,
+    /// Probability (0..=1) that the note plays on each pass (Live's Chance).
+    #[serde(default = "default_chance", skip_serializing_if = "is_default_chance")]
+    pub chance: f32,
+}
+
+pub const DEFAULT_REL_VEL: u8 = 64;
+
+impl Default for Note {
+    fn default() -> Self {
+        Self { start: 0.0, length: 0.25, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0, rel_vel: DEFAULT_REL_VEL, chance: 1.0 }
+    }
+}
+
+fn default_rel_vel() -> u8 {
+    DEFAULT_REL_VEL
+}
+fn is_default_rel_vel(v: &u8) -> bool {
+    *v == DEFAULT_REL_VEL
+}
+fn default_chance() -> f32 {
+    1.0
+}
+fn is_default_chance(v: &f32) -> bool {
+    *v >= 1.0
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -39,6 +67,22 @@ fn is_zero_i8(v: &i8) -> bool {
 }
 
 impl Note {
+    /// Chance roll for one playback at song beat `at` (hashed, like the
+    /// deviation, so the audio thread keeps no RNG state).
+    pub fn plays(&self, at: f64) -> bool {
+        if self.chance >= 1.0 {
+            return true;
+        }
+        if self.chance <= 0.0 {
+            return false;
+        }
+        let mut h = at.to_bits() ^ ((self.pitch as u64) << 48) ^ 0xC2B2_AE3D_27D4_EB4F;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        h ^= h >> 33;
+        ((h >> 11) as f64 / (1u64 << 53) as f64) < self.chance as f64
+    }
+
     /// Velocity for one playback at song beat `at` (deviation hashed from the
     /// position and pitch: no RNG state on the audio thread).
     pub fn play_velocity(&self, at: f64) -> u8 {
@@ -564,12 +608,30 @@ mod vel_dev_tests {
 
     #[test]
     fn deviation_stays_in_range_and_varies() {
-        let n = Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 20 };
+        let n = Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 20, ..Default::default() };
         let v: Vec<u8> = (0..64).map(|i| n.play_velocity(i as f64 * 0.37)).collect();
         assert!(v.iter().all(|&x| (100..=120).contains(&x)));
         assert!(v.iter().any(|&x| x != v[0]), "random per playback");
         let d = Note { vel_dev: -30, ..n };
         assert!((0..64).all(|i| (70..=100).contains(&d.play_velocity(i as f64))));
         assert_eq!(Note { vel_dev: 0, ..n }.play_velocity(3.0), 100);
+    }
+
+    #[test]
+    fn chance_plays_about_that_often() {
+        let n = Note { chance: 0.25, ..Default::default() };
+        let hits = (0..4000).filter(|&i| n.plays(i as f64 * 0.25)).count();
+        assert!((800..1200).contains(&hits), "{hits}");
+        assert!((0..100).all(|i| Note::default().plays(i as f64)));
+        assert!((0..100).all(|i| !Note { chance: 0.0, ..n }.plays(i as f64)));
+    }
+
+    #[test]
+    fn defaults_are_not_serialized_and_old_files_load() {
+        let n = Note::default();
+        let s = ron::to_string(&n).unwrap();
+        assert!(!s.contains("chance") && !s.contains("rel_vel"), "{s}");
+        let old: Note = ron::from_str("(start:1.0,length:0.5,pitch:60,velocity:90)").unwrap();
+        assert_eq!((old.rel_vel, old.chance), (64, 1.0));
     }
 }

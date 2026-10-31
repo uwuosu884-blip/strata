@@ -97,7 +97,16 @@ pub fn parse_smf(d: &[u8]) -> Result<Vec<SmfTrack>, String> {
                     } else if off && let Some(k) = open.iter().position(|o| o.0 == ch && o.1 == data[0]) {
                         let (_, pitch, t0, vel) = open.remove(k);
                         let len = ((tick - t0) as f64 / ppq).max(1.0 / 64.0);
-                        notes.push(Note { start: t0 as f64 / ppq, length: len, pitch, velocity: vel.max(1), ..Default::default() });
+                        // A real note-off carries the release velocity; note-on 0 has none.
+                        let rel_vel = if b & 0xf0 == 0x80 { data[1].min(127) } else { daw_engine::DEFAULT_REL_VEL };
+                        notes.push(Note {
+                            start: t0 as f64 / ppq,
+                            length: len,
+                            pitch,
+                            velocity: vel.max(1),
+                            rel_vel,
+                            ..Default::default()
+                        });
                     }
                 }
                 _ => return Err(format!("unexpected MIDI status byte {b:#04x}")),
@@ -117,6 +126,51 @@ pub fn parse_smf(d: &[u8]) -> Result<Vec<SmfTrack>, String> {
         return Err("the MIDI file contains no notes".into());
     }
     Ok(out)
+}
+
+/// Write `notes` as a type-0 standard MIDI file (96 PPQ, channel 1, tempo
+/// `bpm`). Note-offs are real 0x80 events carrying the release velocity;
+/// deactivated notes are left out.
+pub fn write_smf(notes: &[Note], bpm: f64, name: &str) -> Vec<u8> {
+    const PPQ: f64 = 96.0;
+    let mut ev: Vec<(u64, u8, u8, u8)> = Vec::new(); // (tick, order: off first, pitch, value)
+    for n in notes.iter().filter(|n| !n.muted && n.start >= 0.0) {
+        let t0 = (n.start * PPQ).round() as u64;
+        let t1 = ((n.start + n.length) * PPQ).round().max(t0 as f64 + 1.0) as u64;
+        ev.push((t0, 1, n.pitch.min(127), n.velocity.clamp(1, 127)));
+        ev.push((t1, 0, n.pitch.min(127), n.rel_vel.min(127)));
+    }
+    ev.sort_by_key(|e| (e.0, e.1, e.2));
+    let mut trk: Vec<u8> = Vec::new();
+    let varlen = |v: &mut Vec<u8>, mut x: u64| {
+        let mut buf = vec![(x & 0x7f) as u8];
+        x >>= 7;
+        while x > 0 {
+            buf.push((x & 0x7f) as u8 | 0x80);
+            x >>= 7;
+        }
+        v.extend(buf.iter().rev());
+    };
+    let nm = name.as_bytes();
+    trk.push(0);
+    trk.extend([0xff, 0x03]);
+    varlen(&mut trk, nm.len() as u64);
+    trk.extend(nm);
+    let us = (60_000_000.0 / bpm.max(1.0)).round().clamp(1.0, 16_777_215.0) as u32;
+    trk.extend([0, 0xff, 0x51, 3, (us >> 16) as u8, (us >> 8) as u8, us as u8]);
+    let mut last = 0;
+    for (t, on, pitch, v) in ev {
+        varlen(&mut trk, t - last);
+        last = t;
+        trk.extend([if on == 1 { 0x90 } else { 0x80 }, pitch, v]);
+    }
+    trk.extend([0, 0xff, 0x2f, 0]);
+    let mut out = b"MThd\0\0\0\x06\0\0\0\x01".to_vec();
+    out.extend((PPQ as u16).to_be_bytes());
+    out.extend(b"MTrk");
+    out.extend((trk.len() as u32).to_be_bytes());
+    out.extend(trk);
+    out
 }
 
 impl crate::Project {
@@ -206,8 +260,24 @@ mod tests {
         assert!(parse_smf(b"RIFF....").is_err());
     }
 
+    #[test]
+    fn write_then_parse_round_trips_with_release_velocity() {
+        let notes = vec![
+            Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, rel_vel: 20, ..Default::default() },
+            Note { start: 0.5, length: 0.25, pitch: 67, velocity: 50, ..Default::default() },
+            Note { start: 2.0, length: 1.0, pitch: 72, velocity: 90, muted: true, ..Default::default() },
+        ];
+        let f = parse_smf(&write_smf(&notes, 120.0, "Clip")).unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].name.as_deref(), Some("Clip"));
+        let n = &f[0].notes;
+        assert_eq!(n.len(), 2, "deactivated notes are left out");
+        assert_eq!((n[0].pitch, n[0].start, n[0].length, n[0].velocity, n[0].rel_vel), (60, 0.0, 1.0, 100, 20));
+        assert_eq!((n[1].pitch, n[1].start, n[1].length, n[1].velocity, n[1].rel_vel), (67, 0.5, 0.25, 50, 64));
+    }
+
     fn file() -> Vec<SmfTrack> {
-        let n = |pitch, start, length| Note { pitch, start, length, velocity: 100, muted: false, mpe: 0, vel_dev: 0 };
+        let n = |pitch, start, length| Note { pitch, start, length, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() };
         vec![
             SmfTrack { name: Some("Lead".into()), notes: vec![n(60, 0.0, 1.0), n(64, 4.5, 1.0)] },
             SmfTrack { name: None, notes: vec![n(36, 0.0, 0.5)] },

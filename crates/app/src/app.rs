@@ -163,6 +163,9 @@ pub struct DawApp {
     /// Empty-area click hid the track selection; stays hidden while
     /// `selected_track` still equals this value.
     pub hide_sel: Option<usize>,
+    /// Track header explicitly selected (name part clicked): only then is the
+    /// name part light blue. `selected_track` alone is just the focused track.
+    pub head_sel: bool,
     /// Selected arrangement clips (ids are stable across sorting).
     pub arr_sel: Vec<u64>,
     pub time_sel: Option<crate::arr_ops::TimeSel>,
@@ -226,7 +229,8 @@ pub struct DawApp {
     /// Arrangement track height (Alt+wheel) and vertical scroll.
     pub arr_row_h: f32,
     pub arr_vscroll: f32,
-    pub pr_low_note: i32,
+    /// Fractional bottom pitch of the piano roll (smooth vertical scroll / zoom).
+    pub pr_low_note: f32,
     /// Piano roll: pixels per beat (0 = fit the clip), first visible beat, key row height.
     pub pr_zoom: f32,
     pub pr_scroll: f64,
@@ -281,6 +285,8 @@ pub struct DawApp {
     pub pr_audition: bool,
     /// Velocity lane collapsed (its bar's orange button).
     pub pr_vel_collapsed: bool,
+    /// Lanes under the piano roll: Velocity, Release Velocity, Chance (▾ menu).
+    pub pr_lanes: [bool; 3],
     /// Velocity bar: Randomize range, Ramp start / end.
     pub pr_rand_amt: u8,
     pub pr_ramp: (u8, u8),
@@ -349,6 +355,7 @@ impl DawApp {
             selected_track: 0,
             track_sel: Vec::new(),
             hide_sel: None,
+            head_sel: false,
             arr_sel: Vec::new(),
             time_sel: None,
             selected_clip: None,
@@ -388,7 +395,7 @@ impl DawApp {
             head_focus: false,
             arr_row_h: 88.0,
             arr_vscroll: 0.0,
-            pr_low_note: 48,
+            pr_low_note: 48.0,
             pr_zoom: 0.0,
             pr_scroll: 0.0,
             pr_zoom_anchor: None,
@@ -422,6 +429,7 @@ impl DawApp {
             pr_vel_h: 48.0,
             pr_audition: true,
             pr_vel_collapsed: false,
+            pr_lanes: [true, false, false],
             pr_rand_amt: 100,
             pr_ramp: (100, 127),
             pr_hold: None,
@@ -1301,6 +1309,7 @@ impl DawApp {
                         muted: false,
                         mpe: 0,
                         vel_dev: 0,
+                        ..Default::default()
                     })
                     .collect()
             };
@@ -1338,15 +1347,14 @@ impl DawApp {
                                     muted: false,
                                     mpe: 0,
                                     vel_dev: 0,
+                                    ..Default::default()
                                 });
                             }
                             existing.sort_by(|a, b| a.start.total_cmp(&b.start));
                             created += 1;
                             continue;
                         }
-                        if notes.is_empty() {
-                            continue;
-                        }
+                        // An empty take still becomes a clip (Live keeps it).
                         ClipContent::Midi { notes }
                     }
                     TrackKind::Audio => match &audio_keys[i] {

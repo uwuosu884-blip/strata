@@ -540,6 +540,10 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
                     return;
                 }
                 let at = at_u - u0;
+                // Chance: rolled per playback; a skipped note sends nothing.
+                if !note.plays(ctx.beat0 + at) {
+                    return;
+                }
                 let off = (((at + EPS) / ctx.bps).floor().max(0.0) as usize).min(n - 1);
                 let len_beats = note.length.min(cap);
                 let mut expr = 0u8;

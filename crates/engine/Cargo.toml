@@ -12,3 +12,4 @@ realfft = "3"
 
 [dev-dependencies]
 assert_no_alloc.workspace = true
+ron.workspace = true

@@ -54,6 +54,8 @@ fn big_song(variant: usize) -> Song {
             muted: false,
             mpe: (i % 3) as u32,
             vel_dev: (i % 5) as i8 * 4,
+            chance: if i % 7 == 0 { 0.5 } else { 1.0 },
+            ..Default::default()
         })
         .collect();
     let mut midi = Clip::new(4.0, true, ClipContent::Midi(many_notes));

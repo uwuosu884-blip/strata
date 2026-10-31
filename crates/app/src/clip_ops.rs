@@ -53,6 +53,28 @@ impl DawApp {
         });
     }
 
+    /// Write a MIDI clip to `<project folder>/<clip name>.mid` (release
+    /// velocities included). Returns the path written.
+    pub fn export_midi_clip(&mut self, cref: ClipRef) -> Option<std::path::PathBuf> {
+        let clip = self.clip(cref)?.clone();
+        let ClipContent::Midi { notes } = &clip.content else { return None };
+        let name = if clip.name.trim().is_empty() { "MIDI Clip".to_string() } else { clip.name.clone() };
+        let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.()".contains(c) { c } else { '_' }).collect();
+        let dir = self.path.as_ref().and_then(|p| p.parent().map(std::path::PathBuf::from)).unwrap_or_else(|| self.browser_dir.clone());
+        let path = dir.join(format!("{safe}.mid"));
+        let data = daw_project::midifile::write_smf(notes, self.project.tempo_bpm, &name);
+        match std::fs::write(&path, data) {
+            Ok(()) => {
+                self.toast(format!("Exported {}", path.display()));
+                Some(path)
+            }
+            Err(e) => {
+                self.toast(format!("MIDI export failed: {e}"));
+                None
+            }
+        }
+    }
+
     /// Drop everything outside the loop (or start..end); the region becomes 1.1.1.
     pub fn crop_clip(&mut self, cref: ClipRef) {
         let Some(clip) = self.clip(cref).cloned() else { return };
@@ -309,7 +331,7 @@ mod tests {
     }
 
     fn n(start: f64, pitch: u8) -> Note {
-        Note { start, length: 0.25, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }
+        Note { start, length: 0.25, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() }
     }
 
     fn slot(a: &mut DawApp, notes: Vec<Note>) -> ClipRef {

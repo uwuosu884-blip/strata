@@ -268,7 +268,7 @@ fn master_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) {
     if resp.clicked() {
         app.select_master();
     }
-    resp.context_menu(|ui| master_menu(app, ui));
+    super::menu::context(&resp, super::menu::W_TRACK, |ui| master_menu(app, ui));
     // Scene launchers.
     let band = b.slot_band(x0, x1);
     let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(band));
@@ -450,7 +450,7 @@ fn master_mixer_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) 
     if resp.clicked() {
         app.select_master();
     }
-    resp.context_menu(|ui| master_menu(app, ui));
+    super::menu::context(&resp, super::menu::W_TRACK, |ui| master_menu(app, ui));
     p.rect_filled(b.slot_band(x0, x1), CornerRadius::ZERO, panel());
     if let Some(io) = b.io {
         let r = Bands::rect(x0, x1, io);
@@ -523,8 +523,10 @@ pub(super) fn return_header(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect:
 }
 
 /// Return track context menu (Live order, unsupported items greyed).
+/// Return track menu (hn-return-context-menu).
 pub(super) fn return_menu(app: &mut DawApp, ui: &mut egui::Ui, k: usize) {
-    use super::menu::{item, sep};
+    use super::menu::{color_grid, item, sep};
+    let Some(color) = app.project.returns.get(k).map(|r| r.color) else { return };
     item(ui, "Cut", "Ctrl+X", false);
     item(ui, "Copy", "Ctrl+C", false);
     item(ui, "Duplicate", "Ctrl+D", false);
@@ -533,9 +535,31 @@ pub(super) fn return_menu(app: &mut DawApp, ui: &mut egui::Ui, k: usize) {
     }
     sep(ui);
     item(ui, "Rename", "Ctrl+R", false);
+    item(ui, "Edit Info Text", "", false);
     sep(ui);
-    item(ui, "Insert Audio Track", "Ctrl+T", false);
-    item(ui, "Insert MIDI Track", "Ctrl+Shift+T", false);
+    insert_track_items(app, ui);
+    sep(ui);
+    item(ui, "Select Track Content", "", false);
+    sep(ui);
+    if let Some(c) = color_grid(ui, color) {
+        app.edit(|p| {
+            if let Some(r) = p.returns.get_mut(k) {
+                r.color = c;
+            }
+        });
+        ui.close();
+    }
+}
+
+/// Insert Audio / MIDI / Return Track rows shared by the track menus.
+fn insert_track_items(app: &mut DawApp, ui: &mut egui::Ui) {
+    use super::menu::item;
+    if item(ui, "Insert Audio Track", "Ctrl+T", true) {
+        app.add_track(TrackKind::Audio);
+    }
+    if item(ui, "Insert MIDI Track", "Ctrl+Shift+T", true) {
+        app.add_track(TrackKind::Midi);
+    }
     if item(ui, "Insert Return Track", "Ctrl+Alt+T", app.project.returns.len() < daw_engine::MAX_SENDS) {
         app.add_return_track();
     }
@@ -737,20 +761,19 @@ pub fn draw_fold_arrow(p: &egui::Painter, c: egui::Pos2, folded: bool, col: Colo
 }
 
 /// Master header right-click: colour (Live lets the Main track be recoloured).
+/// Main track menu (hn-main-context-menu).
 pub fn master_menu(app: &mut DawApp, ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new("Master colour").small().color(Color32::GRAY));
-    ui.horizontal(|ui| {
-        for c in daw_project::PALETTE.into_iter().chain([[150, 150, 150]]) {
-            let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::click());
-            ui.painter().rect_filled(rect, CornerRadius::same(2), rgb(c));
-            if app.project.master_color == c {
-                ui.painter().rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
-            }
-            if resp.clicked() {
-                app.edit(|p| p.master_color = c);
-            }
-        }
-    });
+    use super::menu::{color_grid, item, sep};
+    item(ui, "Edit Info Text", "", false);
+    sep(ui);
+    insert_track_items(app, ui);
+    sep(ui);
+    item(ui, "Select Track Content", "", false);
+    sep(ui);
+    if let Some(c) = color_grid(ui, app.project.master_color) {
+        app.edit(|p| p.master_color = c);
+        ui.close();
+    }
 }
 
 /// Right-click on a track header (Session or Arrangement): Live's track menu.
@@ -813,7 +836,9 @@ pub fn track_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize) {
     if item(ui, "Insert MIDI Track", "Ctrl+Shift+T", true) {
         app.add_track(TrackKind::Midi);
     }
-    item(ui, "Insert Return Track", "Ctrl+Alt+T", false);
+    if item(ui, "Insert Return Track", "Ctrl+Alt+T", app.project.returns.len() < daw_engine::MAX_SENDS) {
+        app.add_return_track();
+    }
     if item(ui, "Group Tracks", "Ctrl+G", true) {
         app.group_selected_tracks();
     }

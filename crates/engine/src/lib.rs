@@ -30,8 +30,9 @@ pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams
 pub use instruments::synth::{SynthParams, Wave};
 pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
 pub use song::{
-    ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_SENDS, MAX_TRACKS,
-    MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput, WarpSetup, fade_gain,
+    ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, DEFAULT_REL_VEL, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_SENDS,
+    MAX_TRACKS, MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput,
+    WarpSetup, fade_gain,
 };
 pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};

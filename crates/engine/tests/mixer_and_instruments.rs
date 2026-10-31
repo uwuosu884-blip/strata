@@ -114,7 +114,16 @@ fn clip_notes_end_after_their_length() {
     let clip = Clip::new(
         4.0,
         true,
-        ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }]),
+        ClipContent::Midi(vec![Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+            muted: false,
+            mpe: 0,
+            vel_dev: 0,
+            ..Default::default()
+        }]),
     );
     h.set_song(Song::new(vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), slots: vec![Some(clip)], ..Default::default() }]))
         .unwrap();

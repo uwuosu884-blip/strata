@@ -1301,7 +1301,7 @@ mod tests {
         let mut p = Project::new_default();
         let id = p.new_midi_clip(1, 2, 8.0).unwrap();
         if let Some(Some(Clip { content: ClipContent::Midi { notes }, .. })) = p.tracks[1].slots.get_mut(2) {
-            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false, mpe: 0, vel_dev: 0 });
+            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() });
         }
         p.tracks[3].arrangement.push(ArrangementClip {
             start: 4.0,
@@ -1395,7 +1395,16 @@ mod tests {
             content: ClipContent::Midi {
                 notes: starts
                     .iter()
-                    .map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 })
+                    .map(|&s| Note {
+                        start: s,
+                        length: 0.1,
+                        pitch: 60,
+                        velocity: 100,
+                        muted: false,
+                        mpe: 0,
+                        vel_dev: 0,
+                        ..Default::default()
+                    })
                     .collect(),
             },
             ..Default::default()
@@ -1510,8 +1519,8 @@ mod tests {
         let mut p = blank(1);
         let id = p.alloc_id();
         let notes = vec![
-            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0 },
-            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0 },
+            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() },
+            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() },
         ];
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,

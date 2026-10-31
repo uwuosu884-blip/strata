@@ -38,10 +38,6 @@ fn onsets(signal: &[f32]) -> Vec<usize> {
     found
 }
 
-fn zero_crossings(signal: &[f32]) -> usize {
-    signal.windows(2).filter(|w| (w[0] <= 0.0) != (w[1] <= 0.0)).count()
-}
-
 #[test]
 fn silent_until_play() {
     let (mut e, _h) = engine();
@@ -65,15 +61,17 @@ fn clicks_land_exactly_on_the_beat_grid() {
 }
 
 #[test]
-fn downbeat_is_higher_pitched() {
+fn downbeat_plays_the_up_sample() {
     let (mut e, mut h) = engine();
     h.send(Command::Play).unwrap();
-    let out = left(&render(&mut e, 2 * 24_000, 512));
+    let out = left(&render(&mut e, 3 * 24_000, 512));
     let window = 480; // 10 ms
-    let downbeat = zero_crossings(&out[1..1 + window]);
-    let beat_two = zero_crossings(&out[24_001..24_001 + window]);
-    // 1760 Hz vs 880 Hz → about twice the zero crossings.
-    assert!(downbeat > beat_two * 3 / 2, "downbeat {downbeat}, beat two {beat_two}");
+    // Energy per click (onsets may differ by one sample from float rounding).
+    let energy = |at: usize| out[at..at + window].iter().map(|s| s * s).sum::<f32>();
+    let (down, two, three) = (energy(0), energy(24_000), energy(48_000));
+    assert!(two > 0.1, "{two}");
+    assert!((two - three).abs() < two * 0.02, "every other beat = the plain sample: {two} vs {three}");
+    assert!((down - two).abs() > two * 0.2, "beat 1 = the UP sample: {down} vs {two}");
 }
 
 #[test]

@@ -314,8 +314,10 @@ mod tests {
 
     fn put(p: &mut Project, t: usize, start: f64, len: f64, notes: &[f64]) -> u64 {
         let id = p.alloc_id();
-        let notes =
-            notes.iter().map(|&s| Note { pitch: 60, start: s, length: 0.25, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }).collect();
+        let notes = notes
+            .iter()
+            .map(|&s| Note { pitch: 60, start: s, length: 0.25, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() })
+            .collect();
         p.tracks[t].arrangement.push(ArrangementClip {
             start,
             clip: Clip { id, length: len, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },
@@ -392,7 +394,8 @@ mod tests {
     #[test]
     fn notes_past_the_end_extend_the_right_limit() {
         // Shortening keeps notes beyond the end; dragging back out may reach them.
-        let notes = vec![Note { start: 6.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }];
+        let notes =
+            vec![Note { start: 6.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() }];
         let c = Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() };
         assert_eq!(c.extend_limits(0.0, None).1, 3.0);
         let a = ArrangementClip { start: 0.0, clip: c };
@@ -404,7 +407,8 @@ mod tests {
     #[test]
     fn resize_is_clamped_to_the_material() {
         // MIDI: shrink from both sides, then drag back out: stops at the original edges.
-        let notes = vec![Note { start: 0.5, length: 0.5, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }];
+        let notes =
+            vec![Note { start: 0.5, length: 0.5, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() }];
         let a = ArrangementClip {
             start: 4.0,
             clip: Clip { length: 4.0, looping: false, content: ClipContent::Midi { notes }, ..Default::default() },
@@ -448,7 +452,7 @@ mod tests {
             let (_, i) = p.find_arrangement_clip(id).unwrap();
             let c = &mut p.tracks[t].arrangement[i].clip;
             if let ClipContent::Midi { notes } = &mut c.content {
-                notes.push(Note { start: 1.0, length: 0.5, pitch, velocity: 90, muted: false, mpe: 0, vel_dev: 0 });
+                notes.push(Note { start: 1.0, length: 0.5, pitch, velocity: 90, muted: false, mpe: 0, vel_dev: 0, ..Default::default() });
             }
             c.muted = pitch == 62;
         }

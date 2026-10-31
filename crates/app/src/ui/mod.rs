@@ -88,6 +88,11 @@ impl eframe::App for DawApp {
             ctx.set_zoom_factor(z);
         }
         self.begin_frame();
+        // Header selection (light-blue name part) ends with any click outside a
+        // track's name part (that click re-selects). Popup menus keep it.
+        if ctx.input(|i| i.pointer.primary_pressed()) && !egui::Popup::is_any_open(&ctx) {
+            self.head_sel = false;
+        }
         self.handle_close(&ctx);
         // Any press ends header focus; a header click (on release) sets it again.
         if ctx.input(|i| i.pointer.primary_pressed()) {

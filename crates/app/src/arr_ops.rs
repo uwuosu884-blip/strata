@@ -153,6 +153,11 @@ impl DawApp {
         self.resync_selected_clip();
     }
 
+    /// Selected by its header (not merely focused): light-blue name part.
+    pub fn is_track_header_selected(&self, t: usize) -> bool {
+        self.head_sel && self.is_track_selected(t)
+    }
+
     pub fn is_track_selected(&self, t: usize) -> bool {
         if self.sel_hidden() || self.master_selected || self.selected_return.is_some() {
             false
@@ -168,6 +173,7 @@ impl DawApp {
     /// The detail panel switches to the track's devices.
     pub fn select_track_header(&mut self, t: usize, mode: SelMode) {
         self.hide_sel = None;
+        self.head_sel = true;
         match mode {
             SelMode::Range => {
                 let anchor = self.track_anchor.filter(|&a| a < self.project.tracks.len()).unwrap_or(self.selected_track);
@@ -1214,7 +1220,7 @@ mod app_tests {
 
     fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
         let id = p.alloc_id();
-        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }];
+        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0, ..Default::default() }];
         p.tracks[t]
             .arrangement
             .push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
@@ -1417,7 +1423,7 @@ mod app_tests {
         let mut a = tracks(1);
         let id = midi_clip(&mut a.project, 0, 0.0, 4.0, 60);
         if let Some(ClipContent::Midi { notes }) = super::clip_by_id(&mut a.project, id).map(|c| &mut c.content) {
-            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false, mpe: 0, vel_dev: 0 });
+            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false, mpe: 0, vel_dev: 0, ..Default::default() });
         }
         let c = ClipRef::Arr { track: 0, index: 0 };
         a.selected_clip = Some(c);

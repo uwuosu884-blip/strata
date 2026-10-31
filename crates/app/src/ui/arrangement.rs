@@ -714,7 +714,8 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         if tr.secondary_clicked() && !app.arr_sel.contains(&id) {
             app.select_arr_clip(id, false);
         }
-        super::menu::context(&tr, super::menu::W_CLIP, |ui| selection_menu(app, ui));
+        // Name bar: Live's clip menu (hn-clip-context-menu).
+        super::menu::context(&tr, super::menu::W_CLIP, |ui| clip_menu(app, ui));
     }
     live_preview(app, &painter, g, lane, t, collapsed);
 }
@@ -750,6 +751,7 @@ fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, 
                     muted: false,
                     mpe: 0,
                     vel_dev: 0,
+                    ..Default::default()
                 })
                 .collect()
         }
@@ -1004,7 +1006,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let left = Rect::from_min_max(inner.min, pos2(split - g.io_w - 2.0, inner.max.y));
     let right = Rect::from_min_max(pos2(split, inner.min.y), inner.max);
     // Selected: Live's fixed light blue, whatever the track colour.
-    let title_bg = if selected { SEL_BLUE } else { color };
+    // Only an explicit header selection, not the focused track (hn-selected-track-color).
+    let title_bg = if app.is_track_header_selected(t) { SEL_BLUE } else { color };
     painter.rect_filled(left, CornerRadius::ZERO, title_bg);
     painter.rect_filled(right, CornerRadius::ZERO, if selected { sel() } else { panel() });
     let _ = NAME_W;
@@ -1053,6 +1056,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         } else {
             let mode = ui.input(|i| SelMode::from_mods(&i.modifiers));
             app.select_track_header(t, mode);
+            // Outside the coloured name part: focus only, no light-blue selection.
+            app.head_sel = left.contains(pos);
             app.arr_sel.clear();
             app.time_sel = None;
             app.resync_selected_clip();
@@ -1325,7 +1330,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     if hr.clicked() {
         app.select_master();
     }
-    hr.context_menu(|ui| super::session::master_menu(app, ui));
+    super::menu::context(&hr, super::menu::W_TRACK, |ui| super::session::master_menu(app, ui));
     if io_w > 0.0 {
         let io = Rect::from_min_max(pos2(left.max.x + 2.0, head.min.y + 2.0), pos2(split - 2.0, head.max.y));
         ui.painter().rect_filled(io, CornerRadius::ZERO, panel());
@@ -1581,6 +1586,124 @@ fn selection_menu(app: &mut DawApp, ui: &mut egui::Ui) {
     grid_section(app, ui);
 }
 
+/// Right-click on a clip's name bar (hn-clip-context-menu). Commands DAW does
+/// not have yet are greyed.
+fn clip_menu(app: &mut DawApp, ui: &mut egui::Ui) {
+    use super::menu::*;
+    app.focus_detail = false;
+    app.head_focus = false;
+    let clips: Vec<(usize, usize)> = app.arr_sel.iter().filter_map(|&id| app.project.find_arrangement_clip(id)).collect();
+    let Some(&(t0, i0)) = clips.first() else { return };
+    let first = &app.project.tracks[t0].arrangement[i0];
+    let (first_id, audio) = (first.clip.id, matches!(first.clip.content, ClipContent::Audio { .. }));
+    let midi = !audio;
+    let all_off = clips.iter().all(|&(t, i)| app.project.tracks[t].arrangement[i].clip.muted);
+    let color = first.clip.color;
+    let cref = crate::app::ClipRef::Arr { track: t0, index: i0 };
+    if item(ui, "Cut", "Ctrl+X", true)
+        && let Some(s) = app.cut_selection()
+    {
+        ui.ctx().copy_text(s);
+    }
+    if item(ui, "Copy", "Ctrl+C", true)
+        && let Some(s) = app.copy_selection()
+    {
+        ui.ctx().copy_text(s);
+    }
+    if item(ui, "Duplicate", "Ctrl+D", true) {
+        app.duplicate_arrangement_selection();
+    }
+    if item(ui, "Delete", "Del", true) {
+        app.delete_arrangement_selection();
+    }
+    sep(ui);
+    if item(ui, "Zoom to Time Selection", "Z", true) {
+        // The clips' span becomes the time selection first (Live).
+        if app.time_sel.is_none_or(|ts| ts.len() < 1e-9) {
+            let p = &app.project;
+            let s = clips.iter().map(|&(t, i)| p.tracks[t].arrangement[i].start).fold(f64::INFINITY, f64::min);
+            let e =
+                clips.iter().map(|&(t, i)| p.tracks[t].arrangement[i].start + p.tracks[t].arrangement[i].clip.length).fold(0.0, f64::max);
+            let (ta, tb) = clips.iter().fold((usize::MAX, 0), |a, &(t, _)| (a.0.min(t), a.1.max(t)));
+            app.time_sel = Some(TimeSel::new(s, e, ta, tb));
+        }
+        app.zoom_to_selection();
+    }
+    if item(ui, "Zoom Back from Time Selection", "X", app.zoom_back.is_some()) {
+        app.zoom_back_from_selection();
+    }
+    sep(ui);
+    if item(ui, "Rename", "Ctrl+R", true) {
+        app.start_rename_clip(first_id, false);
+    }
+    item(ui, "Edit Info Text", "", false);
+    item(ui, "Extract Groove(s)", "", false);
+    if item(ui, if all_off { "Activate Clip" } else { "Deactivate Clip" }, "0", true) {
+        app.toggle_disable();
+    }
+    if item(ui, "Consolidate", "Ctrl+J", true) {
+        app.consolidate_selection();
+    }
+    item(ui, "Consolidate Time to New Scene", "", false);
+    sep(ui);
+    item(ui, "Show in Browser", "", false);
+    item(ui, "Show in Explorer", "", false);
+    item(ui, "Show Similar Files", "", false);
+    if midi && item(ui, "Export MIDI Clip…", "", true) {
+        app.export_midi_clip(cref);
+    }
+    sep(ui);
+    if item(ui, "Create Fade", "Ctrl+Alt+F", app.can_create_fade()) {
+        app.create_fade();
+    }
+    if item(ui, "Reset Fades", "Ctrl+Alt+BS", audio) {
+        app.reset_fades();
+    }
+    if item(ui, "Loop Selection", "Ctrl+L", true) {
+        app.loop_selection();
+    }
+    sep(ui);
+    item(ui, "Freeze Track", "Ctrl+Shift+Alt+F", false);
+    item(ui, "Bounce Track in Place", "", false);
+    item(ui, "Bounce to New Track", "Ctrl+B", false);
+    item(ui, "Paste Bounced Audio", "Ctrl+Alt+V", false);
+    sep(ui);
+    if item(ui, "Crop Clip", "Ctrl+Shift+J", clips.len() == 1) {
+        app.crop_clip(cref);
+    }
+    if item(ui, "Reverse Clip(s)", "R", audio) {
+        let refs: Vec<_> = app
+            .arr_sel
+            .clone()
+            .into_iter()
+            .filter_map(|id| app.project.find_arrangement_clip(id))
+            .map(|(track, index)| crate::app::ClipRef::Arr { track, index })
+            .collect();
+        for c in refs {
+            app.reverse_clip(c);
+        }
+    }
+    sep(ui);
+    item(ui, "Slice to New MIDI Track", "", false);
+    item(ui, "Convert Harmony to New MIDI Track", "", false);
+    item(ui, "Convert Melody to New MIDI Track", "", false);
+    item(ui, "Convert Drums to New MIDI Track", "", false);
+    item(ui, "Separate Stems to New Audio Tracks", "", false);
+    sep(ui);
+    if let Some(c) = color_grid(ui, color) {
+        let ids = app.arr_sel.clone();
+        app.edit(|p| {
+            for id in &ids {
+                if let Some((t, i)) = p.find_arrangement_clip(*id) {
+                    p.tracks[t].arrangement[i].clip.color = c;
+                }
+            }
+        });
+        app.needs_compile = true;
+        ui.close();
+    }
+}
+
 /// Snap / adaptive / fixed grid block + Narrow / Widen / Triplet (Live).
 fn grid_section(app: &mut DawApp, ui: &mut egui::Ui) {
     use super::menu::*;
@@ -1634,10 +1757,34 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
     let Some(gst) = ui.data(|m| m.get_temp::<Gesture>(gesture_id())) else { return };
     let (down, pos) = ui.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos()));
     let Some(pos) = pos else { return };
+    // Clip move / trim / range select: past the lane edges (onto the track
+    // headers on the right, before the lane start on the left) the view scrolls,
+    // slowly at first and faster the further the pointer goes.
+    if down && matches!(gst, Gesture::Move(_) | Gesture::Resize { .. } | Gesture::Select { .. }) {
+        let over = if pos.x > g.lanes.max.x {
+            pos.x - g.lanes.max.x
+        } else if pos.x < g.lanes.min.x {
+            pos.x - g.lanes.min.x
+        } else {
+            0.0
+        };
+        if over != 0.0 {
+            let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.05);
+            // px / s: 40 at the edge, +6 per px beyond it, at most 1200.
+            let speed = (40.0 + 6.0 * over.abs()).min(1200.0) * over.signum();
+            app.arr_scroll = (app.arr_scroll + speed * dt / app.arr_zoom).max(0.0);
+            app.follow_paused |= app.status.playing;
+        }
+    }
     match &gst {
         Gesture::Select { anchor, track } => {
             let t = g.rows.get(g.row_at_clamped(pos.y)).copied().unwrap_or(*track);
-            let b = g.snap(g.beat_at(pos.x));
+            let mut b = g.snap(g.beat_at(pos.x));
+            // Straight down / up across tracks: one grid cell wide (Live), so a
+            // purely vertical drag still selects.
+            if t != *track && (b - anchor).abs() < 1e-9 {
+                b = anchor + g.grid;
+            }
             app.time_sel = Some(TimeSel::new(*anchor, b, *track, t));
             if !down && let Some(ts) = app.time_sel {
                 if ts.len() < 1e-9 {
