@@ -4,3 +4,4 @@
 *.wav
 *.flac
 *.mp3
+!crates/engine/assets/**/*.wav
