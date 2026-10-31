@@ -24,10 +24,34 @@ pub struct Note {
     /// Expression (MPE): 1-based index into the clip's `mpe` table, 0 = none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub mpe: u32,
+    /// Velocity deviation (Live): each playback adds a random 0..dev
+    /// (negative: dev..0) to the velocity.
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub vel_dev: i8,
 }
 
 fn is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+fn is_zero_i8(v: &i8) -> bool {
+    *v == 0
+}
+
+impl Note {
+    /// Velocity for one playback at song beat `at` (deviation hashed from the
+    /// position and pitch: no RNG state on the audio thread).
+    pub fn play_velocity(&self, at: f64) -> u8 {
+        if self.vel_dev == 0 {
+            return self.velocity;
+        }
+        let mut h = at.to_bits() ^ ((self.pitch as u64) << 56) ^ 0x9E37_79B9_7F4A_7C15;
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 33;
+        let r = (h >> 11) as f64 / (1u64 << 53) as f64;
+        (self.velocity as f64 + r * self.vel_dev as f64).round().clamp(1.0, 127.0) as u8
+    }
 }
 
 /// Per-note expression breakpoints `(beats from note start, value)`:
@@ -531,5 +555,21 @@ fn prepare_clip(clip: &mut Clip) {
             n.velocity = n.velocity.clamp(1, 127);
         }
         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+    }
+}
+
+#[cfg(test)]
+mod vel_dev_tests {
+    use super::Note;
+
+    #[test]
+    fn deviation_stays_in_range_and_varies() {
+        let n = Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 20 };
+        let v: Vec<u8> = (0..64).map(|i| n.play_velocity(i as f64 * 0.37)).collect();
+        assert!(v.iter().all(|&x| (100..=120).contains(&x)));
+        assert!(v.iter().any(|&x| x != v[0]), "random per playback");
+        let d = Note { vel_dev: -30, ..n };
+        assert!((0..64).all(|i| (70..=100).contains(&d.play_velocity(i as f64))));
+        assert_eq!(Note { vel_dev: 0, ..n }.play_velocity(3.0), 100);
     }
 }

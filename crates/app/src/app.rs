@@ -248,6 +248,8 @@ pub struct DawApp {
     pub zoom_back: Option<(f32, f32)>,
     /// Lanes width last frame (zoom to selection).
     pub arr_lanes_w: f32,
+    /// Lane width last frame (keeps the visible span when it changes).
+    pub arr_w_prev: f32,
     /// Selected scene (Session highlight row; Live always has one).
     pub sel_scene: usize,
     /// Selected *empty* session slot (track, scene); clip slots use `selected_clip`.
@@ -277,6 +279,14 @@ pub struct DawApp {
     pub pr_note_vel: u8,
     pub pr_vel_h: f32,
     pub pr_audition: bool,
+    /// Velocity lane collapsed (its bar's orange button).
+    pub pr_vel_collapsed: bool,
+    /// Velocity bar: Randomize range, Ramp start / end.
+    pub pr_rand_amt: u8,
+    pub pr_ramp: (u8, u8),
+    /// Piano roll zoom-out limit kept after notes moved inward (content beats,
+    /// lo..hi); dropped when the user zooms in (Live).
+    pub pr_hold: Option<(f64, f64)>,
     pub browser_dir: PathBuf,
     pub show_browser: bool,
     /// Master track selected (its device view shows in the detail panel).
@@ -392,6 +402,7 @@ impl DawApp {
             clipboard: Default::default(),
             zoom_back: None,
             arr_lanes_w: 800.0,
+            arr_w_prev: 0.0,
             sel_scene: 0,
             empty_slot: None,
             kb_changed: None,
@@ -410,6 +421,10 @@ impl DawApp {
             pr_note_vel: 100,
             pr_vel_h: 48.0,
             pr_audition: true,
+            pr_vel_collapsed: false,
+            pr_rand_amt: 100,
+            pr_ramp: (100, 127),
+            pr_hold: None,
             browser_dir,
             show_browser: true,
             master_selected: false,
@@ -453,6 +468,7 @@ impl DawApp {
             Command::SetTempo(p.tempo_bpm),
             Command::SetBeatsPerBar(p.beats_per_bar),
             Command::SetMetronome(p.metronome),
+            Command::SetMetronomeSettings(p.metronome_opts),
             Command::SetTempoFollow(p.tempo_follow),
             Command::SetMasterGain(p.master_gain_linear()),
             Command::SetMasterPan(p.master_pan),
@@ -894,6 +910,7 @@ impl DawApp {
         if self.edit(|p| p.new_midi_clip(track, scene, bars)).is_some() {
             self.selected_clip = Some(ClipRef::Slot { track, scene });
             self.selected_track = track;
+            self.open_clip_view(); // Live: a new MIDI clip opens in the piano roll
         }
     }
 
@@ -1283,6 +1300,7 @@ impl DawApp {
                         velocity: n.velocity,
                         muted: false,
                         mpe: 0,
+                        vel_dev: 0,
                     })
                     .collect()
             };
@@ -1319,6 +1337,7 @@ impl DawApp {
                                     velocity: n.velocity,
                                     muted: false,
                                     mpe: 0,
+                                    vel_dev: 0,
                                 });
                             }
                             existing.sort_by(|a, b| a.start.total_cmp(&b.start));

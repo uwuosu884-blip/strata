@@ -202,7 +202,7 @@ mod tests {
     fn drum_project() -> Project {
         let mut p = Project::new_default();
         let notes: Vec<Note> =
-            (0..4).map(|i| Note { start: i as f64, length: 0.25, pitch: 36, velocity: 110, muted: false, mpe: 0 }).collect();
+            (0..4).map(|i| Note { start: i as f64, length: 0.25, pitch: 36, velocity: 110, muted: false, mpe: 0, vel_dev: 0 }).collect();
         p.tracks[0].slots[0] = Some(Clip { length: 4.0, content: ClipContent::Midi { notes: notes.clone() }, ..Default::default() });
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,

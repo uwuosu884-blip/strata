@@ -94,6 +94,8 @@ pub struct ClipView {
     pub show_pool: bool,
     /// Audio Pitch knob selected: Up/Down = ±1 st, Shift = ±12 (queued by the shortcuts).
     pub pitch_focus: bool,
+    /// Clip gain fader selected (corner brackets).
+    pub gain_focus: bool,
     pub pitch_nudge: i32,
     /// The knob was drawn since the last shortcuts pass.
     pub pitch_drawn: bool,
@@ -128,6 +130,7 @@ impl Default for ClipView {
             pending_groove: None,
             show_pool: false,
             pitch_focus: false,
+            gain_focus: false,
             pitch_nudge: 0,
             pitch_drawn: false,
         }
@@ -987,7 +990,7 @@ pub fn env_lane(
             let prev = if i > 0 { e.points[i - 1].beat } else { f64::NEG_INFINITY };
             let next = e.points.get(i + 1).map_or(f64::INFINITY, |q| q.beat);
             let b = if fine { beat_at(pt.x) } else { snap(beat_at(pt.x)) };
-            e.points[i] = EnvPoint { beat: b.clamp(prev, next), value: v_at(pt.y) };
+            e.points[i] = EnvPoint { beat: b.clamp(prev.min(next), next), value: v_at(pt.y) };
             app.needs_compile = true;
             app.dirty = true;
         }
@@ -1027,7 +1030,7 @@ pub fn mpe_lane(
     let lane = app.cv.mpe_lane;
     let (lo, hi) = if lane == 0 { (-12.0f32, 12.0f32) } else { (0.0, 1.0) };
     let y_of = |v: f32| rect.max.y - (v.clamp(lo, hi) - lo) / (hi - lo) * rect.height();
-    let v_at = |y: f32| lo + (rect.max.y - y).clamp(0.0, rect.height()) / rect.height() * (hi - lo);
+    let v_at = |y: f32| lo + (rect.max.y - y).clamp(0.0, rect.height().max(1.0)) / rect.height().max(1.0) * (hi - lo);
     p.text(
         rect.left_top() + vec2(4.0, 2.0),
         Align2::LEFT_TOP,
@@ -1159,7 +1162,8 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
             && let Some(h) = hover
         {
             let b = app.pr_scroll + (h.x - rect.min.x) as f64 / ppb;
-            ppb = (ppb * zoom as f64).clamp(fit, 2000.0);
+            // max(): a short sample can fit at > 2000 px/beat (clamp panics if min > max).
+            ppb = (ppb * zoom as f64).clamp(fit, 2000.0f64.max(fit));
             app.pr_zoom = if ppb <= fit * 1.0001 { 0.0 } else { ppb as f32 };
             app.pr_scroll = b - (h.x - rect.min.x) as f64 / ppb;
         } else if scroll.x != 0.0 || scroll.y != 0.0 {
@@ -1374,7 +1378,7 @@ fn warp_interact(
         } else {
             let prev = if i > 0 { c.audio.markers[i - 1].beat + 1.0 / 64.0 } else { f64::NEG_INFINITY };
             let next = c.audio.markers.get(i + 1).map_or(f64::INFINITY, |m| m.beat - 1.0 / 64.0);
-            c.audio.markers[i].beat = snap(beat_at(pt.x)).clamp(prev, next);
+            c.audio.markers[i].beat = snap(beat_at(pt.x)).clamp(prev.min(next), next);
         }
         app.needs_compile = true;
         app.dirty = true;

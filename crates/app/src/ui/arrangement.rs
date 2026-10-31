@@ -153,7 +153,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // Return rows: pinned above Main (Live), 17 px each, 3 px separator above
     // the first and 2 px between (the last one's is Main's).
     let nret = app.project.returns.len();
-    let ret_h = if nret > 0 { 3.0 + nret as f32 * (RET_H + 2.0) - 2.0 } else { 0.0 };
+    let ret_h = if nret > 0 { 3.0 + (0..nret).map(|k| ret_height(app, k) + 2.0).sum::<f32>() - 2.0 } else { 0.0 };
     // Under returns Main has a 2 px separator and, collapsed, the returns' 17 px.
     let master_h = master_h
         - match (nret > 0, app.project.master_collapsed) {
@@ -193,6 +193,13 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let content_h = y + app.arr_row_h;
     app.arr_vscroll = app.arr_vscroll.clamp(0.0, (content_h - body.height()).max(0.0));
     let bpb = app.project.beats_per_bar.max(1) as f64;
+    // Live: when the lanes get narrower / wider (browser resize, In/Out shown /
+    // hidden, window resize) the same time span stays visible: squeezed, not cut.
+    let lw = lanes.width();
+    if app.arr_w_prev > 40.0 && lw > 40.0 && (lw - app.arr_w_prev).abs() > 0.5 {
+        app.arr_zoom = (app.arr_zoom * lw / app.arr_w_prev).clamp(1.5, 600.0);
+    }
+    app.arr_w_prev = lw;
     let zoom = app.arr_zoom as f64;
     // Arrangement grid never gets coarser than a quarter note, however far out.
     // Adaptive grid stops at a quarter note; fixed steps (up to 8 bars) are kept.
@@ -742,6 +749,7 @@ fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, 
                     velocity: n.velocity,
                     muted: false,
                     mpe: 0,
+                    vel_dev: 0,
                 })
                 .collect()
         }
@@ -995,7 +1003,8 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     let io = Rect::from_min_max(pos2(split - g.io_w, inner.min.y), pos2(split - 2.0, inner.max.y));
     let left = Rect::from_min_max(inner.min, pos2(split - g.io_w - 2.0, inner.max.y));
     let right = Rect::from_min_max(pos2(split, inner.min.y), inner.max);
-    let title_bg = if selected { shade(color, 1.12) } else { color };
+    // Selected: Live's fixed light blue, whatever the track colour.
+    let title_bg = if selected { SEL_BLUE } else { color };
     painter.rect_filled(left, CornerRadius::ZERO, title_bg);
     painter.rect_filled(right, CornerRadius::ZERO, if selected { sel() } else { panel() });
     let _ = NAME_W;
@@ -1053,7 +1062,9 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         app.select_track_header(t, SelMode::Single);
         app.start_rename(t);
     }
-    if hr.drag_started() {
+    // Only the coloured name area drags tracks (Live).
+    let name_drag = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| left.contains(p));
+    if hr.drag_started() && name_drag {
         // Drag the header selection if this track is part of it, else just this track.
         if !app.track_sel.contains(&t) {
             app.select_track_header(t, SelMode::Single);
@@ -1061,7 +1072,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         let ids: Vec<u64> = app.track_sel.iter().filter_map(|&i| app.project.tracks.get(i).map(|x| x.id)).collect();
         ui.data_mut(|m| m.insert_temp(gesture_id(), Gesture::Tracks { ids }));
     }
-    if hr.dragged() {
+    if hr.dragged() && name_drag {
         super::cursors::set(ui.ctx(), Cur::Drag);
     }
     if let Some(item) = hr.dnd_release_payload::<DragItem>()
@@ -1118,11 +1129,37 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     {
         app.click_arm(t, !excl);
     }
-    // Row 2: volume under the activator, pan under solo.
+    // Row 2: volume under the activator, pan under solo. A MIDI track without
+    // an instrument has no audio mixer (Live): no volume / pan / sends.
     let row2 = row1 + BOX_H + GAP;
     let vr = Rect::from_min_size(pos2(bx, row2), vec2(ACT_W, BOX_H));
     let pr = Rect::from_min_size(pos2(vr.max.x + GAP, row2), vec2(PAN_W, BOX_H));
-    if clip.contains_rect(vr) && clip.contains_rect(pr) {
+    let mixer = !app.project.tracks[t].sends_midi();
+    // Rows 3…: one send box per return, two per row (under volume / pan).
+    if mixer {
+        let n = app.project.returns.len().min(app.project.tracks[t].sends.len());
+        for k in 0..n {
+            let y = row2 + (BOX_H + GAP) * (1 + k / 2) as f32;
+            let r = if k % 2 == 0 {
+                Rect::from_min_size(pos2(bx, y), vec2(ACT_W, BOX_H))
+            } else {
+                Rect::from_min_size(pos2(bx + ACT_W + GAP, y), vec2(PAN_W, BOX_H))
+            };
+            if !clip.contains_rect(r) || r.max.y > inner.max.y {
+                break;
+            }
+            let mut db = app.project.tracks[t].sends[k];
+            let letter = (b'A' + (k % 26) as u8) as char;
+            let (resp, changed) = send_box(ui, r, ui.scope_id().with(("hsend", id, k)), &mut db, letter);
+            if resp.drag_started() || resp.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_send(t, k, db);
+            }
+        }
+    }
+    if mixer && clip.contains_rect(vr) && clip.contains_rect(pr) {
         let mut db = app.project.tracks[t].gain_db;
         let (r, changed) = volume_box(ui, vr, ui.scope_id().with(("hvol", id)), &mut db);
         if r.drag_started() || r.double_clicked() {
@@ -1147,6 +1184,14 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
 
 const RET_H: f32 = 17.0;
 
+/// Return row height: 17 px collapsed (default), else a track row.
+fn ret_height(app: &DawApp, k: usize) -> f32 {
+    match app.project.returns.get(k) {
+        Some(r) if r.ret_open => (if r.height > 0.0 { r.height } else { app.arr_row_h }).max(40.0),
+        _ => RET_H,
+    }
+}
+
 /// Return track rows between the lanes and Main (y0..y1), collapsed like Live's
 /// (17 px): colour name area with ⊙, an empty Audio To box, activator letter,
 /// S and the (fixed) Post switch, plus a peak meter.
@@ -1155,15 +1200,18 @@ fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, l
     p.rect_filled(Rect::from_min_max(pos2(g.x0, y0), pos2(x1, y1)), CornerRadius::ZERO, sep());
     let bpb = app.project.beats_per_bar.max(1) as f64;
     let n0 = app.project.returns.len();
+    let mut top = y0 + 3.0;
     for k in 0..n0 {
         if app.project.returns.len() != n0 {
             ui.ctx().request_repaint();
             return;
         }
-        let top = y0 + 3.0 + k as f32 * (RET_H + 2.0);
-        let lane = Rect::from_min_max(pos2(g.x0, top), pos2(lanes_x1, top + RET_H));
+        let h = ret_height(app, k);
+        let open = app.project.returns[k].ret_open;
+        let lane = Rect::from_min_max(pos2(g.x0, top), pos2(lanes_x1, top + h));
         paint_bars(&ui.painter_at(lane), lane, g, bpb, false);
-        let head = Rect::from_min_max(pos2(lanes_x1 + 2.0, top), pos2(x1, top + RET_H));
+        let head = Rect::from_min_max(pos2(lanes_x1 + 2.0, top), pos2(x1, top + h));
+        top += h + 2.0;
         let split = (head.max.x - RIGHT_W).max(head.min.x + 40.0 + g.io_w);
         let left = Rect::from_min_max(head.min, pos2(split - g.io_w - 2.0, head.max.y));
         let right = Rect::from_min_max(pos2(split, head.min.y), head.max);
@@ -1176,11 +1224,17 @@ fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, l
         let row1 = head.min.y + 2.0;
         let tc = text_on(col);
         let cbtn = Rect::from_min_size(pos2(left.min.x + 2.0, row1 - 1.0), vec2(15.0, BOX_H + 2.0));
-        draw_collapse_button(&p, cbtn.center(), true, tc);
+        draw_collapse_button(&p, cbtn.center(), !open, tc);
         let name_rect = Rect::from_min_max(pos2(cbtn.max.x + 2.0, row1 - 1.0), pos2(left.max.x - 3.0, row1 + BOX_H + 1.0));
         p.with_clip_rect(name_rect).text(name_rect.left_center(), Align2::LEFT_CENTER, &name, font(FS), tc);
         let hr = ui.interact(left, ui.scope_id().with(("ret_head", k)), Sense::click());
-        if hr.clicked() || hr.secondary_clicked() {
+        // ⊙ expands / collapses the return (Live).
+        if hr.clicked() && hr.interact_pointer_pos().is_some_and(|p| cbtn.contains(p)) {
+            if let Some(r) = app.project.returns.get_mut(k) {
+                r.ret_open = !r.ret_open;
+                app.dirty = true;
+            }
+        } else if hr.clicked() || hr.secondary_clicked() {
             app.select_return(k);
         }
         super::menu::context(&hr, super::menu::W_TRACK, |ui| super::session::return_menu(app, ui, k));
@@ -1208,6 +1262,29 @@ fn return_rows(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, y0: f32, y1: f32, l
             app.toggle_return(k, true, excl);
         }
         rect_toggle(ui, pr, ui.scope_id().with(("ret_post", k)), "Post", true, ACCENT, "Sends to this return are post-fader");
+        // Expanded: volume / pan on row 2 (like a track).
+        let row2 = row1 + BOX_H + GAP;
+        let vr = Rect::from_min_size(pos2(bx, row2), vec2(ACT_W, BOX_H));
+        let pnr = Rect::from_min_size(pos2(vr.max.x + GAP, row2), vec2(PAN_W, BOX_H));
+        if open && pnr.max.y <= head.max.y {
+            let rid = app.project.returns[k].id;
+            let mut db = app.project.returns[k].gain_db;
+            let (r, changed) = volume_box(ui, vr, ui.scope_id().with(("ret_vol", rid)), &mut db);
+            if r.drag_started() || r.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_return_gain(k, db);
+            }
+            let mut pan = app.project.returns[k].pan;
+            let (r, changed) = pan_box(ui, pnr, ui.scope_id().with(("ret_pan", rid)), &mut pan);
+            if r.drag_started() || r.double_clicked() {
+                app.begin_gesture();
+            }
+            if changed {
+                app.set_return_pan(k, pan);
+            }
+        }
     }
 }
 
@@ -1665,6 +1742,13 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
                 }
                 if !d.from_selection {
                     app.time_sel = None;
+                }
+                // Live: the insert marker / start position jumps to the moved clip.
+                if changed {
+                    let s = targets.iter().map(|x| x.2).fold(f64::INFINITY, f64::min);
+                    if s.is_finite() {
+                        app.set_start_marker(s);
+                    }
                 }
             }
         }

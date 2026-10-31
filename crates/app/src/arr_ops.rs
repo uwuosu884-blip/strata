@@ -530,8 +530,12 @@ impl DawApp {
             return;
         }
         let ids: Vec<u64> = self.edit(|p| tracks.iter().filter_map(|&t| p.insert_midi_clip(t, ts.start, ts.end).ok()).collect());
+        let any = !ids.is_empty();
         self.arr_sel = ids;
         self.resync_selected_clip();
+        if any {
+            self.open_clip_view(); // Live: a new MIDI clip opens in the piano roll
+        }
     }
 
     /// Del in the arrangement: time selection material, else selected clips. False if nothing.
@@ -970,14 +974,11 @@ impl DawApp {
         }
         let g = self.pr_grid_now.max(1.0 / 64.0);
         let shift = if self.pr_time_sel.is_some() { e - s } else { (((e - s) / g) - 1e-9).ceil().max(1.0) * g };
+        // Copies that don't fit land beyond the clip end (kept, silent): the
+        // clip is never extended (Live).
         let copies: Vec<Note> = picked.iter().map(|n| Note { start: n.start + shift, ..*n }).collect();
-        let end = (e + shift).max(copies.iter().map(|n| n.start + n.length).fold(0.0, f64::max));
         let sel = self.edit(|p| {
             let Some(clip) = DawApp::clip_mut(p, c) else { return Vec::new() };
-            if end > clip.length + EPS {
-                clip.length = (end / g).ceil() * g;
-                clip.full = 0.0;
-            }
             let ClipContent::Midi { notes } = &mut clip.content else { return Vec::new() };
             notes.extend(copies.iter().copied());
             notes.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -988,6 +989,29 @@ impl DawApp {
             self.pr_time_sel = Some((s + shift, e + shift));
         }
         true
+    }
+
+    /// Velocity bar: Randomize (±amount/2) / Ramp (a → b) the selected notes.
+    pub fn randomize_note_velocity(&mut self, amount: u8) -> bool {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
+        self.edit_selected_notes(|notes, idx| {
+            let mut v: Vec<Note> = idx.iter().map(|&i| notes[i]).collect();
+            daw_project::miditools::randomize_velocity(&mut v, amount, seed);
+            idx.iter().zip(v).for_each(|(&i, n)| notes[i] = n);
+        })
+    }
+
+    pub fn ramp_note_velocity(&mut self, a: u8, b: u8) -> bool {
+        self.edit_selected_notes(|notes, idx| {
+            let mut v: Vec<Note> = idx.iter().map(|&i| notes[i]).collect();
+            daw_project::miditools::ramp_velocity(&mut v, a, b);
+            idx.iter().zip(v).for_each(|(&i, n)| notes[i] = n);
+        })
+    }
+
+    /// Velocity deviation (random range applied at each playback) of the selected notes.
+    pub fn set_note_deviation(&mut self, dev: i8) -> bool {
+        self.edit_selected_notes(|notes, idx| idx.iter().for_each(|&i| notes[i].vel_dev = dev))
     }
 
     /// Apply `f` to the selected notes of the clip in the piano roll (one undo step).
@@ -1190,7 +1214,7 @@ mod app_tests {
 
     fn midi_clip(p: &mut Project, t: usize, start: f64, len: f64, pitch: u8) -> u64 {
         let id = p.alloc_id();
-        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false, mpe: 0 }];
+        let notes = vec![Note { start: 0.0, length: 0.5, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }];
         p.tracks[t]
             .arrangement
             .push(ArrangementClip { start, clip: Clip { id, length: len, content: ClipContent::Midi { notes }, ..Default::default() } });
@@ -1393,7 +1417,7 @@ mod app_tests {
         let mut a = tracks(1);
         let id = midi_clip(&mut a.project, 0, 0.0, 4.0, 60);
         if let Some(ClipContent::Midi { notes }) = super::clip_by_id(&mut a.project, id).map(|c| &mut c.content) {
-            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false, mpe: 0 });
+            notes.push(Note { start: 1.0, length: 0.5, pitch: 64, velocity: 90, muted: false, mpe: 0, vel_dev: 0 });
         }
         let c = ClipRef::Arr { track: 0, index: 0 };
         a.selected_clip = Some(c);
@@ -1418,7 +1442,8 @@ mod app_tests {
         assert!(a.duplicate_selected_notes());
         assert_eq!(notes_of(&a, c), vec![(0.0, 60, 0.5), (1.0, 64, 0.5), (3.0, 60, 0.5)]);
         assert_eq!(a.pr_time_sel, Some((3.0, 6.0)));
-        assert!(a.clip(c).unwrap().length >= 6.0);
+        // The clip is not extended: the copy sits in the outside space.
+        assert_eq!(a.clip(c).unwrap().length, 4.0);
     }
 
     #[test]
@@ -1514,6 +1539,11 @@ mod app_tests {
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[1].start, 0.5);
         assert_eq!(a.note_sel, vec![1]);
+        // No room left: the copy goes beyond the clip end; the clip keeps its length.
+        assert!(a.duplicate_selected_notes());
+        let c = &a.project.tracks[t].arrangement[0].clip;
+        let ClipContent::Midi { notes } = &c.content else { panic!() };
+        assert_eq!((notes.len(), notes[2].start, c.length), (3, 1.0, 1.0));
     }
 
     #[test]

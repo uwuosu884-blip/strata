@@ -153,6 +153,10 @@ impl DawApp {
             self.edit(|p| p.metronome = !on);
             self.send_now(Command::SetMetronome(!on));
         }
+        // ▾ zone: metronome options menu (on top of the switch).
+        let mr = Rect::from_min_max(pos2(r.right() - 13.0, r.top()), r.max);
+        let mresp = ui.interact(mr, ui.make_persistent_id("metro_menu"), Sense::click()).on_hover_text("Metronome Options");
+        self.metronome_menu(&mresp);
         let f = fg(on, true);
         // Two discs, ~4 px apart, centred between the box's left edge and the ▾.
         let cx = (r.left() + r.right() - 10.0) * 0.5;
@@ -519,6 +523,53 @@ impl DawApp {
         }
         if configure {
             self.open_settings(crate::app::SettingsTab::Audio);
+        }
+    }
+}
+
+impl DawApp {
+    /// Live's metronome options (hn-metronome-options): Count-In, Sound,
+    /// Rhythm and Enable Only While Recording; saved in the project.
+    fn metronome_menu(&mut self, resp: &egui::Response) {
+        use super::menu;
+        use daw_project::MetroSound;
+        let o = self.project.metronome_opts;
+        let mut n = o;
+        menu::dropdown_aligned(resp, 238.0, egui::RectAlign::BOTTOM_START, |ui| {
+            menu::caption(ui, "Count-In:", 15.0);
+            let ci = [(14.0, "None", 0u8), (70.0, "1 Bar", 1), (123.0, "2 Bars", 2), (173.0, "4 Bars", 4)];
+            let items: Vec<(f32, &str, bool)> = ci.iter().map(|&(x, l, v)| (x, l, o.count_in_bars == v)).collect();
+            if let Some(i) = menu::choice_row(ui, 15.0, &items) {
+                n.count_in_bars = ci[i].2;
+            }
+            menu::sep(ui);
+            menu::caption(ui, "Sound:", 15.0);
+            let snd = [(14.0, "Classic", MetroSound::Classic), (70.0, "Click", MetroSound::Click), (123.0, "Wood", MetroSound::Wood)];
+            let items: Vec<(f32, &str, bool)> = snd.iter().map(|&(x, l, v)| (x, l, o.sound == v)).collect();
+            if let Some(i) = menu::choice_row(ui, 15.0, &items) {
+                n.sound = snd[i].2;
+            }
+            menu::sep(ui);
+            menu::caption(ui, "Rhythm:", 15.0);
+            let rows: [&[(f32, &str, f64)]; 3] = [
+                &[(14.0, "Auto", 0.0), (70.0, "1 Bar", -1.0), (123.0, "1/2", 2.0), (173.0, "1/2T", 4.0 / 3.0)],
+                &[(14.0, "1/4", 1.0), (70.0, "1/4T", 2.0 / 3.0), (123.0, "1/8", 0.5), (173.0, "1/8T", 1.0 / 3.0)],
+                &[(14.0, "1/16", 0.25), (70.0, "1/16T", 1.0 / 6.0)],
+            ];
+            for row in rows {
+                let items: Vec<(f32, &str, bool)> = row.iter().map(|&(x, l, v)| (x, l, (o.interval - v).abs() < 1e-9)).collect();
+                if let Some(i) = menu::choice_row(ui, 15.0, &items) {
+                    n.interval = row[i].2;
+                }
+            }
+            menu::sep(ui);
+            if menu::check_item(ui, "Enable Only While Recording", "", o.rec_only, true) {
+                n.rec_only = !o.rec_only;
+            }
+        });
+        if n != o {
+            self.edit(|p| p.metronome_opts = n);
+            self.send_now(Command::SetMetronomeSettings(n));
         }
     }
 }

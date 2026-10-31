@@ -20,7 +20,7 @@ pub const LEFT_W: f32 = 170.0;
 pub const HEAD_H: f32 = 17.0;
 const SEC_H: f32 = 17.0;
 const BODY_H: f32 = 189.0;
-const TEAL: Color32 = Color32::from_rgb(0x00, 0x73, 0x83);
+pub(super) const TEAL: Color32 = Color32::from_rgb(0x00, 0x73, 0x83);
 
 /// Foldable sections (index into `ClipView::open`).
 #[derive(Clone, Copy)]
@@ -74,7 +74,7 @@ fn sec_parts(t: f64) -> [String; 3] {
 }
 
 /// Rounded pill button (#11 outline, #1e fill).
-fn pill(ui: &mut egui::Ui, r: Rect, id: impl std::hash::Hash + std::fmt::Debug, txt: &str, enabled: bool) -> Response {
+pub(super) fn pill(ui: &mut egui::Ui, r: Rect, id: impl std::hash::Hash + std::fmt::Debug, txt: &str, enabled: bool) -> Response {
     let resp = ui.interact(r, ui.make_persistent_id(id), if enabled { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     let rad = r.height() / 2.0;
@@ -142,7 +142,7 @@ fn chooser(
 /// Drag-to-change value box; double-click types a value (`parse`). Returns the
 /// response and the new value when it changed.
 #[allow(clippy::too_many_arguments)]
-fn value_box(
+pub(super) fn value_box(
     ui: &mut egui::Ui,
     r: Rect,
     id: impl std::hash::Hash + std::fmt::Debug,
@@ -150,6 +150,37 @@ fn value_box(
     shown: Field,
     step_px: f64,
     edit_text: String,
+    parse: impl Fn(&str) -> Option<f64>,
+) -> (Response, Option<f64>) {
+    value_box_impl(ui, r, id, fill, shown, step_px, Err(edit_text), parse)
+}
+
+/// `value_box` whose double-click resets to `reset` (pitch st / ct → 0)
+/// instead of typing; the edit text is the reset value then.
+#[allow(clippy::too_many_arguments)]
+fn value_box_r(
+    ui: &mut egui::Ui,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    fill: Color32,
+    shown: Field,
+    step_px: f64,
+    reset: Option<f64>,
+    parse: impl Fn(&str) -> Option<f64>,
+) -> (Response, Option<f64>) {
+    value_box_impl(ui, r, id, fill, shown, step_px, Ok(reset.unwrap_or(0.0)), parse)
+}
+
+/// `edit`: Err(text) = double-click types (pre-filled); Ok(v) = double-click resets to v.
+#[allow(clippy::too_many_arguments)]
+fn value_box_impl(
+    ui: &mut egui::Ui,
+    r: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    fill: Color32,
+    shown: Field,
+    step_px: f64,
+    edit: Result<f64, String>,
     parse: impl Fn(&str) -> Option<f64>,
 ) -> (Response, Option<f64>) {
     let id = ui.make_persistent_id(id);
@@ -180,7 +211,12 @@ fn value_box(
         }
     }
     if resp.double_clicked() {
-        ui.data_mut(|d| d.insert_temp(edit_id, edit_text));
+        match edit {
+            Ok(v) => out = Some(v),
+            Err(t) => {
+                ui.data_mut(|d| d.insert_temp(edit_id, t));
+            }
+        }
     } else if resp.dragged() {
         // Part under the press picks the step (bars / beats / sixteenths …).
         let acc_id = id.with("acc");
@@ -364,13 +400,15 @@ fn egui_body(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
 fn title_bar(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let (r, resp) = ui.allocate_exact_size(vec2(LEFT_W, 17.0), Sense::click());
     let notes_focus = matches!(clip.content, ClipContent::Midi { .. }) && !app.note_sel.is_empty();
-    let (bg, fg) = if notes_focus { (gray(0x3c), gray(0xc6)) } else { (Color32::from_rgb(0x85, 0xa5, 0xc2), gray(0x20)) };
+    // Clip colour with dark text (hn-clip-viev-left); grey while notes are focused.
+    let (bg, fg) = if notes_focus { (gray(0x3c), gray(0xc6)) } else { (rgb(clip.color), gray(0x20)) };
     let p = ui.painter().clone();
     p.rect_filled(r, 0.0, bg);
     let sq = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(9.0, 9.0));
     let act = ui.interact(sq, ui.make_persistent_id("cv_activator"), Sense::click()).on_hover_text("Clip Activator (0)");
     p.rect_filled(sq, 0.0, gray(0x11));
-    p.rect_filled(sq.shrink(1.0), 0.0, if clip.muted { gray(0x5a) } else { rgb(clip.color) });
+    // Activator: Live orange whatever the clip colour (grey when deactivated).
+    p.rect_filled(sq.shrink(1.0), 0.0, if clip.muted { gray(0x5a) } else { ORANGE });
     let sel = app.arr_sel.len().max(1);
     let name = if sel > 1 { format!("{sel} Clips") } else { clip.name.clone() };
     let renaming = app.renaming.as_ref().is_some_and(|x| x.clip && x.id == clip.id && x.in_detail);
@@ -915,10 +953,20 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     for (s, y) in [("24", 21.0), ("0", 68.0), ("70", 99.0)] {
         p.text(o + vec2(140.0, y), Align2::LEFT_CENTER, s, font(FS), text());
     }
-    for (x, y, dx, dy) in [(110.0, 15.0, 1.0, 1.0), (160.0, 15.0, -1.0, 1.0), (110.0, 107.0, 1.0, -1.0), (160.0, 107.0, -1.0, -1.0)] {
-        let c0 = o + vec2(x, y);
-        p.line_segment([c0, c0 + vec2(4.0 * dx, 0.0)], Stroke::new(1.0, gray(0x75)));
-        p.line_segment([c0, c0 + vec2(0.0, 4.0 * dy)], Stroke::new(1.0, gray(0x75)));
+    // Corner brackets mark the selected control (gain fader / pitch group).
+    let corners = |r: Rect| {
+        for (c0, dx, dy) in
+            [(r.left_top(), 1.0, 1.0), (r.right_top(), -1.0, 1.0), (r.left_bottom(), 1.0, -1.0), (r.right_bottom(), -1.0, -1.0)]
+        {
+            p.line_segment([c0, c0 + vec2(4.0 * dx, 0.0)], Stroke::new(1.0, gray(0x75)));
+            p.line_segment([c0, c0 + vec2(0.0, 4.0 * dy)], Stroke::new(1.0, gray(0x75)));
+        }
+    };
+    if app.cv.gain_focus {
+        corners(Rect::from_min_max(o + vec2(110.0, 15.0), o + vec2(160.0, 107.0)));
+    }
+    if app.cv.pitch_focus {
+        corners(Rect::from_min_max(o + vec2(107.0, 123.0), o + vec2(162.0, 187.0)));
     }
     let gy = y_of(gain_db);
     let tri = o + vec2(128.0, gy);
@@ -927,6 +975,11 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
         ui.interact(at(110.0, 15.0, 160.0, 107.0), ui.make_persistent_id("cv_gain"), Sense::click_and_drag()).on_hover_text("Clip Gain");
     p.text(o + vec2(134.0, 112.0), Align2::CENTER_CENTER, format!("{:.1} dB", gain_db), font(FS), text());
     let mut new_gain = None;
+    if gresp.is_pointer_button_down_on() {
+        app.cv.gain_focus = true;
+    } else if ui.input(|i| i.pointer.any_pressed()) {
+        app.cv.gain_focus = false;
+    }
     if gresp.drag_started() {
         ed.gesture = true;
     }
@@ -952,7 +1005,10 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     let kresp = ui.interact(Rect::from_center_size(kc, vec2(28.0, 28.0)), ui.make_persistent_id("cv_pitch"), Sense::click_and_drag());
     // Click selects the knob (arrow keys then step it); a press elsewhere deselects.
     app.cv.pitch_drawn = true;
-    if kresp.is_pointer_button_down_on() {
+    let group = ui
+        .input(|i| i.pointer.press_origin())
+        .is_some_and(|q| Rect::from_min_max(o + vec2(107.0, 123.0), o + vec2(162.0, 187.0)).contains(q));
+    if kresp.is_pointer_button_down_on() || (group && ui.input(|i| i.pointer.any_pressed())) {
         app.cv.pitch_focus = true;
     } else if ui.input(|i| i.pointer.any_pressed()) {
         app.cv.pitch_focus = false;
@@ -987,7 +1043,7 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     p.text(o + vec2(134.0, 165.0), Align2::CENTER_CENTER, "st", font(FS), text());
     let tv = c.audio.transpose as f64;
     let (r1, o1) =
-        value_box(ui, at(110.0, 172.0, 134.0, 184.0), "cv_st", gray(0x1e), Field::Text(format!("{tv}")), 1.0, format!("{tv}"), |s| {
+        value_box_r(ui, at(110.0, 172.0, 134.0, 184.0), "cv_st", gray(0x1e), Field::Text(format!("{tv}")), 1.0, Some(0.0), |s| {
             s.trim().parse().ok()
         });
     if pitch_ok && let Some(d) = o1 {
@@ -996,16 +1052,10 @@ fn audio_body(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &Clip) {
     }
     ed.gesture |= r1.drag_started();
     let dv = c.audio.detune as f64;
-    let (r2, o2) = value_box(
-        ui,
-        at(135.0, 172.0, 159.0, 184.0),
-        "cv_ct",
-        gray(0x1e),
-        Field::Text(format!("{}", dv.round())),
-        1.0,
-        format!("{dv}"),
-        |s| s.trim().parse().ok(),
-    );
+    let (r2, o2) =
+        value_box_r(ui, at(135.0, 172.0, 159.0, 184.0), "cv_ct", gray(0x1e), Field::Text(format!("{}", dv.round())), 1.0, Some(0.0), |s| {
+            s.trim().parse().ok()
+        });
     if let Some(d) = o2 {
         c.audio.detune = (if r2.dragged() { dv + d } else { d }).round().clamp(-50.0, 50.0) as _;
         ed.changed = true;

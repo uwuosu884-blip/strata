@@ -147,6 +147,47 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
     (resp.on_hover_text(tip), changed)
 }
 
+/// Arrangement send box (Live): dark field, teal fill up to the level,
+/// "-∞" when off; drag changes it, double-click turns it off.
+pub fn send_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, letter: char) -> (egui::Response, bool) {
+    let off = daw_project::SEND_OFF_DB;
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let mut changed = false;
+    let d = endless_drag(ui, &resp);
+    if resp.double_clicked() {
+        changed = *db > off;
+        *db = off;
+    } else if d != Vec2::ZERO {
+        let k = if ui.input(|i| i.modifiers.shift) { 0.0007 } else { 0.006 };
+        let pos = if *db <= off { 0.0 } else { db_to_pos(*db) };
+        let mut nd = pos_to_db(pos - (d.y - d.x) * k).clamp(off, 0.0);
+        if nd <= METER_FLOOR_DB {
+            nd = off;
+        }
+        if (nd - *db).abs() > 1e-5 {
+            *db = nd;
+            changed = true;
+        }
+    }
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::ZERO, super::theme::off_fill());
+    if *db > off {
+        let w = rect.width() * db_to_pos(*db);
+        p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::ZERO, super::theme::VOL_TEAL);
+    }
+    p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
+    let text = if *db <= off {
+        "-\u{221e}".to_string()
+    } else if db.abs() < 0.05 {
+        "0".to_string()
+    } else {
+        format!("{db:.1}")
+    };
+    let fg = if *db > off { Color32::from_gray(0xe0) } else { super::theme::text() };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);
+    (resp.on_hover_text(format!("Send {letter} (dB) · drag · double-click: off")), changed)
+}
+
 /// Live-style pan box: 50L … C … 50R, drag up/down (Shift = fine), double-click = centre.
 pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (egui::Response, bool) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());

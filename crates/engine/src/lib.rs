@@ -38,6 +38,7 @@ pub use transport::{MusicalPosition, Transport};
 pub use warp::{LoopMode, StretchMode, StretchParams, WarpMap};
 
 use metronome::Metronome;
+pub use metronome::{MetroSound, MetronomeSettings};
 use rtrb::{Consumer, Producer, RingBuffer};
 use smoother::Smoothed;
 use status::{NO_PENDING, PENDING_STOP, SharedStatus};
@@ -117,6 +118,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         status: Arc::clone(&status),
         transport,
         metronome: Metronome::new(sr),
+        count_in: None,
         master_gain: Smoothed::new(1.0, sr, 0.02),
         cue_gain: Smoothed::new(1.0, sr, 0.02),
         monitor_gain: Smoothed::new(1.0, sr, 0.02),
@@ -182,6 +184,8 @@ pub struct Engine {
     status: Arc<SharedStatus>,
     transport: Transport,
     metronome: Metronome,
+    /// Recording count-in: beats still to click before the transport starts.
+    count_in: Option<f64>,
     master_gain: Smoothed,
     /// Cue (Live's Preview/Cue volume): metronome + browser preview, mixed
     /// after the master gain so it never reaches Resampling.
@@ -549,8 +553,17 @@ impl Engine {
                 }
             }
             match cmd {
-                Command::Play => self.start_transport(),
-                Command::Stop => self.begin_stop(),
+                Command::Play => {
+                    if self.count_in.is_none() {
+                        self.start_transport()
+                    }
+                }
+                Command::Stop => {
+                    if self.count_in.take().is_some() {
+                        self.rec.state = RecordState::Idle; // stop during the count-in
+                    }
+                    self.begin_stop()
+                }
                 Command::Rewind => self.set_position(0.0),
                 Command::SetPosition(b) => {
                     if b.is_finite() {
@@ -560,6 +573,7 @@ impl Engine {
                 Command::SetTempo(bpm) => self.transport.set_tempo(bpm),
                 Command::SetBeatsPerBar(n) => self.transport.beats_per_bar = n.clamp(1, 32),
                 Command::SetMetronome(on) => self.metronome.enabled = on,
+                Command::SetMetronomeSettings(m) => self.metronome.settings = m,
                 Command::SetMasterGain(g) => self.master_gain.set_target(clamp_gain(g)),
                 Command::SetCueGain(g) => self.cue_gain.set_target(clamp_gain(g)),
                 Command::SetMonitorGain(g) => self.monitor_gain.set_target(clamp_gain(g)),
@@ -774,14 +788,24 @@ impl Engine {
         match (on, self.rec.state) {
             (true, RecordState::Idle) => {
                 if !self.transport.playing {
-                    self.start_transport();
+                    // Count-in: the metronome clicks N bars first, then the
+                    // transport starts here and recording begins (Live).
+                    let bars = self.metronome.settings.count_in_bars as f64;
+                    if bars > 0.0 {
+                        self.count_in = Some(bars * self.transport.beats_per_bar.max(1) as f64);
+                    } else {
+                        self.start_transport();
+                    }
                     self.rec = Recorder { state: RecordState::StartPending, beat };
                 } else {
                     self.rec = Recorder { state: RecordState::StartPending, beat: self.quantized(beat) };
                 }
             }
             (true, RecordState::StopPending) => self.rec.state = RecordState::Recording, // cancel stop
-            (false, RecordState::StartPending) => self.rec.state = RecordState::Idle,
+            (false, RecordState::StartPending) => {
+                self.rec.state = RecordState::Idle;
+                self.count_in = None;
+            }
             (false, RecordState::Recording) => {
                 self.rec = Recorder { state: RecordState::StopPending, beat: self.quantized(beat) };
             }
@@ -1046,6 +1070,9 @@ impl Engine {
                 if let Some(next) = self.next_event(beat0) {
                     n = n.min((((next - beat0 - EPS) / bps).ceil() as usize).max(1));
                 }
+            } else if let Some(left) = self.count_in {
+                // The transport starts on the sample the count-in ends.
+                n = n.min((((left - EPS) / bps).ceil() as usize).max(1));
             }
             // De-click ramp of clip audio for this segment.
             let step = 1.0 / self.fade_len() as f32;
@@ -1092,6 +1119,13 @@ impl Engine {
                 }
                 self.transport.beat_position = beat;
             }
+            if !playing && let Some(left) = &mut self.count_in {
+                *left -= n as f64 * bps;
+                if *left <= EPS {
+                    self.count_in = None;
+                    self.start_transport();
+                }
+            }
             done += n;
             if self.stopping.is_some_and(|(_, left)| left == 0) {
                 self.finish_stop();
@@ -1116,6 +1150,8 @@ impl Engine {
             preview,
             preview_pos,
             metronome,
+            count_in,
+            rec,
             tracks,
             song,
             transport,
@@ -1136,9 +1172,17 @@ impl Engine {
         xr.fill(0.0);
         let (cl, cr) = cue.range_mut(offset, n);
 
-        if ctx.playing {
+        // Clicks: while playing (only while recording when rec_only), and
+        // during the count-in at negative beats (-N bars … 0).
+        let rec_on = matches!(rec.state, RecordState::Recording | RecordState::StartPending | RecordState::StopPending);
+        let click_from = match *count_in {
+            Some(left) if !ctx.playing => Some(-left),
+            _ if ctx.playing && (!metronome.settings.rec_only || rec_on) => Some(ctx.beat0),
+            _ => None,
+        };
+        if let Some(b0) = click_from {
             for i in 0..n {
-                let s = metronome.next_sample(ctx.beat0 + i as f64 * bps, bps, transport.beats_per_bar);
+                let s = metronome.next_sample(b0 + i as f64 * bps, bps, transport.beats_per_bar);
                 cl[i] += s;
                 cr[i] += s;
             }

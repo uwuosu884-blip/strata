@@ -6,6 +6,7 @@ mod audio;
 mod clip_ops;
 mod edit_ops;
 mod midi;
+mod pinch;
 mod settings;
 mod ui;
 
@@ -86,7 +87,29 @@ fn parse_args() -> Result<Option<Args>, String> {
     Ok(Some(Args { audio: opts, midi, project }))
 }
 
+/// Panics (any thread) are appended to `crash.log` next to the settings
+/// with a backtrace, so random crashes can be reported and found.
+fn install_crash_log() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = settings::Settings::path().map(|p| p.with_file_name("crash.log")) {
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+            let thread = std::thread::current().name().unwrap_or("?").to_string();
+            let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let bt = std::backtrace::Backtrace::force_capture();
+            let msg = format!("--- daw {} crash (unix {when}) in thread '{thread}'\n{info}\n{bt}\n", env!("CARGO_PKG_VERSION"));
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(msg.as_bytes());
+            }
+            eprintln!("crash details written to {}", path.display());
+        }
+        default(info);
+    }));
+}
+
 fn main() -> ExitCode {
+    install_crash_log();
     let args = match parse_args() {
         Ok(Some(a)) => a,
         Ok(None) => return ExitCode::SUCCESS,
@@ -138,6 +161,7 @@ fn main() -> ExitCode {
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
             ui::theme::install_fonts(&cc.egui_ctx);
+            pinch::start(cc);
             Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi, settings, base)))
         }),
     );

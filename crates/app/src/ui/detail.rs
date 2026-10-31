@@ -126,9 +126,33 @@ enum NoteDrag {
 }
 
 const PR_RULER_H: f32 = 16.0;
+/// Velocity bar under the piano roll (Live 12).
+const VBAR_H: f32 = 18.0;
+/// How far the piano roll view may grow beyond the clip either side (beats).
+const MAX_VIEW_BEATS: f64 = 4096.0;
+
+/// Beats the piano roll must show: 0, the markers, the loop and every note.
+fn content_span(clip: &Clip, notes: &[Note]) -> (f64, f64) {
+    let (w0, w1) = super::clip::play_window(clip);
+    let (l0, l1) = clip.loop_range();
+    notes.iter().fold((w0.min(l0).min(0.0), w1.max(l1).max(clip.length.max(0.25))), |(a, b), n| (a.min(n.start), b.max(n.start + n.length)))
+}
+
+/// Ruler bar number of the bar starting at beat `b`: 1, 2, … and -1, -2, …
+/// before the clip start (Live has no bar 0).
+fn bar_label(b: f64, bpb: f64) -> String {
+    let k = (b / bpb + 1e-9).floor() as i64;
+    if k >= 0 { format!("{}", k + 1) } else { format!("{k}") }
+}
 
 fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, clip: &Clip, notes: &[Note]) {
-    let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    // Notes tab: a 17 px velocity bar at the bottom (Live 12) — the lane's
+    // collapse button, Randomize, Ramp and Deviation.
+    let has_bar = app.cv.tab == super::clip::Tab::Main;
+    let avail = ui.available_size();
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(avail.x, (avail.y - if has_bar { VBAR_H } else { 0.0 }).max(40.0)), Sense::click_and_drag());
+    let bar = Rect::from_min_size(pos2(rect.min.x, rect.max.y), vec2(rect.width(), VBAR_H));
     let p = ui.painter_at(rect);
     // Live colours (no #1a): panel grey around, the velocity lane like the grid.
     p.rect_filled(rect, CornerRadius::ZERO, panel());
@@ -137,7 +161,8 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         _ => None,
     };
     // Velocity lane height: user-resizable via the splitter above it.
-    let vel_h = app.pr_vel_h.clamp(24.0, (rect.height() * 0.6).max(24.0));
+    let lane_on = !(has_bar && app.pr_vel_collapsed);
+    let vel_h = if lane_on { app.pr_vel_h.clamp(24.0, (rect.height() * 0.6).max(24.0)) } else { 0.0 };
     // Live 12 rows: bar numbers 0..16, loop / marker rows 17..38, sep, scrub strip
     // 40..55, sep, note grid from 57.
     let nums = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.min.y), pos2(rect.max.x, rect.min.y + 17.0));
@@ -147,10 +172,9 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     let vel_area = Rect::from_min_max(pos2(rect.min.x + KEYS_W, rect.max.y - vel_h + 3.0), pos2(rect.max.x, rect.max.y - 2.0));
     p.rect_filled(Rect::from_min_max(pos2(grid_area.min.x, grid_area.max.y), rect.max), CornerRadius::ZERO, gray(0x39));
     let len = clip.length.max(0.25);
-    // Markers: notes outside [w0, w1) are silent (dark area). The view reaches
-    // the furthest of the markers and note ends.
+    // Markers: notes outside [w0, w1) are kept but silent (shaded area). The
+    // view spans the markers and every note, either side.
     let (w0, w1) = super::clip::play_window(clip);
-    let view_len = notes.iter().map(|n| n.start + n.length).fold(len.max(w1).max(clip.loop_range().1), f64::max);
     let bpb = app.project.beats_per_bar as f64;
 
     // On selecting a different clip: reset zoom/scroll and show its notes (or the drum pads).
@@ -162,7 +186,16 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         app.pr_time_sel = None;
         app.pr_zoom = 0.0;
         app.pr_scroll = 0.0;
+        app.pr_hold = None;
     }
+    // Zoom-out limit: content extent, widened by `pr_hold` (where notes were
+    // before being moved inward) until the user zooms in.
+    let (content_lo, content_hi) = content_span(clip, notes);
+    let (view_lo, view_hi) = match app.pr_hold {
+        Some((a, b)) => (content_lo.min(a), content_hi.max(b)),
+        None => (content_lo, content_hi),
+    };
+    let view_len = (view_hi - view_lo).max(0.25);
     let mut row_h = app.pr_row_h.clamp(5.0, 32.0);
     let mut rows = (grid_area.height() / row_h).floor().max(1.0) as i32;
     if fresh {
@@ -198,7 +231,10 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 }
             };
             app.pr_zoom_anchor = Some((beat, off, now));
-            ppb = (ppb * zoom as f64).clamp(fit, 600.0);
+            if zoom > 1.0 {
+                app.pr_hold = None; // zooming in forgets where moved notes were
+            }
+            ppb = (ppb * zoom as f64).clamp(fit, 600.0f64.max(fit));
             app.pr_zoom = if ppb <= fit * 1.0001 { 0.0 } else { ppb as f32 };
             app.pr_scroll = beat - off as f64 / ppb;
         } else if alt && scroll.y != 0.0 {
@@ -228,7 +264,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     row_h = app.pr_row_h.clamp(5.0, 32.0);
     rows = (grid_area.height() / row_h).floor().max(1.0) as i32;
     let visible = grid_area.width() as f64 / ppb;
-    app.pr_scroll = app.pr_scroll.clamp(0.0, (view_len - visible).max(0.0));
+    app.pr_scroll = if app.pr_zoom > 0.0 { app.pr_scroll.clamp(view_lo, (view_hi - visible).max(view_lo)) } else { view_lo };
     let scroll = app.pr_scroll;
     let low = app.pr_low_note.clamp(0, (127 - rows + 1).max(0));
     app.pr_low_note = low;
@@ -312,7 +348,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     // Live: every other bar is a lighter band.
     {
         let mut bar = (scroll / bpb).floor();
-        while bar * bpb <= (scroll + visible).min(view_len) {
+        while bar * bpb <= (scroll + visible).min(view_hi) {
             if (bar as i64).rem_euclid(2) == 1 {
                 let r = Rect::from_min_max(pos2(x_of(bar * bpb), grid_area.min.y), pos2(x_of((bar + 1.0) * bpb), grid_area.max.y));
                 gp.rect_filled(r, CornerRadius::ZERO, Color32::from_white_alpha(5));
@@ -323,7 +359,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     }
     let line_step = if grid * ppb < 5.0 { crate::arr_ops::adaptive_step(ppb, bpb, 8.0) } else { grid };
     let mut b = (scroll / line_step).floor() * line_step;
-    let end = (scroll + visible).min(view_len);
+    let end = (scroll + visible).min(view_hi);
     while b <= end + 1e-9 {
         let bar = (b / bpb).fract().abs() < 1e-9;
         let c = if bar {
@@ -339,38 +375,37 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             // "[" tick: 9 px stem + 2 px foot at its top.
             np0.line_segment([pos2(x + 0.5, nums.max.y - 9.0), pos2(x + 0.5, nums.max.y)], Stroke::new(1.0, gray(0x91)));
             np0.line_segment([pos2(x + 0.5, nums.max.y - 8.5), pos2(x + 2.5, nums.max.y - 8.5)], Stroke::new(1.0, gray(0x91)));
-            np0.text(
-                pos2(x + 4.0, nums.max.y - 5.5),
-                Align2::LEFT_CENTER,
-                format!("{}", (b / bpb) as i64 + 1),
-                super::theme::font(FS),
-                text(),
-            );
+            np0.text(pos2(x + 4.0, nums.max.y - 5.5), Align2::LEFT_CENTER, bar_label(b, bpb), super::theme::font(FS), text());
         } else if b.fract().abs() < 1e-9 && line_step * ppb >= 40.0 {
             np0.line_segment([pos2(x + 0.5, nums.max.y - 9.0), pos2(x + 0.5, nums.max.y)], Stroke::new(1.0, gray(0x91)));
             np0.line_segment([pos2(x + 0.5, nums.max.y - 8.5), pos2(x + 2.5, nums.max.y - 8.5)], Stroke::new(1.0, gray(0x91)));
-            let beat = (b - (b / bpb).floor() * bpb) as i64 + 1;
+            let beat = (b - (b / bpb).floor() * bpb).round() as i64 + 1;
             np0.text(
                 pos2(x + 4.0, nums.max.y - 5.5),
                 Align2::LEFT_CENTER,
-                format!("{}.{}", (b / bpb).floor() as i64 + 1, beat),
+                format!("{}.{}", bar_label((b / bpb).floor() * bpb, bpb), beat),
                 super::theme::font(FS),
                 text(),
             );
         }
         b += line_step;
     }
-    // Outside the markers (notes there are kept but silent).
-    if x_of(w1) < grid_area.max.x {
-        gp.rect_filled(Rect::from_min_max(pos2(x_of(w1), ruler.min.y), rect.max), CornerRadius::ZERO, Color32::from_black_alpha(110));
-        gp.line_segment([pos2(x_of(w1), ruler.min.y), pos2(x_of(w1), rect.max.y)], Stroke::new(1.0, gray(120)));
+    // Outside the markers (notes there are kept but silent): Live shades the
+    // rows and bar numbers just 3 levels darker (hn-ni-ni) and draws #91 lines
+    // at the start / end markers.
+    let shade_out = Color32::from_black_alpha(14);
+    for (a, z) in [(grid_area.min.x, x_of(w0)), (x_of(w1), grid_area.max.x)] {
+        let (a, z) = (a.max(grid_area.min.x), z.min(grid_area.max.x));
+        if z > a {
+            gp.rect_filled(Rect::from_min_max(pos2(a, grid_area.min.y), pos2(z, rect.max.y)), CornerRadius::ZERO, shade_out);
+            np0.rect_filled(Rect::from_min_max(pos2(a, nums.min.y), pos2(z, nums.max.y)), CornerRadius::ZERO, shade_out);
+        }
     }
-    if x_of(w0) > grid_area.min.x {
-        gp.rect_filled(
-            Rect::from_min_max(pos2(grid_area.min.x, ruler.min.y), pos2(x_of(w0), rect.max.y)),
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(110),
-        );
+    for b in [w0, w1] {
+        let x = x_of(b).round() + 0.5;
+        if x > grid_area.min.x && x < grid_area.max.x {
+            gp.line_segment([pos2(x, marker.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, gray(0x91)));
+        }
     }
     // Rubber-band time range (Ctrl+D duplicates it with its notes).
     // Live 12: a light-blue bar at the bottom of the scrub strip with grey pin
@@ -400,24 +435,26 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         let y = y_of(n.pitch as i32);
         Rect::from_min_max(pos2(x1, y + 1.0), pos2(x2, y + row_h - 1.0))
     };
-    let note_col = rgb(app.project.tracks[track].color);
+    // Notes take the clip colour (Live).
+    let note_col = rgb(clip.color);
     let mut hit: Option<(usize, bool)> = None; // (index, on resize edge)
     let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
     for (i, n) in notes.iter().enumerate() {
         let r = note_rect(n);
         let sel = app.note_sel.contains(&i);
         if r.max.y > grid_area.min.y && r.min.y < grid_area.max.y && r.max.x > grid_area.min.x && r.min.x < grid_area.max.x {
-            let outside = n.start >= w1 - 1e-9 || n.start < w0 - 1e-9;
-            // Track colour (darker when softer), black 1 px border, selected =
-            // #b0ddeb border; bold name when it fits.
-            let fill = if n.muted || outside { gray(0x30) } else { shade(note_col, 0.45 + 0.55 * n.velocity as f32 / 127.0) };
+            // Clip colour (darker when softer) also outside the markers (Live),
+            // 2 px black border (1 px on tiny notes), selected = 2 px #b0ddeb
+            // inside a 1 px black edge; bold name when it fits.
+            let fill = if n.muted { gray(0x30) } else { shade(note_col, 0.45 + 0.55 * n.velocity as f32 / 127.0) };
             let r = Rect::from_min_max(r.min - vec2(0.0, 1.0), r.max + vec2(0.0, 1.0));
             np.rect_filled(r, CornerRadius::ZERO, fill);
+            let bw = if r.width() >= 8.0 && r.height() >= 7.0 { 2.0 } else { 1.0 };
             if sel {
                 np.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
-                np.rect_stroke(r.shrink(1.0), CornerRadius::ZERO, Stroke::new(1.0, SEL_BLUE), egui::StrokeKind::Inside);
+                np.rect_stroke(r.shrink(1.0), CornerRadius::ZERO, Stroke::new(bw, SEL_BLUE), egui::StrokeKind::Inside);
             } else {
-                np.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
+                np.rect_stroke(r, CornerRadius::ZERO, Stroke::new(bw, Color32::BLACK), egui::StrokeKind::Inside);
             }
             if row_h >= 9.0 && r.width() > 18.0 && drums.is_none() {
                 np.with_clip_rect(r.shrink(1.0).intersect(grid_area)).text(
@@ -456,19 +493,20 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         }
         let sel = app.note_sel.contains(&i);
         let vh = vel_area.height() * n.velocity as f32 / 127.0;
-        // Live 12: hollow head at the note start + a line over the note's length.
-        let c = if sel {
-            SEL_BLUE
+        // Live 12 (hn-piano-roll-velocity): a small head filled with the note
+        // colour + a dark line over the note's length (selected: blue).
+        let (head, line) = if sel {
+            (SEL_BLUE, SEL_BLUE)
         } else if n.muted {
-            gray(0x5d)
+            (gray(0x5d), gray(0x2a))
         } else {
-            gray(0xc0)
+            (note_col, Color32::from_rgb(41, 40, 35))
         };
         let top = pos2(x + 1.0, (vel_area.max.y - vh).round() + 0.5);
         let x_end = (x_of(n.start + n.length) - 1.0).max(x + 4.0);
-        vp.line_segment([pos2(top.x + 2.5, top.y), pos2(x_end, top.y)], Stroke::new(1.0, c));
-        vp.circle_filled(top, 2.5, gray(0x1e));
-        vp.circle_stroke(top, 2.5, Stroke::new(1.0, c));
+        vp.line_segment([pos2(top.x + 2.0, top.y), pos2(x_end, top.y)], Stroke::new(1.0, line));
+        vp.circle_filled(top, 2.2, head);
+        vp.circle_stroke(top, 2.2, Stroke::new(0.8, Color32::from_rgb(44, 43, 39)));
     }
     // Velocity scale (1 / 64 / 127) in the key column.
     let sp = ui.painter_at(Rect::from_min_max(pos2(rect.min.x, vel_area.min.y - 4.0), pos2(vel_area.min.x, rect.max.y)));
@@ -478,7 +516,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
         panel(),
     );
     // Envelope / MPE lanes draw their own scale.
-    let vel_scale: &[u8] = if app.cv.tab == super::clip::Tab::Main { &[127, 64, 1] } else { &[] };
+    let vel_scale: &[u8] = if app.cv.tab == super::clip::Tab::Main && lane_on { &[127, 64, 1] } else { &[] };
     for &v in vel_scale {
         let y = vel_area.max.y - vel_area.height() * v as f32 / 127.0;
         sp.line_segment([pos2(vel_area.min.x - 6.0, y), pos2(vel_area.min.x - 2.0, y)], Stroke::new(1.0, gray(120)));
@@ -487,14 +525,17 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             vp.line_segment([pos2(vel_area.min.x, y), pos2(vel_area.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(10)));
         }
     }
+    if has_bar {
+        velocity_bar(app, ui, bar, notes);
+    }
     // Splitter between the note grid and the velocity lane.
     let split = Rect::from_min_max(pos2(rect.min.x, grid_area.max.y - 3.0), pos2(rect.max.x, grid_area.max.y + 4.0));
-    let sr = ui.interact(split, ui.scope_id().with("vel_split"), Sense::drag());
+    let sr = ui.interact(split, ui.scope_id().with("vel_split"), if lane_on { Sense::drag() } else { Sense::hover() });
     p.line_segment(
         [pos2(rect.min.x, grid_area.max.y + 1.0), pos2(rect.max.x, grid_area.max.y + 1.0)],
         Stroke::new(if sr.hovered() || sr.dragged() { 2.0 } else { 1.0 }, gray(if sr.hovered() || sr.dragged() { 140 } else { 70 })),
     );
-    if sr.hovered() || sr.dragged() {
+    if lane_on && (sr.hovered() || sr.dragged()) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
     if sr.dragged()
@@ -587,10 +628,10 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 let pitch = pitch_at(pt.y).clamp(0, 127) as u8;
                 let length = if app.pr_note_len > 0.0 { app.pr_note_len } else { grid.min(len) };
                 let velocity = app.pr_note_vel.clamp(1, 127);
-                let start = snap(beat_at(pt.x)).max(0.0);
+                let start = snap(beat_at(pt.x));
                 app.edit(|pr| {
                     if let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(pr, cref) {
-                        notes.push(Note { start, length, pitch, velocity, muted: false, mpe: 0 });
+                        notes.push(Note { start, length, pitch, velocity, muted: false, mpe: 0, vel_dev: 0 });
                         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
                     }
                 });
@@ -723,6 +764,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             }
             // Snapshot of the notes at drag start lets moves be computed from absolute deltas.
             ui.data_mut(|d| {
+                d.insert_temp(drag_id.with("view"), (view_lo, view_hi));
                 d.insert_temp(drag_id, m);
                 d.insert_temp(drag_id.with("orig"), snapshot);
                 d.insert_temp(drag_id.with("base"), base);
@@ -744,9 +786,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 let target = if free { raw } else { snap(raw + grid * 0.5) };
                 let db = target - a_start;
                 let dp = pitch_at(pt.y) - grab_pitch;
-                // Notes may leave the clip to the right (kept, silent) but not
-                // before 0 (unless already there: hidden head after a left trim).
-                let db = sel.iter().filter_map(|&i| orig.get(i)).fold(db, |d, n| d.max(n.start.min(0.0) - n.start));
+                // Notes may leave the clip on either side (kept, silent: Live).
                 for &i in &sel {
                     if let Some(n) = new.get_mut(i) {
                         n.start = orig[i].start + db;
@@ -819,7 +859,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                     }
                 }
                 app.note_sel = s;
-                let (a, b) = (beat_at(band.min.x).max(0.0), beat_at(band.max.x).max(0.0));
+                let (a, b) = (beat_at(band.min.x).max(view_lo), beat_at(band.max.x).max(view_lo));
                 app.pr_time_sel =
                     (b - a > 1e-6).then_some((snap_round(a), snap_round(b).max(snap_round(a) + if free { b - a } else { grid })));
                 // Live 12: dashed white rectangle, no fill.
@@ -834,11 +874,25 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
                 }
             }
         }
-        // Auto-scroll while dragging past the edges.
-        if pt.x > grid_area.max.x {
-            app.pr_scroll += 4.0 / ppb;
-        } else if pt.x < grid_area.min.x && app.pr_scroll > 0.0 {
-            app.pr_scroll -= 4.0 / ppb;
+        // Near / past an edge the view runs on (Live): notes can be dragged
+        // out into the space beyond the clip on both sides. Zoomed in it
+        // scrolls; fully zoomed out the view widens (zooms out).
+        if matches!(mode, NoteDrag::Move { .. } | NoteDrag::Resize { .. } | NoteDrag::Marquee) {
+            let step = 6.0 / ppb;
+            let h = app.pr_hold.get_or_insert((view_lo, view_hi));
+            if pt.x > grid_area.max.x - 14.0 {
+                h.1 = (h.1.max(scroll + visible) + step).min(MAX_VIEW_BEATS);
+                if app.pr_zoom > 0.0 {
+                    app.pr_scroll += step;
+                }
+                ui.ctx().request_repaint();
+            } else if pt.x < grid_area.min.x + 14.0 {
+                h.0 = (h.0.min(scroll) - step).max(-MAX_VIEW_BEATS);
+                if app.pr_zoom > 0.0 {
+                    app.pr_scroll -= step;
+                }
+                ui.ctx().request_repaint();
+            }
         }
         if write && let Some(Clip { content: ClipContent::Midi { notes }, .. }) = DawApp::clip_mut(&mut app.project, cref) {
             *notes = new;
@@ -847,7 +901,19 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
     if resp.drag_stopped()
         && let Some(mode) = ui.data(|d| d.get_temp::<NoteDrag>(drag_id))
     {
+        // The zoom-out limit keeps where notes were and now are, without the
+        // overshoot of the edge auto-scroll (Live: zoom stays until you zoom in).
+        let pre: Option<(f64, f64)> = ui.data(|d| d.get_temp(drag_id.with("view")));
+        if let Some((a, b)) = pre
+            && matches!(mode, NoteDrag::Move { .. } | NoteDrag::Resize { .. } | NoteDrag::Marquee)
+            && let Some(c) = app.clip(cref).cloned()
+            && let ClipContent::Midi { notes: now } = &c.content
+        {
+            let (lo, hi) = content_span(&c, now);
+            app.pr_hold = Some((a.min(lo), b.max(hi)));
+        }
         ui.data_mut(|d| {
+            d.remove::<(f64, f64)>(drag_id.with("view"));
             d.remove::<u8>(drag_id.with("last_pitch"));
             d.remove::<NoteDrag>(drag_id);
             d.remove::<Vec<Note>>(drag_id.with("orig"));
@@ -1181,5 +1247,102 @@ fn draw_headphones(p: &egui::Painter, c: egui::Pos2, col: Color32) {
     p.add(egui::Shape::line(pts, Stroke::new(1.3, col)));
     for sx in [-1.0f32, 1.0] {
         p.rect_filled(Rect::from_center_size(c + vec2(sx * (r - 0.5), 2.5), vec2(2.5, 4.0)), CornerRadius::same(1), col);
+    }
+}
+
+/// 0..127 value box with a teal level bar (Live's velocity bar fields).
+/// Drag / double-click-to-type; returns the new value.
+fn level_box(ui: &mut egui::Ui, r: Rect, id: &str, v: i32, lo: i32, hi: i32, teal: bool) -> Option<i32> {
+    use super::cview::{Field, TEAL, value_box};
+    let (resp, out) = value_box(ui, r, id, gray(0x1e), Field::Text(String::new()), 1.0, v.to_string(), |s| s.trim().parse::<f64>().ok());
+    let editing = ui.data(|d| d.get_temp::<String>(ui.make_persistent_id(id).with("edit")).is_some());
+    if !editing {
+        let p = ui.painter();
+        if teal && v > lo {
+            let inner = r.shrink(1.0);
+            let f = (v - lo) as f32 / (hi - lo).max(1) as f32;
+            p.rect_filled(Rect::from_min_size(inner.min, vec2(inner.width() * f, inner.height())), 0.0, TEAL);
+        }
+        p.text(r.center(), Align2::CENTER_CENTER, v.to_string(), font(FS), text());
+    }
+    out.map(|d| (if resp.dragged() { v as f64 + d } else { d }).round().clamp(lo as f64, hi as f64) as i32)
+}
+
+/// Velocity bar under the piano roll (Live 12, hn-piano-roll-velocity):
+/// lane toggle + ▾, then Randomize, Ramp and Deviation for the selected notes.
+fn velocity_bar(app: &mut DawApp, ui: &mut egui::Ui, bar: Rect, notes: &[Note]) {
+    let p = ui.painter_at(bar);
+    p.rect_filled(bar, CornerRadius::ZERO, panel());
+    p.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, sep()));
+    let x0 = bar.min.x;
+    let cy = bar.center().y + 0.5;
+    let at = |a: f32, b: f32, h: f32| Rect::from_min_max(pos2(x0 + a, cy - h / 2.0), pos2(x0 + b, cy + h / 2.0));
+    // Orange toggle: shows / hides the lane (collapsed: dark with grey icon).
+    let tr = at(3.0, 16.0, 13.0);
+    let resp = ui.interact(tr, ui.make_persistent_id("vel_lane_btn"), Sense::click());
+    let open = !app.pr_vel_collapsed;
+    let (fill, edge, icon) = if open { (ORANGE, gray(0x11), Color32::from_rgb(131, 90, 46)) } else { (gray(0x11), gray(0x91), gray(0x91)) };
+    p.rect_filled(tr, 0.0, edge);
+    p.rect_filled(tr.shrink(1.0), 0.0, fill);
+    // Icon: a velocity marker lying down (head + stem).
+    let c = tr.center();
+    p.rect_filled(Rect::from_center_size(pos2(c.x - 2.5, c.y), vec2(3.0, 3.0)), 0.0, icon);
+    p.line_segment([pos2(c.x - 1.0, c.y), pos2(c.x + 4.0, c.y)], Stroke::new(1.0, icon));
+    if resp.clicked() {
+        app.pr_vel_collapsed = open;
+    }
+    resp.on_hover_text(if open { "Hide the velocity lane" } else { "Show the velocity lane" });
+    // ▾: lane chooser (only Velocity exists).
+    let dr = at(18.0, 28.0, 13.0);
+    let dresp = ui.interact(dr, ui.make_persistent_id("vel_lane_menu"), Sense::click());
+    let c = dr.center();
+    p.add(egui::Shape::convex_polygon(
+        vec![pos2(c.x - 3.5, c.y - 2.0), pos2(c.x + 3.5, c.y - 2.0), pos2(c.x, c.y + 2.0)],
+        gray(if open { 0xb0 } else { 0x69 }),
+        Stroke::NONE,
+    ));
+    super::menu::dropdown(&dresp, 120.0, |ui| {
+        if super::menu::check_item(ui, "Velocity", "", open, true) {
+            app.pr_vel_collapsed = open;
+            ui.close();
+        }
+        super::menu::check_item(ui, "Chance", "", false, false);
+    });
+    p.line_segment([pos2(x0 + 32.5, bar.min.y + 1.0), pos2(x0 + 32.5, bar.max.y)], Stroke::new(1.0, sep()));
+    if !open {
+        return;
+    }
+    let sel: Vec<&Note> = app.note_sel.iter().filter_map(|&i| notes.get(i)).collect();
+    let any = !sel.is_empty();
+    let txt = |x: f32, s: &str| {
+        p.text(pos2(x0 + x, cy), Align2::LEFT_CENTER, s, font(FS), if any { text() } else { gray(0x8a) });
+    };
+    txt(35.0, "Velocity");
+    if super::cview::pill(ui, at(78.0, 142.0, 12.0), "vel_rand", "Randomize", any).clicked() {
+        app.randomize_note_velocity(app.pr_rand_amt);
+    }
+    if let Some(v) = level_box(ui, at(146.0, 184.0, 13.0), "vel_rand_amt", app.pr_rand_amt as i32, 0, 127, true) {
+        app.pr_rand_amt = v as u8;
+    }
+    p.line_segment([pos2(x0 + 189.5, cy - 6.0), pos2(x0 + 189.5, cy + 6.0)], Stroke::new(1.0, sep()));
+    txt(195.0, "Ramp");
+    let ramp = ui.interact(at(193.0, 224.0, 13.0), ui.make_persistent_id("vel_ramp"), if any { Sense::click() } else { Sense::hover() });
+    if ramp.clicked() {
+        app.ramp_note_velocity(app.pr_ramp.0, app.pr_ramp.1);
+    }
+    ramp.on_hover_text("Ramp the selected notes' velocities from the first to the second value");
+    if let Some(v) = level_box(ui, at(226.0, 264.0, 13.0), "vel_ramp_a", app.pr_ramp.0 as i32, 1, 127, true) {
+        app.pr_ramp.0 = v as u8;
+    }
+    if let Some(v) = level_box(ui, at(268.0, 306.0, 13.0), "vel_ramp_b", app.pr_ramp.1 as i32, 1, 127, false) {
+        app.pr_ramp.1 = v as u8;
+    }
+    p.line_segment([pos2(x0 + 311.5, cy - 6.0), pos2(x0 + 311.5, cy + 6.0)], Stroke::new(1.0, sep()));
+    txt(317.0, "Deviation");
+    let dev = sel.first().map_or(0, |n| n.vel_dev as i32);
+    if let Some(v) = level_box(ui, at(367.0, 425.0, 13.0), "vel_dev", dev, -127, 127, false)
+        && any
+    {
+        app.set_note_deviation(v as i8);
     }
 }

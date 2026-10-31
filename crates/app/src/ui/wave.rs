@@ -67,7 +67,7 @@ impl<'a> Source<'a> {
 /// Summary of frames `f0..f1` over the channels `chs`.
 fn summary(src: &Source, chs: &[usize], f0: f64, f1: f64) -> Option<Peak> {
     let len = src.len as f64;
-    if f1 <= 0.0 || f0 >= len || src.len == 0 {
+    if !(f0.is_finite() && f1.is_finite()) || f1 <= 0.0 || f0 >= len || src.len == 0 {
         return None;
     }
     let (f0, f1) = (f0.max(0.0), f1.min(len));
@@ -81,7 +81,7 @@ fn summary(src: &Source, chs: &[usize], f0: f64, f1: f64) -> Option<Peak> {
     let block = PEAK_BLOCK as f64;
     for &ch in chs {
         match src.raw {
-            Some(raw) if f1 - f0 < block * 2.0 => {
+            Some(raw) if f1 - f0 < block * 2.0 && raw[ch].len() >= src.len => {
                 let a = (f0 as usize).min(src.len - 1);
                 let b = (f1.ceil() as usize).clamp(a + 1, src.len);
                 add(Peak::of(&raw[ch][a..b]), (b - a) as f32);
@@ -120,9 +120,14 @@ fn shape_val(v: f32, db: bool) -> f32 {
 /// (None = outside the clip). `gain` scales the drawing only; the painter's
 /// clip rect cuts what overflows.
 pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &dyn Fn(f32) -> Option<f64>, gain: f32, ink: Color32) {
-    if src.len == 0 || visible.width() <= 0.0 || body.height() < 1.0 {
+    // Only what can be seen: a clip zoomed far in can be millions of pixels
+    // wide (huge column buffers / meshes used to exhaust memory and GL).
+    let visible = visible.intersect(p.clip_rect()).intersect(body);
+    let finite = |r: Rect| r.min.x.is_finite() && r.max.x.is_finite() && r.min.y.is_finite() && r.max.y.is_finite();
+    if src.len == 0 || !finite(visible) || !finite(body) || visible.width() <= 0.0 || visible.width() > 16384.0 || body.height() < 1.0 {
         return;
     }
+    let gain = if gain.is_finite() { gain.clamp(0.0, 64.0) } else { 1.0 };
     // Column spans; frames per pixel from the neighbour (kept across loop wraps).
     let x0 = visible.min.x.floor();
     let mut cols: Vec<Option<(f64, f64)>> = Vec::with_capacity(visible.width() as usize + 2);
@@ -273,7 +278,7 @@ fn sample_line(p: &Painter, src: &Source, ch: usize, cols: &[Option<(f64, f64)>]
         pts.clear();
     };
     for (i, c) in cols.iter().enumerate() {
-        let Some((a, b)) = *c else {
+        let Some((a, b)) = (*c).filter(|(a, b)| a.is_finite() && b.is_finite() && b > a) else {
             flush(&mut pts);
             last = None;
             continue;

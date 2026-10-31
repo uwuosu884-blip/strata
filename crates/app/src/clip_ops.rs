@@ -309,7 +309,7 @@ mod tests {
     }
 
     fn n(start: f64, pitch: u8) -> Note {
-        Note { start, length: 0.25, pitch, velocity: 100, muted: false, mpe: 0 }
+        Note { start, length: 0.25, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }
     }
 
     fn slot(a: &mut DawApp, notes: Vec<Note>) -> ClipRef {

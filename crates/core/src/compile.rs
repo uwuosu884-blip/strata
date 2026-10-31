@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn notes_past_the_clip_end_are_silent() {
         let mut proj = Project::new_default();
-        let n = |start| p::Note { start, length: 0.5, pitch: 60, velocity: 100, muted: false, mpe: 0 };
+        let n = |start| p::Note { start, length: 0.5, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 };
         proj.tracks[1].slots[0] = Some(p::Clip {
             length: 4.0,
             content: p::ClipContent::Midi { notes: vec![n(1.0), n(3.9), n(4.0), n(6.0)] },
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn clip_view_props_reach_the_engine() {
         let mut proj = Project::new_default();
-        let n = |start| p::Note { start, length: 0.25, pitch: 60, velocity: 100, muted: false, mpe: 0 };
+        let n = |start| p::Note { start, length: 0.25, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 };
         let mut c =
             p::Clip { length: 4.0, content: p::ClipContent::Midi { notes: vec![n(0.0), n(0.5), n(5.0), n(9.0)] }, ..Default::default() };
         c.start = 0.5;

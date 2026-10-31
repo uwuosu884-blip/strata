@@ -14,6 +14,8 @@ pub enum Command {
     SetTempo(f64),
     SetBeatsPerBar(u32),
     SetMetronome(bool),
+    /// Count-in / sound / rhythm / record-only.
+    SetMetronomeSettings(crate::MetronomeSettings),
     /// Linear gain, clamped to 0–4.
     SetMasterGain(f32),
     /// Cue / preview volume (metronome + browser preview), linear.

@@ -160,3 +160,32 @@ fn arrangement_loop_replays_note_on_loop_start() {
     // 5 beats of a ~1 beat loop: 5 passes (the last one starts at ~4.99996).
     assert_eq!(nonzero(&out).len(), 5, "first note must play on every pass: {:?}", nonzero(&out));
 }
+
+#[test]
+fn recording_count_in_delays_the_transport() {
+    let (mut e, mut h) = engine();
+    h.set_song(Song::new(vec![track(0, vec![None])])).unwrap();
+    h.send(Command::SetMetronome(true)).unwrap();
+    h.send(Command::SetMetronomeSettings(MetronomeSettings { count_in_bars: 1, ..Default::default() })).unwrap();
+    h.send(Command::SetRecording(true)).unwrap();
+    h.send(Command::Play).unwrap(); // the app sends Play too: ignored while counting in
+    render(&mut e, SPB * 3, 512);
+    let s = h.snapshot();
+    assert!(!s.playing, "still counting in");
+    assert_eq!(s.record_state, RecordState::StartPending);
+    assert_eq!(s.beat_position, 0.0);
+    render(&mut e, SPB + SPB / 2, 512); // 1 bar of 4/4 = 4 beats, then half a beat of playback
+    let s = h.snapshot();
+    assert!(s.playing);
+    assert!((s.beat_position - 0.5).abs() < 0.03, "{}", s.beat_position);
+    // Stop during a count-in cancels it.
+    let (mut e, mut h) = engine();
+    h.send(Command::SetMetronomeSettings(MetronomeSettings { count_in_bars: 2, ..Default::default() })).unwrap();
+    h.send(Command::SetRecording(true)).unwrap();
+    render(&mut e, SPB, 512);
+    h.send(Command::Stop).unwrap();
+    render(&mut e, SPB * 10, 512);
+    let s = h.snapshot();
+    assert!(!s.playing);
+    assert_eq!(s.record_state, RecordState::Idle);
+}

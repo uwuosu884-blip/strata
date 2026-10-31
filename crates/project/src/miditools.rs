@@ -409,6 +409,7 @@ fn note(start: f64, length: f64, pitch: i32, velocity: f32) -> Note {
         velocity: velocity.round().clamp(1.0, 127.0) as u8,
         muted: false,
         mpe: 0,
+        vel_dev: 0,
     }
 }
 
@@ -1169,6 +1170,27 @@ pub fn humanize(notes: &mut [Note], amount: f64, seed: u64) {
     }
 }
 
+/// Velocity bar Randomize: every velocity moves by a random amount within
+/// ±`amount`/2 (1..127).
+pub fn randomize_velocity(notes: &mut [Note], amount: u8, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let a = amount as f64 * 0.5;
+    for x in notes {
+        x.velocity = (x.velocity as f64 + rng.range(-a, a)).round().clamp(1.0, 127.0) as u8;
+    }
+}
+
+/// Velocity bar Ramp: velocities go linearly from `a` (earliest note) to `b`
+/// (latest note start).
+pub fn ramp_velocity(notes: &mut [Note], a: u8, b: u8) {
+    let t0 = notes.iter().map(|n| n.start).fold(f64::INFINITY, f64::min);
+    let t1 = notes.iter().map(|n| n.start).fold(f64::NEG_INFINITY, f64::max);
+    for x in notes {
+        let f = if t1 > t0 { (x.start - t0) / (t1 - t0) } else { 0.0 };
+        x.velocity = (a as f64 + (b as f64 - a as f64) * f).round().clamp(1.0, 127.0) as u8;
+    }
+}
+
 /// Reverse in time within the notes' span.
 pub fn reverse(notes: &mut [Note]) {
     let a = notes.iter().map(|n| n.start).fold(f64::INFINITY, f64::min);
@@ -1195,7 +1217,7 @@ mod tests {
     use super::*;
 
     fn n(start: f64, pitch: u8) -> Note {
-        Note { start, length: 1.0, pitch, velocity: 100, muted: false, mpe: 0 }
+        Note { start, length: 1.0, pitch, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }
     }
     const CX: Ctx = Ctx { range: (0.0, 4.0), scale: None };
 

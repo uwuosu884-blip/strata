@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn swing_delays_offbeats_only() {
         let g = Groove::swing(0.5, 66.0, "s");
-        let n = |start| crate::Note { start, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0 };
+        let n = |start| crate::Note { start, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 };
         assert_eq!(g.apply(&n(0.0), 1.0, 0).start, 0.0);
         assert!((g.apply(&n(0.5), 1.0, 1).start - 0.66).abs() < 1e-9);
         assert!((g.apply(&n(0.5), 0.5, 1).start - 0.58).abs() < 1e-9);

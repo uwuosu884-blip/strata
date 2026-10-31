@@ -17,7 +17,7 @@ pub use history::History;
 pub use routing::{AudioIn, AudioOut, MidiIn, MidiOut, Monitor, Tap};
 pub use tracks::TrackDrop;
 
-pub use daw_engine::{AdsrParams, Note, SamplerParams, SynthParams, Wave};
+pub use daw_engine::{AdsrParams, MetroSound, MetronomeSettings, Note, SamplerParams, SynthParams, Wave};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -68,6 +68,8 @@ pub struct Project {
     pub tempo_bpm: f64,
     pub beats_per_bar: u32,
     pub metronome: bool,
+    /// Metronome menu: count-in, sound, rhythm, record-only.
+    pub metronome_opts: MetronomeSettings,
     pub master_gain_db: f32,
     /// Master pan / balance (-1..1).
     pub master_pan: f32,
@@ -111,6 +113,7 @@ impl Default for Project {
             tempo_bpm: 120.0,
             beats_per_bar: 4,
             metronome: false,
+            metronome_opts: MetronomeSettings::default(),
             master_gain_db: 0.0,
             master_pan: 0.0,
             master_collapsed: true,
@@ -190,6 +193,9 @@ pub struct Track {
     /// Post-fader send levels (dB) to `Project::returns`, by index;
     /// ≤ [`SEND_OFF_DB`] = off (Live's −inf). Kept as long as the return list.
     pub sends: Vec<f32>,
+    /// Return tracks only: expanded in the arrangement (they start collapsed,
+    /// 17 px; `collapsed` is unused for returns). View state.
+    pub ret_open: bool,
 }
 
 /// Send level treated as −inf (off).
@@ -223,6 +229,7 @@ impl Default for Track {
             height: 0.0,
             collapsed: false,
             sends: Vec::new(),
+            ret_open: false,
         }
     }
 }
@@ -1294,7 +1301,7 @@ mod tests {
         let mut p = Project::new_default();
         let id = p.new_midi_clip(1, 2, 8.0).unwrap();
         if let Some(Some(Clip { content: ClipContent::Midi { notes }, .. })) = p.tracks[1].slots.get_mut(2) {
-            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false, mpe: 0 });
+            notes.push(Note { start: 0.5, length: 0.25, pitch: 36, velocity: 100, muted: false, mpe: 0, vel_dev: 0 });
         }
         p.tracks[3].arrangement.push(ArrangementClip {
             start: 4.0,
@@ -1386,7 +1393,10 @@ mod tests {
         let midi = |len: f64, starts: &[f64]| Clip {
             length: len,
             content: ClipContent::Midi {
-                notes: starts.iter().map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0 }).collect(),
+                notes: starts
+                    .iter()
+                    .map(|&s| Note { start: s, length: 0.1, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 })
+                    .collect(),
             },
             ..Default::default()
         };
@@ -1500,8 +1510,8 @@ mod tests {
         let mut p = blank(1);
         let id = p.alloc_id();
         let notes = vec![
-            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false, mpe: 0 },
-            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false, mpe: 0 },
+            Note { pitch: 60, start: 0.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0 },
+            Note { pitch: 62, start: 2.5, length: 0.5, velocity: 100, muted: false, mpe: 0, vel_dev: 0 },
         ];
         p.tracks[0].arrangement.push(ArrangementClip {
             start: 4.0,

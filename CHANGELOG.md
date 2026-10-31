@@ -10,6 +10,52 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.8] - 2026-10-31
+
+### Added
+- **Metronome menu** (triangle right of the metronome button): Count-In
+  (None / 1 / 2 / 4 Bars, before recording; Stop cancels it), Sound
+  (Classic / Click / Wood), Rhythm (Auto, 1 Bar .. 1/16T) and Enable Only While
+  Recording. Saved in the project.
+- **Velocity bar** under the piano roll: lane toggle (collapses the lane) and
+  ▾, Randomize (± amount on the selected notes), Ramp (linear from value 1 to
+  value 2 across the selection) and Deviation (per-note random velocity range,
+  applied at playback by the engine).
+- Arrangement track headers show send boxes under volume / pan; empty MIDI
+  tracks (no instrument) show only number, Solo and Arm.
+- Return tracks can be expanded (volume / pan boxes).
+- Touchpad pinch zooms the arrangement (Wayland, `zwp_pointer_gestures_v1`;
+  macOS via winit). Untested on real hardware.
+- A panic now writes `crash.log` next to the settings file (message, location,
+  backtrace).
+- Creating a MIDI clip (Ctrl+Shift+M) opens it in the piano roll.
+
+### Changed
+- Piano roll: notes can be dragged past the clip on both sides; the space
+  outside the clip is no longer darkened (clip-coloured region bar, start line,
+  negative positions in the ruler); thicker note outlines; filled velocity dots
+  with a line over the note length. Max zoom-out spans the outside notes and
+  stays put while editing until the next zoom-in.
+- Ctrl+D on notes never extends the clip: what doesn't fit goes outside.
+- Shortening a MIDI clip keeps the cut-off notes as outside notes.
+- Clip View: title bar in the clip colour with the orange activator; gain and
+  pitch get corner brackets only when selected; double-click on semitones /
+  cents resets to 0.
+- Selected track: the name part of the header is light blue.
+- Tracks are dragged up / down only by the coloured name part.
+- Resizing the browser or toggling I/O squeezes the arrangement (keeps the
+  visible beat range) instead of shifting it.
+- After moving a clip, the insert marker goes to the clip's start.
+- The Clip View can't be made so tall that the arrangement collapses (its
+  header widgets were drawn over the mixer).
+- The waveform style chooser stays for now.
+
+### Fixed
+- Possible random crashes: zoom / warp marker / envelope ranges could ask
+  `clamp` for min > max (a panic) for very short clips or tiny views; the
+  waveform drawing now guards against empty ranges. No crash was reproduced
+  (2 300+ random GUI actions survived).
+
 ## [0.7.7] - 2026-10-30
 
 ### Added

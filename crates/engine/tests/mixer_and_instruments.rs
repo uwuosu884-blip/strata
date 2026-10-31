@@ -111,8 +111,11 @@ fn synth_presets_are_stable_with_full_polyphony() {
 fn clip_notes_end_after_their_length() {
     let (mut e, mut h) = engine();
     let p = SynthParams { amp: AdsrParams { attack: 0.001, decay: 0.1, sustain: 1.0, release: 0.01 }, ..Default::default() };
-    let clip =
-        Clip::new(4.0, true, ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0 }]));
+    let clip = Clip::new(
+        4.0,
+        true,
+        ClipContent::Midi(vec![Note { start: 0.0, length: 1.0, pitch: 60, velocity: 100, muted: false, mpe: 0, vel_dev: 0 }]),
+    );
     h.set_song(Song::new(vec![SongTrack { rt: 0, instrument: Instrument::Synth(p), slots: vec![Some(clip)], ..Default::default() }]))
         .unwrap();
     h.send(Command::LaunchClip { track: 0, scene: 0 }).unwrap();

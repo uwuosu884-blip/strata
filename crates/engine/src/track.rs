@@ -559,7 +559,7 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
                 out.events[*out.n_events] = NoteEvent {
                     offset: off as u32,
                     pitch: note.pitch,
-                    vel: note.velocity,
+                    vel: note.play_velocity(ctx.beat0 + at),
                     len: ((len_beats / ctx.bps) as u32).max(1),
                     expr,
                 };

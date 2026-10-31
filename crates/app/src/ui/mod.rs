@@ -37,6 +37,10 @@ impl eframe::App for DawApp {
     /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
     /// not egui's focus navigation, and piano keys must not trigger widgets.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Wayland touchpad pinch (see `pinch`): zooms like Ctrl+wheel.
+        if let Some(f) = crate::pinch::take() {
+            raw.events.push(egui::Event::Zoom(f));
+        }
         if matches!(self.dialog, Some(Dialog::ConfirmDiscard(_))) {
             // Keyboard-driven dialog: arrows / Enter / Y N C (see `save_changes_dialog`), not egui focus.
             raw.events.retain(|e| match e {
@@ -119,7 +123,17 @@ impl eframe::App for DawApp {
         let dpanel = if self.detail_mode == DetailMode::Device || self.master_selected || self.selected_return.is_some() {
             egui::Panel::bottom("detail_device").resizable(false).exact_size(DEVICE_VIEW_H)
         } else {
-            egui::Panel::bottom("detail").resizable(true).default_size(300.0).size_range(120.0..=700.0)
+            // Never taller than what leaves the Arrangement ≥ 160 px (plus the
+            // arrangement mixer at its minimum): a crushed view drew its
+            // header widgets outside itself.
+            let avail = ui.available_rect_before_wrap().height();
+            let mixer = if self.view == View::Arrangement && self.arr_mixer {
+                session::arr_mixer_height(self) - self.arr_mixer_h + 120.0 + 9.0
+            } else {
+                0.0
+            };
+            let dmax = (avail - 9.0 - 160.0 - mixer).clamp(120.0, 700.0);
+            egui::Panel::bottom("detail").resizable(true).default_size(300.0f32.min(dmax)).size_range(120.0..=dmax)
         };
         let detail_rect = dpanel
             .show_separator_line(false)
@@ -254,7 +268,9 @@ impl DawApp {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         // Knob focus only while the audio Clip View (and its Pitch knob) is shown.
-        self.cv.pitch_focus &= std::mem::take(&mut self.cv.pitch_drawn);
+        let drawn = std::mem::take(&mut self.cv.pitch_drawn);
+        self.cv.pitch_focus &= drawn;
+        self.cv.gain_focus &= drawn;
         if self.dialog.is_some() {
             // Plain keys drive the dialog (arrows / Enter / Y N C in "Save changes").
             for ev in self.key_events.drain(..) {

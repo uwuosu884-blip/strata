@@ -40,8 +40,13 @@ pub fn context(resp: &Response, width: f32, add: impl FnOnce(&mut Ui)) {
 /// Same frame as `context`, opened by a left click on `resp` and right-aligned
 /// below it (the CPU chooser).
 pub fn dropdown(resp: &Response, width: f32, add: impl FnOnce(&mut Ui)) {
+    dropdown_aligned(resp, width, egui::RectAlign::BOTTOM_END, add);
+}
+
+/// `dropdown` with a chosen alignment (the metronome menu opens rightwards).
+pub fn dropdown_aligned(resp: &Response, width: f32, align: egui::RectAlign, add: impl FnOnce(&mut Ui)) {
     let frame = Frame::new().fill(fill()).stroke(Stroke::new(1.0, line())).inner_margin(0).corner_radius(CornerRadius::ZERO);
-    egui::Popup::menu(resp).frame(frame).width(width).align(egui::RectAlign::BOTTOM_END).gap(2.0).show(|ui| {
+    egui::Popup::menu(resp).frame(frame).width(width).align(align).gap(2.0).show(|ui| {
         ui.set_width(width - 2.0);
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         ui.add_space(1.0);

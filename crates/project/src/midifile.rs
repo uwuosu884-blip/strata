@@ -207,7 +207,7 @@ mod tests {
     }
 
     fn file() -> Vec<SmfTrack> {
-        let n = |pitch, start, length| Note { pitch, start, length, velocity: 100, muted: false, mpe: 0 };
+        let n = |pitch, start, length| Note { pitch, start, length, velocity: 100, muted: false, mpe: 0, vel_dev: 0 };
         vec![
             SmfTrack { name: Some("Lead".into()), notes: vec![n(60, 0.0, 1.0), n(64, 4.5, 1.0)] },
             SmfTrack { name: None, notes: vec![n(36, 0.0, 0.5)] },
