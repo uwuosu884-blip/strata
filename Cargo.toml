@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/engine", "crates/project", "crates/core", "crates/render", "crates/app"]
 
 [workspace.package]
-version = "0.7.9"
+version = "0.7.10"
 edition = "2024"
 rust-version = "1.95"
 
@@ -24,9 +24,9 @@ rubato = "5"
 opus-decoder = "0.1"
 midir = "0.11"
 
-# GUI (glow = OpenGL renderer: lighter and faster to build than the wgpu default)
+# GUI (wgpu renderer, as beatlayer / transit use)
 eframe = { version = "0.37", default-features = false, features = [
-    "glow",
+    "wgpu",
     "default_fonts",
     "wayland",
     "x11",

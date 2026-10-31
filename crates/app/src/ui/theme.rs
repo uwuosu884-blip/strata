@@ -307,10 +307,8 @@ pub fn sel_tint(v: u8) -> Color32 {
 pub const FS: f32 = 10.0;
 pub const FS_SMALL: f32 = 8.0;
 
-/// Sizes ≥ 10 px use the auto-hinted copy (crisp stems); smaller text keeps the
-/// font's own TrueType hinting, whose spacing holds up better at 8–9 px.
 pub fn font(size: f32) -> FontId {
-    if size < 9.5 { FontId::new(size, FontFamily::Name("small".into())) } else { FontId::proportional(size) }
+    FontId::proportional(size)
 }
 
 pub fn bold(size: f32) -> FontId {
@@ -318,35 +316,21 @@ pub fn bold(size: f32) -> FontId {
 }
 
 /// Ableton Sans Small (Live's UI face): Regular for UI text, Bold for titles.
-///
-/// * `AbletonSansSmall-*.ttf`: the unmodified fonts (TrueType hinting), used
-///   below 9.5 px, where the auto-hinter spaces glyphs unevenly.
-/// * `AbletonSansSmall-*-auto.ttf`: fontTools copies with the TrueType
-///   instructions stripped, so egui/skrifa uses its auto-hinter, which (with
-///   `preserve_linear_metrics` off) also snaps stems horizontally.
+/// Loaded plainly, like beatlayer / transit: no font tweaks, egui's default
+/// text options (its own hinting and sub-pixel placement).
 pub fn install_fonts(ctx: &egui::Context) {
-    use egui::epaint::text::{FontTweak, HintingTarget, SmoothHinting};
     let mut fonts = FontDefinitions::default();
-    let tweak = || FontTweak {
-        hinting: Some(true),
-        hinting_target: HintingTarget::Smooth(SmoothHinting { light: false, symmetric_rendering: false, preserve_linear_metrics: false }),
-        subpixel_binning: Some(false),
-        ..Default::default()
-    };
-    // Ableton Sans Small with its own TrueType hinting: matches Live's glyph
-    // advances at 10 px exactly (measured on hh-cpu-context-menu).
     for (name, bytes) in [
         ("as", &include_bytes!("../../assets/AbletonSansSmall-Regular.ttf")[..]),
         ("as-bold", &include_bytes!("../../assets/AbletonSansSmall-Bold.ttf")[..]),
     ] {
-        fonts.font_data.insert(name.into(), FontData::from_static(bytes).tweak(tweak()).into());
+        fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
     }
-    // egui's built-in faces stay only as glyph fallback (symbols, CJK-less scripts).
+    // egui's built-in faces stay only as glyph fallback (symbols etc.).
     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
     let with = |first: &str| std::iter::once(first.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
     fonts.families.insert(FontFamily::Proportional, with("as"));
     fonts.families.insert(FontFamily::Monospace, with("as"));
-    fonts.families.insert(FontFamily::Name("small".into()), with("as"));
     fonts.families.insert(FontFamily::Name("bold".into()), with("as-bold"));
     ctx.set_fonts(fonts);
 }
@@ -373,9 +357,6 @@ pub fn apply_style(ctx: &egui::Context) {
     st.spacing.slider_width = 110.0;
     st.spacing.slider_rail_height = 3.0;
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
-    // No sub-pixel glyph binning: glyphs land on whole pixels (crisper).
-    v.text_options.font_hinting = true;
-    v.text_options.subpixel_binning = false;
     let r0 = CornerRadius::ZERO;
     v.override_text_color = Some(text());
     v.panel_fill = panel();

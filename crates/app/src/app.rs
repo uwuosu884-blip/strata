@@ -1103,12 +1103,20 @@ impl DawApp {
     }
 
     /// Arm button: on a track inside a multi-selection it (dis)arms every
-    /// selected track; Ctrl+click arms just this one.
+    /// selected track. Arming is exclusive (every other track is disarmed);
+    /// Ctrl+click (dis)arms just this track and leaves the others as they are.
     pub fn click_arm(&mut self, track: usize, ctrl: bool) {
         let sel = self.selected_tracks();
         let targets: Vec<usize> = if !ctrl && sel.len() > 1 && sel.contains(&track) { sel } else { vec![track] };
         let Some(on) = self.project.tracks.get(track).map(|t| !t.arm) else { return };
         self.edit(|p| {
+            if on && !ctrl {
+                for (i, t) in p.tracks.iter_mut().enumerate() {
+                    if !targets.contains(&i) {
+                        t.arm = false;
+                    }
+                }
+            }
             for &i in &targets {
                 if let Some(t) = p.tracks.get_mut(i)
                     && t.kind != TrackKind::Group

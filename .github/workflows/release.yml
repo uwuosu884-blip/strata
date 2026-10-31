@@ -135,7 +135,7 @@ jobs:
               echo "| $p | \`$f\` |"
             done
             echo
-            echo '- **Linux:** `sudo apt install libasound2 libxkbcommon-x11-0 libgl1`, then `./daw`.'
+            echo '- **Linux:** `sudo apt install libasound2 libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers libegl1`, then `./daw`.'
             ls dist | grep -q macos && echo '- **macOS:** the binaries are not signed yet; run `xattr -dr com.apple.quarantine daw-*` once.'
             ls dist | grep -q windows && echo '- **Windows:** SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.'
             echo '- Verify downloads with `SHA256SUMS.txt`.'

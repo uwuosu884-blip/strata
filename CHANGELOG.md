@@ -10,6 +10,24 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.10] - 2026-10-31
+
+### Changed
+- **Renderer: wgpu** (was glow / OpenGL), as beatlayer and transit use. The
+  inverted playhead is now a wgpu paint callback. Linux needs Vulkan
+  (`libvulkan1` + Mesa drivers) or EGL.
+- **Fonts: all earlier tweaks removed.** Ableton Sans Small is loaded plainly
+  (no `FontTweak`, no auto-hinted copies, no forced whole-pixel glyphs); egui's
+  default text options (hinting, sub-pixel binning), like beatlayer / transit.
+  Sizes stay 10 / 8.
+- **Exclusive arm**: arming a track disarms all others (a selected track arms
+  the whole selection). Ctrl+click arms / disarms just that track and leaves
+  the others armed.
+
+### Fixed
+- Grid lines show through a clip while it is being recorded, as they do once
+  it is recorded.
+
 ## [0.7.9] - 2026-10-31
 
 ### Added
@@ -742,7 +760,8 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.10...HEAD
+[0.7.10]: https://github.com/uwuosu884-blip/strata/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/uwuosu884-blip/strata/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/uwuosu884-blip/strata/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/uwuosu884-blip/strata/compare/v0.7.6...v0.7.7

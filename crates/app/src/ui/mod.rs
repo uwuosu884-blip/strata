@@ -6,7 +6,7 @@ pub mod clip;
 pub mod cursors;
 mod cview;
 mod detail;
-mod invert;
+pub mod invert;
 mod io;
 mod menu;
 mod prefs;

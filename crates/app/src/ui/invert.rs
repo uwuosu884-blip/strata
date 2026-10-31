@@ -1,20 +1,76 @@
 //! Photoshop-style "difference" drawing: shapes invert whatever is under them
-//! (Live's playhead). egui has no such blend mode, so this is a tiny glow paint
+//! (Live's playhead). egui has no such blend mode, so this is a tiny wgpu paint
 //! callback: a flat-white shader with blend (1 - dst) * 1.
 
 use eframe::egui::{self, Pos2, Rect};
-use eframe::egui_glow::{self, glow};
-use glow::HasContext;
-use std::sync::{Arc, Mutex};
+use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
+use eframe::wgpu::{self, util::DeviceExt};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Gl {
-    program: glow::Program,
-    vao: glow::VertexArray,
-    vbo: glow::Buffer,
+/// The pipeline plus this frame's vertex buffers (keyed by callback id).
+struct Gpu {
+    pipeline: wgpu::RenderPipeline,
+    bufs: HashMap<u64, (wgpu::Buffer, u32)>,
 }
 
-/// GL objects, created lazily on the first callback (single window app).
-static GL: Mutex<Option<Result<Gl, ()>>> = Mutex::new(None);
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+const SHADER: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+";
+
+/// Creates the pipeline once, at startup (needs the surface format).
+pub fn init(rs: &egui_wgpu::RenderState) {
+    let d = &rs.device;
+    let module =
+        d.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("invert"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let layout =
+        d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("invert"), bind_group_layouts: &[], immediate_size: 0 });
+    let pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("invert"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+            })],
+            compilation_options: Default::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: rs.target_format,
+                // rgb = 1·(1 − dst); alpha untouched.
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::OneMinusDst,
+                        dst_factor: wgpu::BlendFactor::Zero,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    rs.renderer.write().callback_resources.insert(Gpu { pipeline, bufs: HashMap::new() });
+}
 
 /// Shapes to invert: axis-aligned rects and triangles, in egui points.
 #[derive(Default, Clone)]
@@ -48,88 +104,66 @@ impl Inverted {
         if !rect.is_positive() {
             return;
         }
-        let cb = egui_glow::CallbackFn::new(move |info, p| draw(&info, p.gl(), &self));
-        painter.add(egui::PaintCallback { rect, callback: Arc::new(cb) });
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        painter.add(egui_wgpu::Callback::new_paint_callback(rect, Cb { id, s: self }));
     }
 }
 
-fn compile(gl: &glow::Context) -> Result<Gl, ()> {
-    let v = egui_glow::ShaderVersion::get(gl);
-    let (attr, outd, outw) =
-        if v.is_new_shader_interface() { ("in", "out vec4 o_col;", "o_col") } else { ("attribute", "", "gl_FragColor") };
-    let vs = format!("{}{attr} vec2 a_pos;\nvoid main() {{ gl_Position = vec4(a_pos, 0.0, 1.0); }}\n", v.version_declaration());
-    let fs = format!(
-        "{}#ifdef GL_ES\nprecision mediump float;\n#endif\n{outd}\nvoid main() {{ {outw} = vec4(1.0); }}\n",
-        v.version_declaration()
-    );
-    unsafe {
-        let program = gl.create_program().map_err(|_| ())?;
-        let mut shaders = Vec::new();
-        for (kind, src) in [(glow::VERTEX_SHADER, vs), (glow::FRAGMENT_SHADER, fs)] {
-            let s = gl.create_shader(kind).map_err(|_| ())?;
-            gl.shader_source(s, &src);
-            gl.compile_shader(s);
-            if !gl.get_shader_compile_status(s) {
-                eprintln!("invert shader: {}", gl.get_shader_info_log(s));
-                return Err(());
+struct Cb {
+    id: u64,
+    s: Inverted,
+}
+
+impl CallbackTrait for Cb {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        sd: &ScreenDescriptor,
+        _enc: &mut wgpu::CommandEncoder,
+        res: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some(g) = res.get_mut::<Gpu>() else { return Vec::new() };
+        // Points → NDC of the whole surface (paint() sets a full-surface viewport).
+        let ppp = sd.pixels_per_point;
+        let (w, h) = (sd.size_in_pixels[0].max(1) as f32, sd.size_in_pixels[1].max(1) as f32);
+        let ndc = |x: f32, y: f32| [x / w * 2.0 - 1.0, 1.0 - y / h * 2.0];
+        let s = &self.s;
+        let mut v: Vec<f32> = Vec::with_capacity(s.rects.len() * 12 + s.tris.len() * 6);
+        for r in &s.rects {
+            // Rects snap to whole pixels.
+            let (x0, y0, x1, y1) = ((r.min.x * ppp).round(), (r.min.y * ppp).round(), (r.max.x * ppp).round(), (r.max.y * ppp).round());
+            let (a, b, c, d) = (ndc(x0, y0), ndc(x1, y0), ndc(x1, y1), ndc(x0, y1));
+            for q in [a, b, c, a, c, d] {
+                v.extend_from_slice(&q);
             }
-            gl.attach_shader(program, s);
-            shaders.push(s);
         }
-        gl.bind_attrib_location(program, 0, "a_pos");
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            eprintln!("invert program: {}", gl.get_program_info_log(program));
-            return Err(());
+        for t in &s.tris {
+            for &p in t {
+                // Triangles stay unrounded so their slopes look smooth.
+                v.extend_from_slice(&ndc(p.x * ppp, p.y * ppp));
+            }
         }
-        for s in shaders {
-            gl.detach_shader(program, s);
-            gl.delete_shader(s);
-        }
-        let vao = gl.create_vertex_array().map_err(|_| ())?;
-        let vbo = gl.create_buffer().map_err(|_| ())?;
-        Ok(Gl { program, vao, vbo })
+        let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_ne_bytes()).collect();
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("invert"),
+            contents: &bytes,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        // Drop buffers of earlier frames.
+        let id = self.id;
+        g.bufs.retain(|&k, _| k + 64 > id);
+        g.bufs.insert(id, (buf, (v.len() / 2) as u32));
+        Vec::new()
     }
-}
 
-fn draw(info: &egui::PaintCallbackInfo, gl: &glow::Context, s: &Inverted) {
-    let Ok(mut guard) = GL.lock() else { return };
-    let Ok(g) = guard.get_or_insert_with(|| compile(gl)) else { return };
-    // Points → NDC of the GL viewport egui set for this callback (whole pixels).
-    let vp = info.viewport_in_pixels();
-    let ppp = info.pixels_per_point;
-    let (w, h) = (vp.width_px.max(1) as f32, vp.height_px.max(1) as f32);
-    let ndc =
-        |p: Pos2| [((p.x * ppp).round() - vp.left_px as f32) / w * 2.0 - 1.0, 1.0 - ((p.y * ppp).round() - vp.top_px as f32) / h * 2.0];
-    let mut v: Vec<f32> = Vec::with_capacity(s.rects.len() * 12 + s.tris.len() * 6);
-    for r in &s.rects {
-        let (a, b, c, d) = (ndc(r.left_top()), ndc(r.right_top()), ndc(r.right_bottom()), ndc(r.left_bottom()));
-        for q in [a, b, c, a, c, d] {
-            v.extend_from_slice(&q);
-        }
-    }
-    for t in &s.tris {
-        for &p in t {
-            // Triangles stay unrounded so their slopes look smooth.
-            v.extend_from_slice(&[(p.x * ppp - vp.left_px as f32) / w * 2.0 - 1.0, 1.0 - (p.y * ppp - vp.top_px as f32) / h * 2.0]);
-        }
-    }
-    unsafe {
-        gl.use_program(Some(g.program));
-        gl.bind_vertex_array(Some(g.vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(g.vbo));
-        let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4);
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
-        gl.enable(glow::BLEND);
-        gl.blend_equation(glow::FUNC_ADD);
-        // rgb = 1·(1 − dst); alpha untouched.
-        gl.blend_func_separate(glow::ONE_MINUS_DST_COLOR, glow::ZERO, glow::ZERO, glow::ONE);
-        gl.draw_arrays(glow::TRIANGLES, 0, (v.len() / 2) as i32);
-        gl.disable_vertex_attrib_array(0);
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        gl.bind_vertex_array(None);
-        gl.use_program(None);
+    fn paint(&self, info: egui::PaintCallbackInfo, rp: &mut wgpu::RenderPass<'static>, res: &CallbackResources) {
+        let Some(g) = res.get::<Gpu>() else { return };
+        let Some((buf, n)) = g.bufs.get(&self.id) else { return };
+        let [w, h] = info.screen_size_px;
+        rp.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+        rp.set_pipeline(&g.pipeline);
+        rp.set_vertex_buffer(0, buf.slice(..));
+        rp.draw(0..*n, 0..1);
     }
 }

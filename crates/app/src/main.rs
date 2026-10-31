@@ -162,6 +162,10 @@ fn main() -> ExitCode {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
             ui::theme::install_fonts(&cc.egui_ctx);
             pinch::start(cc);
+            // Playhead inversion pipeline (needs the surface format).
+            if let Some(rs) = &cc.wgpu_render_state {
+                ui::invert::init(rs);
+            }
             Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi, settings, base)))
         }),
     );

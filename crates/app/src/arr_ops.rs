@@ -1387,17 +1387,23 @@ mod app_tests {
 
     #[test]
     fn arm_click_applies_to_the_selection_and_ctrl_is_independent() {
+        let arms = |a: &DawApp| a.project.tracks.iter().map(|t| t.arm).collect::<Vec<_>>();
         let mut a = tracks(4);
         a.select_track_header(0, crate::arr_ops::SelMode::Single);
         a.select_track_header(2, crate::arr_ops::SelMode::Range);
         a.click_arm(1, false);
-        assert_eq!(a.project.tracks.iter().map(|t| t.arm).collect::<Vec<_>>(), vec![true, true, true, false], "all selected");
+        assert_eq!(arms(&a), vec![true, true, true, false], "all selected");
         a.click_arm(0, false);
         assert!(a.project.tracks[..3].iter().all(|t| !t.arm), "toggles all off");
         a.click_arm(1, true);
-        assert_eq!(a.project.tracks.iter().map(|t| t.arm).collect::<Vec<_>>(), vec![false, true, false, false], "Ctrl: just one");
+        assert_eq!(arms(&a), vec![false, true, false, false], "Ctrl: just one");
+        a.click_arm(3, true);
+        assert_eq!(arms(&a), vec![false, true, false, true], "Ctrl: keeps the others armed");
+        a.click_arm(3, true);
         a.click_arm(3, false);
-        assert!(a.project.tracks[3].arm && !a.project.tracks[0].arm, "unselected track: just itself");
+        assert_eq!(arms(&a), vec![false, false, false, true], "plain arm: exclusive");
+        a.click_arm(1, false);
+        assert_eq!(arms(&a), vec![true, true, true, false], "selection arm: exclusive to the selection");
         // No Input: can't be armed.
         a.project.tracks[3].midi_in = daw_project::MidiIn::None;
         a.project.tracks[3].arm = false;

@@ -1340,7 +1340,7 @@ fn mixer_strip(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect) {
             "REC",
             arm,
             REC_RED,
-            "Arm for recording (all selected tracks; Ctrl: just this one)",
+            "Arm for recording (disarms other tracks; selected track: all selected; Ctrl: just this one, others stay armed)",
         )
         .clicked()
     {

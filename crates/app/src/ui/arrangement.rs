@@ -627,17 +627,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
         let sel = app.arr_sel.contains(&id) || app.selected_clip == Some(ClipRef::Arr { track: t, index: i });
         let p = &painter;
         draw_clip(p, r, &a.clip, sel, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm, collapsed);
-        if !collapsed && g.grid * g.zoom >= 4.0 {
-            // Grid lines show through the clip body (Live).
-            let body = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 16.0), r.max - vec2(1.0, 1.0)).intersect(lane);
-            let pc = p.with_clip_rect(body.intersect(p.clip_rect()));
-            let mut v = (g.beat_at(body.min.x).max(0.0) / g.grid).ceil() * g.grid;
-            while g.to_x(v) < body.max.x {
-                let x = g.to_x(v).round() + 0.5;
-                pc.line_segment([pos2(x, body.min.y), pos2(x, body.max.y)], Stroke::new(1.0, Color32::from_black_alpha(26)));
-                v += g.grid;
-            }
-        }
+        clip_grid(p, g, r, lane, collapsed);
         if let Some((sx1, sx2)) = ts_x
             && !sel
             && sx2 > r.min.x
@@ -720,6 +710,21 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     live_preview(app, &painter, g, lane, t, collapsed);
 }
 
+/// Grid lines show through the clip body (Live), also while recording.
+fn clip_grid(p: &egui::Painter, g: &Geo, r: Rect, lane: Rect, collapsed: bool) {
+    if collapsed || g.grid * g.zoom < 4.0 {
+        return;
+    }
+    let body = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 16.0), r.max - vec2(1.0, 1.0)).intersect(lane);
+    let pc = p.with_clip_rect(body.intersect(p.clip_rect()));
+    let mut v = (g.beat_at(body.min.x).max(0.0) / g.grid).ceil() * g.grid;
+    while g.to_x(v) < body.max.x {
+        let x = g.to_x(v).round() + 0.5;
+        pc.line_segment([pos2(x, body.min.y), pos2(x, body.max.y)], Stroke::new(1.0, Color32::from_black_alpha(26)));
+        v += g.grid;
+    }
+}
+
 /// The take being recorded, growing at the playhead over what it will replace (Live).
 fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, collapsed: bool) {
     let lv = &app.live_rec;
@@ -789,6 +794,7 @@ fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, 
         let vis = body.intersect(p.clip_rect());
         super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, 1.0, Color32::from_gray(0x18));
     }
+    clip_grid(p, g, r, lane, collapsed);
 }
 
 /// Live fade handles: while the pointer is over an audio clip, small squares
@@ -1128,7 +1134,7 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             "REC",
             arm,
             REC_RED,
-            "Arm for recording (all selected tracks; Ctrl: just this one)",
+            "Arm for recording (disarms other tracks; selected track: all selected; Ctrl: just this one, others stay armed)",
         )
         .clicked()
     {
