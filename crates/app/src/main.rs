@@ -161,9 +161,10 @@ fn main() -> ExitCode {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
-            ui::theme::install_fonts(&cc.egui_ctx);
             // Whole-pixel strokes at fractional interface scales.
             cc.egui_ctx.add_plugin(ui::pixelsnap::PixelSnap);
+            // Black / white text colours (0.7.12).
+            cc.egui_ctx.add_plugin(ui::textcolor::TextColor);
             pinch::start(cc);
             // Playhead inversion pipeline (needs the surface format).
             if let Some(rs) = &cc.wgpu_render_state {

@@ -10,6 +10,9 @@ pub enum Command {
     Rewind,
     /// Move the playhead (beats).
     SetPosition(f64),
+    /// Locator jump: while playing at the next global launch-quantization
+    /// boundary (immediately when quantization is off), else right away.
+    JumpTo(f64),
     /// BPM, clamped to 20–999.
     SetTempo(f64),
     SetBeatsPerBar(u32),

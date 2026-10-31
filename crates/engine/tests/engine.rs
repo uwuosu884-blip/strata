@@ -219,3 +219,30 @@ fn monitor_gain_scales_device_output_only_and_preview_plays_on_cue() {
     assert!(out[2 * 5_000..].iter().all(|&s| s == 0.0), "2 400 frames at 24 kHz = 4 800 at 48 kHz");
     assert!(h.collect_garbage() >= 1);
 }
+
+#[test]
+fn locator_jump_waits_for_the_launch_quantization_boundary() {
+    let (mut e, mut h) = engine();
+    // 120 BPM: 24 000 samples per beat; global quantization 1 bar (4 beats).
+    h.send(Command::SetLaunchQuantize(4.0)).unwrap();
+    h.send(Command::Play).unwrap();
+    render(&mut e, 24_000, 480); // beat 1
+    h.send(Command::JumpTo(16.0)).unwrap();
+    render(&mut e, 2 * 24_000, 480); // beat 3: still before the bar line
+    let b = h.snapshot().beat_position;
+    assert!((b - 3.0).abs() < 1e-3, "no jump yet: {b}");
+    render(&mut e, 24_000 + 12_000, 480); // bar line at beat 4, then +0.5 beat
+    let b = h.snapshot().beat_position;
+    assert!((b - 16.5).abs() < 1e-3, "jumped at the bar line: {b}");
+    // Quantization off: immediate. Stopped: immediate, transport stays stopped.
+    h.send(Command::SetLaunchQuantize(0.0)).unwrap();
+    h.send(Command::JumpTo(2.0)).unwrap();
+    render(&mut e, 480, 480);
+    assert!((h.snapshot().beat_position - 2.0 - 0.02).abs() < 1e-3);
+    h.send(Command::Stop).unwrap();
+    render(&mut e, 4800, 480);
+    h.send(Command::JumpTo(8.0)).unwrap();
+    render(&mut e, 480, 480);
+    let s = h.snapshot();
+    assert!(!s.playing && s.beat_position == 8.0, "{} {}", s.playing, s.beat_position);
+}

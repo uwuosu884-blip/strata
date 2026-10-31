@@ -156,6 +156,7 @@ fn process_is_allocation_free() {
         Command::BackToArrangement,
         Command::AllNotesOff { track: 1 },
         Command::SetPosition(1.5),
+        Command::JumpTo(0.5),
         Command::StopAllClips,
         Command::Stop,
         Command::Rewind,

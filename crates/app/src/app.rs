@@ -166,6 +166,12 @@ pub struct DawApp {
     /// Track header explicitly selected (name part clicked): only then is the
     /// name part light blue. `selected_track` alone is just the focused track.
     pub head_sel: bool,
+    /// Selected arrangement locator (the Set button becomes Del).
+    pub sel_locator: Option<u64>,
+    /// Arrangement grid step (beats) of the last frame: locator arrow-key moves.
+    pub loc_step: f64,
+    /// Locator name being edited (id, text, fresh).
+    pub loc_rename: Option<(u64, String, bool)>,
     /// Selected arrangement clips (ids are stable across sorting).
     pub arr_sel: Vec<u64>,
     pub time_sel: Option<crate::arr_ops::TimeSel>,
@@ -358,6 +364,9 @@ impl DawApp {
             track_sel: Vec::new(),
             hide_sel: None,
             head_sel: false,
+            sel_locator: None,
+            loc_step: 1.0,
+            loc_rename: None,
             arr_sel: Vec::new(),
             time_sel: None,
             selected_clip: None,
@@ -973,9 +982,80 @@ impl DawApp {
         if self.status.playing {
             self.send_now(Command::Stop);
         } else {
-            self.send_now(Command::SetPosition(self.play_start));
+            self.send_now(Command::SetPosition(self.play_from()));
             self.send_now(Command::Play);
         }
+    }
+
+    /// Where Play starts: the "Song Start Time" locator if set, else the start marker.
+    pub fn play_from(&self) -> f64 {
+        self.project.song_start.and_then(|id| self.project.locator(id)).map_or(self.play_start, |l| l.beat)
+    }
+
+    // ----- locators (Live 6.4) ----------------------------------------------------------
+
+    /// Jump to `beat`: quantized (global launch quantization) while playing,
+    /// immediate when stopped (the start marker moves there).
+    pub fn jump_to(&mut self, beat: f64) {
+        let beat = beat.max(0.0);
+        if self.status.playing {
+            self.play_start = beat;
+            self.send_now(Command::JumpTo(beat));
+        } else {
+            self.set_playhead(beat);
+        }
+    }
+
+    /// Start playback at a locator (double-click while stopped).
+    pub fn play_at(&mut self, beat: f64) {
+        self.set_playhead(beat);
+        self.send_now(Command::Play);
+    }
+
+    /// Set button: deletes the selected locator, else adds one — while playing
+    /// at the playback position rounded to the launch quantization, when
+    /// stopped at the time selection start or the start marker.
+    pub fn set_locator_button(&mut self) {
+        if let Some(id) = self.sel_locator.take() {
+            self.edit(|p| p.remove_locator(id));
+            return;
+        }
+        let beat = if self.status.playing {
+            let (pos, q) = (self.status.beat_position, self.project.launch_quantize);
+            if q > 0.0 { (pos / q).round() * q } else { pos }
+        } else {
+            self.time_sel.map_or(self.play_start, |t| t.start)
+        };
+        self.edit(|p| p.add_locator(beat));
+    }
+
+    /// Previous / Next Locator buttons.
+    pub fn locator_step(&mut self, next: bool) {
+        let pos = if self.status.playing { self.status.beat_position } else { self.play_start };
+        let to = self.project.locator_jump(pos, next);
+        self.jump_to(to);
+    }
+
+    /// Locator context menu: loop between this locator and the next one.
+    pub fn loop_to_next_locator(&mut self, id: u64) {
+        let Some(i) = self.project.locators.iter().position(|l| l.id == id) else { return };
+        let start = self.project.locators[i].beat;
+        let end = self.project.locators.get(i + 1).map_or_else(|| self.project.arrangement_end(), |l| l.beat);
+        if end > start + 1e-6 {
+            self.edit(|p| {
+                p.loop_start = start;
+                p.loop_end = end;
+                p.loop_enabled = true;
+            });
+            self.send_loop();
+        }
+    }
+
+    pub fn delete_locator(&mut self, id: u64) {
+        if self.sel_locator == Some(id) {
+            self.sel_locator = None;
+        }
+        self.edit(|p| p.remove_locator(id));
     }
 
     /// Move the playhead (and the start point for the next play).

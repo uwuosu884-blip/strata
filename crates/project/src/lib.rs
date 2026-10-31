@@ -102,7 +102,24 @@ pub struct Project {
     /// Sample rate that `offset_frames` / warp markers / transients refer to
     /// (0 = unknown, older files: assume the engine rate).
     pub frame_rate: u32,
+    /// Arrangement locators, sorted by time.
+    pub locators: Vec<Locator>,
+    /// Locator with "Set Song Start Time Here" (Play starts there).
+    pub song_start: Option<u64>,
+    /// Arrangement "Waveform Vertical Zoom Level" (display only, 1..=10).
+    pub wave_zoom: f32,
 }
+
+/// Arrangement locator (Live 6.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Locator {
+    pub id: u64,
+    pub beat: f64,
+    pub name: String,
+}
+
+pub const WAVE_ZOOM_MAX: f32 = 10.0;
 
 impl Default for Project {
     fn default() -> Self {
@@ -133,6 +150,9 @@ impl Default for Project {
             tempo_follow: true,
             master_color: [150, 150, 150],
             cue_gain_db: 0.0,
+            locators: Vec::new(),
+            song_start: None,
+            wave_zoom: 1.0,
             frame_rate: 0,
         }
     }
@@ -679,6 +699,54 @@ impl Project {
         id
     }
 
+    /// Add a locator at `beat` (none if one is already there); returns its id.
+    /// Names count up like Live ("1", "2", …).
+    pub fn add_locator(&mut self, beat: f64) -> u64 {
+        let beat = beat.max(0.0);
+        if let Some(l) = self.locators.iter().find(|l| (l.beat - beat).abs() < 1e-6) {
+            return l.id;
+        }
+        let id = self.alloc_id();
+        let mut n = self.locators.len() + 1;
+        while self.locators.iter().any(|l| l.name == n.to_string()) {
+            n += 1;
+        }
+        self.locators.push(Locator { id, beat, name: n.to_string() });
+        self.sort_locators();
+        id
+    }
+
+    pub fn remove_locator(&mut self, id: u64) {
+        self.locators.retain(|l| l.id != id);
+        if self.song_start == Some(id) {
+            self.song_start = None;
+        }
+    }
+
+    pub fn sort_locators(&mut self) {
+        self.locators.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    }
+
+    pub fn locator(&self, id: u64) -> Option<&Locator> {
+        self.locators.iter().find(|l| l.id == id)
+    }
+
+    /// Previous / next locator jump target from `pos`: past the first / last
+    /// locator it goes to the arrangement start / end (Live).
+    pub fn locator_jump(&self, pos: f64, next: bool) -> f64 {
+        const E: f64 = 1e-6;
+        if next {
+            self.locators.iter().map(|l| l.beat).find(|&b| b > pos + E).unwrap_or_else(|| self.arrangement_end().max(pos))
+        } else {
+            self.locators.iter().rev().map(|l| l.beat).find(|&b| b < pos - E).unwrap_or(0.0)
+        }
+    }
+
+    /// Waveform vertical zoom, clamped (old files: 1).
+    pub fn wave_zoom(&self) -> f32 {
+        if self.wave_zoom.is_finite() { self.wave_zoom.clamp(1.0, WAVE_ZOOM_MAX) } else { 1.0 }
+    }
+
     pub fn add_scene(&mut self) -> usize {
         let n = self.scenes.len();
         self.scenes.push(Scene { name: format!("{}", n + 1) });
@@ -944,6 +1012,11 @@ impl Project {
 
     /// Make every track's slot list match the scene count, fix ids.
     pub fn normalize(&mut self) {
+        self.locators.retain(|l| l.beat.is_finite());
+        self.sort_locators();
+        if self.song_start.is_some_and(|id| self.locator(id).is_none()) {
+            self.song_start = None;
+        }
         let n = self.scenes.len();
         let nr = self.returns.len();
         for r in &mut self.returns {
@@ -974,6 +1047,7 @@ impl Project {
             .flat_map(|t| {
                 std::iter::once(t.id).chain(t.slots.iter().flatten().map(|c| c.id)).chain(t.arrangement.iter().map(|a| a.clip.id))
             })
+            .chain(self.locators.iter().map(|l| l.id))
             .max()
             .unwrap_or(0);
         self.next_id = self.next_id.max(max_id + 1);
@@ -995,6 +1069,9 @@ impl Project {
             for a in &mut t.arrangement {
                 fix(&mut a.clip.id);
             }
+        }
+        for l in &mut self.locators {
+            fix(&mut l.id);
         }
         self.next_id = next;
         self.normalize_groups();
@@ -1295,6 +1372,34 @@ pub fn gain_to_db(gain: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locators_add_sort_jump_and_roundtrip() {
+        let mut p = Project::default();
+        let b = p.add_locator(8.0);
+        let a = p.add_locator(4.0);
+        assert_eq!(p.add_locator(4.0), a, "no duplicate at the same time");
+        assert_eq!(p.locators.iter().map(|l| l.beat).collect::<Vec<_>>(), vec![4.0, 8.0]);
+        assert_eq!(p.locator(b).unwrap().name, "1");
+        assert_eq!(p.locator(a).unwrap().name, "2");
+        // Prev / next; past the ends: arrangement start / end.
+        assert_eq!(p.locator_jump(0.0, true), 4.0);
+        assert_eq!(p.locator_jump(4.0, true), 8.0);
+        assert_eq!(p.locator_jump(8.0, false), 4.0);
+        assert_eq!(p.locator_jump(4.0, false), 0.0);
+        assert_eq!(p.locator_jump(9.0, true), 9.0, "no clips: stays");
+        p.song_start = Some(b);
+        p.wave_zoom = 2.5;
+        let q = Project::from_ron(&p.to_ron().unwrap()).unwrap();
+        assert_eq!(q.locators, p.locators);
+        assert_eq!(q.song_start, Some(b));
+        assert_eq!(q.wave_zoom(), 2.5);
+        let mut r = q.clone();
+        r.remove_locator(b);
+        assert_eq!(r.song_start, None);
+        assert!(r.next_id > a.max(b));
+        assert_eq!(Project { wave_zoom: 0.0, ..Default::default() }.wave_zoom(), 1.0);
+    }
 
     #[test]
     fn default_set_roundtrips_through_ron() {

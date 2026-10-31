@@ -142,6 +142,7 @@ pub fn create(config: EngineConfig) -> (Engine, EngineHandle) {
         tracks: (0..MAX_TRACKS).map(|_| TrackRt::new(mb, sr, &plans)).collect(),
         rt_to_song: [NONE; MAX_TRACKS],
         quantum: 4.0,
+        jump: None,
         follow_tempo: true,
         rng: 0x2545_F491_4F6C_DD1D,
         auto_arm: NONE,
@@ -219,6 +220,8 @@ pub struct Engine {
     tracks: Vec<TrackRt>,
     rt_to_song: [u16; MAX_TRACKS],
     quantum: f64,
+    /// Pending quantized jump (at beat, to beat).
+    jump: Option<(f64, f64)>,
     /// Follow the song's tempo map (leader clips); off = "Unfollow Tempo Automation".
     follow_tempo: bool,
     /// Follow-action dice (xorshift).
@@ -565,10 +568,25 @@ impl Engine {
                     }
                     self.begin_stop()
                 }
-                Command::Rewind => self.set_position(0.0),
+                Command::Rewind => {
+                    self.jump = None;
+                    self.set_position(0.0)
+                }
                 Command::SetPosition(b) => {
                     if b.is_finite() {
+                        self.jump = None;
                         self.set_position(b.max(0.0))
+                    }
+                }
+                Command::JumpTo(b) => {
+                    if b.is_finite() {
+                        let at = self.quantized(self.transport.beat_position);
+                        if self.transport.playing && at > self.transport.beat_position + EPS {
+                            self.jump = Some((at, b.max(0.0)));
+                        } else {
+                            self.jump = None;
+                            self.set_position(b.max(0.0));
+                        }
                     }
                 }
                 Command::SetTempo(bpm) => self.transport.set_tempo(bpm),
@@ -851,6 +869,7 @@ impl Engine {
 
     fn stop(&mut self) {
         self.stopping = None;
+        self.jump = None;
         self.clip_gain = 1.0;
         self.transport.playing = false;
         if matches!(self.rec.state, RecordState::Recording | RecordState::StopPending) {
@@ -1032,6 +1051,9 @@ impl Engine {
         if matches!(self.rec.state, RecordState::StartPending | RecordState::StopPending) {
             next = next.min(self.rec.beat);
         }
+        if let Some((at, _)) = self.jump {
+            next = next.min(at);
+        }
         if let Some((_, end)) = self.transport.active_loop()
             && beat < end - EPS
         {
@@ -1055,6 +1077,14 @@ impl Engine {
         while done < frames {
             let mut n = frames - done;
             let playing = self.transport.playing;
+            // Quantized locator jump due: move before anything else this segment.
+            if playing
+                && let Some((at, to)) = self.jump
+                && at <= self.transport.beat_position + EPS
+            {
+                self.jump = None;
+                self.set_position(to);
+            }
             let beat0 = self.transport.beat_position;
             // Leader clips: tempo automation (step map).
             if self.follow_tempo && !self.song.tempo_map.is_empty() {
@@ -1116,6 +1146,9 @@ impl Engine {
                     }
                     if matches!(self.rec.state, RecordState::StartPending | RecordState::StopPending) {
                         self.rec.beat -= jump;
+                    }
+                    if let Some(j) = &mut self.jump {
+                        j.0 -= jump;
                     }
                 }
                 self.transport.beat_position = beat;

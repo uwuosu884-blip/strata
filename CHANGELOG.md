@@ -10,6 +10,33 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.12] - 2026-10-31
+
+### Added
+- Time locators (Live manual 6.1/6.4): Set Locator button (Del when a locator
+  is selected; quantized to launch quantization while playing, insert marker /
+  selection start when stopped), Previous/Next Locator buttons, "Add Locator" in
+  the scrub-area context menu. Click a locator to jump, double-click while
+  stopped to play from it, drag or Left/Right to move, Ctrl+R to rename,
+  Delete to remove. Locator menu: Loop to Next Locator, Set Song Start Time Here,
+  Rename, Edit Info Text (greyed), Delete. Saved in the project.
+- Waveform Vertical Zoom (1.00x–10.00x) next to H/W under the Main track:
+  display only, applies to all arrangement audio clips and recordings. Drag
+  (Shift = fine), wheel, double-click = 1.00x. Saved in the project.
+- Settings > Theme & Colors > Font: Ableton Sans Light (default), Ableton Sans
+  Small, Small Bold, Small Italic, Inter (bundled, OFL). Bold text uses
+  Ableton Sans Small Bold, or Inter Bold with Inter.
+- Settings > Font Weight for Ableton Sans Light: Light, +1, +2 (default), +3 —
+  outlines thickened offline (`tools/embolden_*.py`), metrics unchanged.
+- Settings > Display > Master Track Name: Main (default) or Master, used in the
+  header, mixer and routing choosers.
+
+### Changed
+- Pure black text is drawn as rgb(32,32,32); near-pure white text as
+  rgb(244,240,235). Other greys unchanged.
+- Settings window stays centred while the interface zoom changes.
+- Track rename edits in place on the header with no box (clip rename unchanged).
+
 ## [0.7.11] - 2026-10-31
 
 ### Changed
@@ -781,7 +808,9 @@ views, built-in instruments, mixer, recording, undo/redo and WAV export.
   build it from source for now.
 - The macOS build is only tested in CI.
 
-[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.10...HEAD
+[Unreleased]: https://github.com/uwuosu884-blip/strata/compare/v0.7.12...HEAD
+[0.7.12]: https://github.com/uwuosu884-blip/strata/compare/v0.7.11...v0.7.12
+[0.7.11]: https://github.com/uwuosu884-blip/strata/compare/v0.7.10...v0.7.11
 [0.7.10]: https://github.com/uwuosu884-blip/strata/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/uwuosu884-blip/strata/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/uwuosu884-blip/strata/compare/v0.7.7...v0.7.8

@@ -40,7 +40,11 @@ pub fn window(app: &mut DawApp, ctx: &egui::Context, tab: &mut SettingsTab) -> b
         .title_bar(false)
         .resizable(false)
         .collapsible(false)
-        .anchor(Align2::CENTER_CENTER, off)
+        // Centred on the screen every frame (also while the interface scale changes:
+        // the pivot is the window centre, so no stale size from the last frame).
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(ctx.content_rect().center() + off)
+        .constrain(false)
         .fixed_size([W, H])
         // Rounded like the "Save changes" dialog (8 px corners).
         .frame(
@@ -149,7 +153,11 @@ fn row(ui: &mut egui::Ui, label: &str, w: f32, enabled: bool) -> (Rect, egui::Ui
 
 /// Live chooser: #242424 box, 1 px outline, ▼ at the right.
 fn chooser<T: Copy + PartialEq>(ui: &mut egui::Ui, label: &str, cur: &mut T, items: &[(T, &str)], enabled: bool) -> bool {
-    let (c, mut cui) = row(ui, label, CTRL_W, enabled);
+    chooser_w(ui, label, cur, items, enabled, CTRL_W)
+}
+
+fn chooser_w<T: Copy + PartialEq>(ui: &mut egui::Ui, label: &str, cur: &mut T, items: &[(T, &str)], enabled: bool, w: f32) -> bool {
+    let (c, mut cui) = row(ui, label, w, enabled);
     let mut changed = false;
     let txt = items.iter().find(|(v, _)| v == cur).map_or("", |(_, s)| *s);
     cui.add_enabled_ui(enabled, |ui| {
@@ -274,6 +282,12 @@ fn theme_page(app: &mut DawApp, ui: &mut egui::Ui) {
     chooser(ui, "Tone", &mut t.tone, &tones, true);
     onoff(ui, "High Contrast", &mut t.high_contrast);
     ui.add_space(4.0);
+    section(ui, "Font");
+    let fonts: Vec<(UiFont, &str)> = UiFont::ALL.iter().map(|v| (*v, v.label())).collect();
+    chooser_w(ui, "Font", &mut t.font, &fonts, true, 150.0);
+    let weights: Vec<(FontWeight, &str)> = FontWeight::ALL.iter().map(|v| (*v, v.label())).collect();
+    chooser(ui, "Font Weight", &mut t.font_weight, &weights, t.font == UiFont::AbletonSansLight);
+    ui.add_space(4.0);
     // Temporary (0.7.7): pick the waveform drawing algorithm.
     section(ui, "Waveform (temporary)");
     let waves: Vec<(super::wave::WaveStyle, &str)> = super::wave::WaveStyle::ALL.iter().map(|v| (*v, v.label())).collect();
@@ -343,6 +357,11 @@ fn display_page(app: &mut DawApp, ui: &mut egui::Ui) {
         app.settings.zoom_pct = z;
     }
     if done {
+        app.save_settings();
+    }
+    let names: Vec<(crate::settings::MasterName, &str)> = crate::settings::MasterName::ALL.iter().map(|v| (*v, v.label())).collect();
+    if chooser(ui, "Master Track Name", &mut app.settings.master_name, &names, true) {
+        theme::set_main_name(app.settings.master_name);
         app.save_settings();
     }
     for l in ["Language", "Follow Behavior", "Hide Labels"] {

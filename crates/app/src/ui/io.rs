@@ -473,8 +473,8 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
     let cur = tr.audio_out;
     let parent = tr.group;
     let type_text = match cur {
-        AudioOut::Default => parent.map_or_else(|| "Main".to_string(), |g| track_name(app, g)),
-        AudioOut::Master => "Main".into(),
+        AudioOut::Default => parent.map_or_else(|| super::theme::main_name().to_string(), |g| track_name(app, g)),
+        AudioOut::Master => super::theme::main_name().into(),
         AudioOut::Ext { .. } => "Ext. Out".into(),
         AudioOut::Track(id) => track_name(app, id),
     };
@@ -492,7 +492,7 @@ fn audio_to(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
                 pick = Some(AudioOut::Default);
             }
             let master_sel = cur == AudioOut::Master || (cur == AudioOut::Default && parent.is_none());
-            if entry(ui, master_sel, "Main", None) {
+            if entry(ui, master_sel, super::theme::main_name(), None) {
                 pick = Some(if parent.is_some() { AudioOut::Master } else { AudioOut::Default });
             }
             if entry(ui, matches!(cur, AudioOut::Ext { .. }), "Ext. Out", None) {
@@ -650,14 +650,17 @@ pub fn return_io(app: &mut DawApp, ui: &mut egui::Ui, k: usize, rect: Rect) {
     io_caption(ui, "Audio To", 7.0, 3.0);
     let ext = matches!(cur, AudioOut::Ext { .. });
     let mut pick = None;
-    egui::ComboBox::from_id_salt(("ret_out", k)).width(cw).selected_text(small(if ext { "Ext. Out" } else { "Main" })).show_ui(ui, |ui| {
-        if entry(ui, !ext, "Main", None) {
-            pick = Some(AudioOut::Default);
-        }
-        if entry(ui, ext, "Ext. Out", None) {
-            pick = Some(if ext { cur } else { AudioOut::Ext { ch: 0, stereo: true } });
-        }
-    });
+    egui::ComboBox::from_id_salt(("ret_out", k))
+        .width(cw)
+        .selected_text(small(if ext { "Ext. Out" } else { super::theme::main_name() }))
+        .show_ui(ui, |ui| {
+            if entry(ui, !ext, super::theme::main_name(), None) {
+                pick = Some(AudioOut::Default);
+            }
+            if entry(ui, ext, "Ext. Out", None) {
+                pick = Some(if ext { cur } else { AudioOut::Ext { ch: 0, stereo: true } });
+            }
+        });
     empty_box(ui, cw);
     if let Some(o) = pick {
         app.edit(|p| p.returns[k].audio_out = o);
@@ -682,7 +685,7 @@ pub fn master_io(app: &mut DawApp, ui: &mut egui::Ui, rect: Rect) {
             .selected_text(metered(ui, ext_label(&cfg, app.project.master_out_ch, app.project.master_out_stereo)))
             .show_ui(ui, |_| {});
     });
-    io_caption(ui, "Main Out", 12.0, 6.0);
+    io_caption(ui, &format!("{} Out", super::theme::main_name()), 12.0, 6.0);
     master_out_combo(app, ui, cw);
 }
 

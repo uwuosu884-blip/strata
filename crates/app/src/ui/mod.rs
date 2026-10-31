@@ -12,6 +12,7 @@ mod menu;
 pub mod pixelsnap;
 mod prefs;
 mod session;
+pub mod textcolor;
 pub mod theme;
 mod topbar;
 pub mod wave;
@@ -75,6 +76,7 @@ impl eframe::App for DawApp {
         let ctx = ui.ctx().clone();
         theme::update(&ctx, &self.settings.theme);
         wave::set_style(self.settings.theme.wave_style);
+        theme::set_main_name(self.settings.master_name);
         {
             let t = &self.settings.theme;
             let manual = (!t.auto_assign_colors).then(|| t.default_track_color.unwrap_or(daw_project::PALETTE[0]));
@@ -400,7 +402,11 @@ impl DawApp {
             self.quantize_clip(c);
         }
         if cmd(Key::R) {
-            self.rename_selection();
+            if let Some(l) = self.sel_locator.and_then(|id| self.project.locator(id)) {
+                self.loc_rename = Some((l.id, l.name.clone(), true));
+            } else {
+                self.rename_selection();
+            }
         }
         // Ctrl+A inside a text field selects its text.
         if !typing && cmd(Key::A) {
@@ -477,6 +483,7 @@ impl DawApp {
             self.touched_track = None;
             self.pr_time_sel = None;
             self.renaming = None;
+            self.sel_locator = None;
         }
         browser::collection_keys(self, ctx);
         let events = std::mem::take(&mut self.key_events);
@@ -485,6 +492,33 @@ impl DawApp {
             let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
             if modifiers.command || modifiers.alt {
                 continue;
+            }
+            // Selected locator: Left/Right move it by the grid, Delete removes it.
+            if pressed
+                && self.view == View::Arrangement
+                && !self.focus_detail
+                && let Some(id) = self.sel_locator.filter(|&id| self.project.locator(id).is_some())
+            {
+                match key {
+                    Key::ArrowLeft | Key::ArrowRight => {
+                        let step = if self.loc_step > 0.0 { self.loc_step } else { 1.0 };
+                        let d = if key == Key::ArrowLeft { -step } else { step };
+                        if !repeat {
+                            self.begin_gesture();
+                        }
+                        if let Some(l) = self.project.locators.iter_mut().find(|l| l.id == id) {
+                            l.beat = (((l.beat + d) / step).round() * step).max(0.0);
+                        }
+                        self.project.sort_locators();
+                        self.dirty = true;
+                        continue;
+                    }
+                    Key::Delete | Key::Backspace if !repeat => {
+                        self.delete_locator(id);
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             if pressed && !repeat {
                 match key {
@@ -1016,7 +1050,7 @@ impl DawApp {
         let dev_forced = self.master_selected || self.selected_return.is_some();
         let clip_active = self.detail_mode == DetailMode::Clip && !dev_forced;
         let name = if self.master_selected {
-            "Main".to_string()
+            theme::main_name().to_string()
         } else if let Some(r) = self.selected_return.and_then(|k| self.project.returns.get(k)) {
             r.name.clone()
         } else {
@@ -1337,7 +1371,7 @@ pub fn add_master_zone(ui: &egui::Ui, r: egui::Rect) {
     ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Rect>>(master_zone_id()).push(r));
 }
 
-fn wheel_notch(ui: &egui::Ui) -> f32 {
+pub fn wheel_notch(ui: &egui::Ui) -> f32 {
     let d: f32 = ui.input(|i| {
         i.events
             .iter()
@@ -1406,7 +1440,29 @@ pub fn rename_editor(app: &mut DawApp, ui: &mut egui::Ui, rect: egui::Rect, id: 
         return;
     }
     let te_id = ui.make_persistent_id(("rename", r.id, clip));
-    let resp = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(te_id).font(theme::font(11.0)).margin(egui::vec2(2.0, 1.0)));
+    let mut te = egui::TextEdit::singleline(&mut r.text).id(te_id).font(theme::font(11.0)).margin(egui::vec2(2.0, 1.0));
+    let saved = ui.visuals().clone();
+    if !clip {
+        // Track names: edited in place on the header, no box (clips keep theirs).
+        let col = app.project.tracks.iter().chain(&app.project.returns).find(|t| t.id == id).map(|t| t.color);
+        let bg = if app.head_sel { theme::SEL_BLUE } else { col.map_or(theme::panel(), widgets::rgb) };
+        let fg = widgets::text_on(bg);
+        te = te
+            .frame(egui::Frame::NONE)
+            .font(theme::font(theme::FS))
+            .text_color(fg)
+            .margin(egui::vec2(0.0, 0.0))
+            .align(egui::Align2::LEFT_CENTER);
+        // Cursor / selection readable on the header colour.
+        let v = ui.visuals_mut();
+        v.text_cursor.stroke.color = fg;
+        v.selection.bg_fill = fg.gamma_multiply(0.35);
+        v.selection.stroke.color = bg;
+    }
+    let resp = ui.put(rect, te);
+    if !clip {
+        *ui.visuals_mut() = saved;
+    }
     if r.fresh {
         r.fresh = false;
         resp.request_focus();

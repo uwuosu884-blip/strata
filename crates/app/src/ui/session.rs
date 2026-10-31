@@ -264,7 +264,7 @@ fn master_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) {
     let resp = ui.interact(hr, egui::Id::unique("sess").with("main_header"), Sense::click());
     super::add_master_zone(ui, hr);
     p.rect_filled(hr, CornerRadius::ZERO, if app.master_selected { shade(mcol, 1.25) } else { mcol });
-    p.text(hr.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, "Main", bold(FS), text_on(mcol));
+    p.text(hr.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, super::theme::main_name(), bold(FS), text_on(mcol));
     if resp.clicked() {
         app.select_master();
     }
@@ -446,7 +446,7 @@ fn master_mixer_column(app: &mut DawApp, ui: &mut egui::Ui, x0: f32, b: &Bands) 
     let resp = ui.interact(hr, egui::Id::unique("sess").with("mix_main_header"), Sense::click());
     super::add_master_zone(ui, hr);
     p.rect_filled(hr, CornerRadius::ZERO, if app.master_selected { shade(mcol, 1.25) } else { mcol });
-    p.text(hr.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, "Main", bold(FS), text_on(mcol));
+    p.text(hr.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, super::theme::main_name(), bold(FS), text_on(mcol));
     if resp.clicked() {
         app.select_master();
     }

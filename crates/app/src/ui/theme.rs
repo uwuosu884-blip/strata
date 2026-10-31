@@ -108,6 +108,9 @@ pub struct ThemeSettings {
     pub clip_color: ClipColorMode,
     /// Temporary (0.7.7): waveform drawing algorithm.
     pub wave_style: super::wave::WaveStyle,
+    /// Interface font and (Ableton Sans Light only) weight.
+    pub font: UiFont,
+    pub font_weight: FontWeight,
 }
 
 impl Default for ThemeSettings {
@@ -126,7 +129,87 @@ impl Default for ThemeSettings {
             reduced_colors: false,
             clip_color: ClipColorMode::TrackColor,
             wave_style: Default::default(),
+            font: UiFont::default(),
+            font_weight: FontWeight::default(),
         }
+    }
+}
+
+static MASTER_NAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Master track display name ("Main" or "Master", Settings > Display & Input).
+pub fn main_name() -> &'static str {
+    if MASTER_NAME.load(std::sync::atomic::Ordering::Relaxed) { "Master" } else { "Main" }
+}
+
+pub fn set_main_name(n: crate::settings::MasterName) {
+    MASTER_NAME.store(n == crate::settings::MasterName::Master, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Interface font (Settings > Theme & Colors > Font).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiFont {
+    #[default]
+    AbletonSansLight,
+    AbletonSansSmall,
+    AbletonSansSmallBold,
+    AbletonSansSmallItalic,
+    Inter,
+}
+
+impl UiFont {
+    pub const ALL: [UiFont; 5] =
+        [Self::AbletonSansLight, Self::AbletonSansSmall, Self::AbletonSansSmallBold, Self::AbletonSansSmallItalic, Self::Inter];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AbletonSansLight => "Ableton Sans Light",
+            Self::AbletonSansSmall => "Ableton Sans Small",
+            Self::AbletonSansSmallBold => "Ableton Sans Small Bold",
+            Self::AbletonSansSmallItalic => "Ableton Sans Small Italic",
+            Self::Inter => "Inter",
+        }
+    }
+}
+
+/// Ableton Sans Light with its outlines thickened offline (fontforge
+/// changeWeight, `tools/embolden_*.py`): +1/+2/+3 = stems +10/+20/+30 units
+/// (Light 60, +2 ≈ a Regular weight).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FontWeight {
+    Light,
+    Plus1,
+    #[default]
+    Plus2,
+    Plus3,
+}
+
+impl FontWeight {
+    pub const ALL: [FontWeight; 4] = [Self::Light, Self::Plus1, Self::Plus2, Self::Plus3];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Light => "Light",
+            Self::Plus1 => "+1",
+            Self::Plus2 => "+2",
+            Self::Plus3 => "+3",
+        }
+    }
+}
+
+/// (regular, bold) font files for a font choice.
+pub fn font_files(f: UiFont, w: FontWeight) -> (&'static [u8], &'static [u8]) {
+    const LIGHT: [&[u8]; 4] = [
+        include_bytes!("../../assets/AbletonSans-Light.ttf"),
+        include_bytes!("../../assets/AbletonSans-Light1.ttf"),
+        include_bytes!("../../assets/AbletonSans-Light2.ttf"),
+        include_bytes!("../../assets/AbletonSans-Light3.ttf"),
+    ];
+    const SMALL_BOLD: &[u8] = include_bytes!("../../assets/AbletonSansSmall-Bold.ttf");
+    match f {
+        UiFont::AbletonSansLight => (LIGHT[w as usize], SMALL_BOLD),
+        UiFont::AbletonSansSmall => (include_bytes!("../../assets/AbletonSansSmall-Regular.ttf"), SMALL_BOLD),
+        UiFont::AbletonSansSmallBold => (SMALL_BOLD, SMALL_BOLD),
+        UiFont::AbletonSansSmallItalic => (include_bytes!("../../assets/AbletonSansSmall-RegularItalic.ttf"), SMALL_BOLD),
+        UiFont::Inter => (include_bytes!("../../assets/Inter-Regular.ttf"), include_bytes!("../../assets/Inter-Bold.ttf")),
     }
 }
 
@@ -318,12 +401,10 @@ pub fn bold(size: f32) -> FontId {
 /// Ableton Sans Light for UI text, Ableton Sans Small Bold for titles.
 /// Loaded plainly, like beatlayer / transit: no font tweaks, egui's default
 /// text options (its own hinting and sub-pixel placement).
-pub fn install_fonts(ctx: &egui::Context) {
+pub fn install_fonts(ctx: &egui::Context, f: UiFont, w: FontWeight) {
     let mut fonts = FontDefinitions::default();
-    for (name, bytes) in [
-        ("as", &include_bytes!("../../assets/AbletonSans-Light.ttf")[..]),
-        ("as-bold", &include_bytes!("../../assets/AbletonSansSmall-Bold.ttf")[..]),
-    ] {
+    let (regular, bold) = font_files(f, w);
+    for (name, bytes) in [("as", regular), ("as-bold", bold)] {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
     }
     // egui's built-in faces stay only as glyph fallback (symbols etc.).
@@ -404,6 +485,12 @@ pub fn update(ctx: &egui::Context, s: &ThemeSettings) {
         set_palette(p);
         apply_style(ctx);
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("theme_applied"), true));
+    }
+    let fid = egui::Id::unique("fonts_applied");
+    let want = (s.font, s.font_weight);
+    if ctx.data(|d| d.get_temp::<(UiFont, FontWeight)>(fid)) != Some(want) {
+        install_fonts(ctx, s.font, s.font_weight);
+        ctx.data_mut(|d| d.insert_temp(fid, want));
     }
 }
 

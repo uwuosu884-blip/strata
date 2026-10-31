@@ -17,7 +17,7 @@ use crate::app::{ClipRef, DawApp, DragItem, TrackFlag};
 use crate::arr_ops::{SelMode, TimeSel};
 use daw_engine::SampleBuffer;
 use daw_project::{ArrangementClip, Clip, ClipContent, TrackDrop, TrackKind};
-use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
 /// Live: name 93 + 2 + mixer 119 (+ In/Out 74 + 2) = 290 px.
 const HEAD_W: f32 = 216.0;
@@ -132,6 +132,11 @@ enum Gesture {
     Tracks {
         ids: Vec<u64>,
     },
+    /// Locator drag (`grab` = pointer beat − locator beat at the press).
+    LocMove {
+        id: u64,
+        grab: f64,
+    },
 }
 
 fn gesture_id() -> egui::Id {
@@ -223,9 +228,11 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
         io_w,
     };
 
-    ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
+    let over_loc = ruler(app, ui, &g, Rect::from_min_max(full.min, pos2(lanes_x1, full.min.y + RULER_H)), bpb);
     let side = Rect::from_min_max(pos2(lanes_x1, full.min.y), pos2(full.max.x, full.min.y + RULER_H));
-    locator_area(ui, side);
+    locator_area(app, ui, side, over_loc);
+    app.loc_step = g.grid;
+    WAVE_ZOOM.store(app.project.wave_zoom().to_bits(), std::sync::atomic::Ordering::Relaxed);
     overview(app, ui, &g, Rect::from_min_max(full.min, pos2(full.max.x - 10.0, full.min.y + 12.0)));
 
     // ---- Lanes background: alternating bar shades + grid lines (Live) ------------
@@ -342,6 +349,13 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
             marks.line_segment([pos2(x, y0), pos2(x, yb)], Stroke::new(1.0, gray(0x91)));
         }
     }
+    // Locators: the same 1 px line as the loop edges, from the scrub row down.
+    for l in &app.project.locators {
+        let x = g.to_x(l.beat).round() + 0.5;
+        if x >= lanes.min.x && x < lanes.max.x {
+            marks.line_segment([pos2(x, full.min.y + 46.0), pos2(x, mb + 2.0)], Stroke::new(1.0, gray(0x91)));
+        }
+    }
     // Time selection: only triangles, outside the range, at the bottom of the loop
     // row (right angle up) and the top of the time ruler (right angle down).
     let sel = app.time_sel.filter(|t| t.len() > 1e-9);
@@ -419,7 +433,8 @@ fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, x0: f32) {
     ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
 }
 
-fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
+/// Returns true while the pointer is over a locator.
+fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) -> bool {
     let resp = ui.interact(ruler, ui.scope_id().with("ruler"), Sense::click_and_drag());
     let p = ui.painter_at(ruler);
     p.rect_filled(ruler, CornerRadius::ZERO, panel());
@@ -455,7 +470,41 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         let (dl, dr) = ((pos.x - brace.min.x).abs(), (pos.x - brace.max.x).abs());
         if dl.min(dr) > 5.0 { None } else { Some(dl <= dr) }
     };
-    if let Some(left) = resp.hover_pos().and_then(edge_at) {
+    // Locators (Live 6.4) in the scrub half of the row (below the brace): ▷ outline
+    // on the locator line (drawn with the overlays, like the loop edges) + name.
+    let ly = band.min.y + 11.0;
+    let locs: Vec<(u64, f32, String)> = app.project.locators.iter().map(|l| (l.id, g.to_x(l.beat).round() + 0.5, l.name.clone())).collect();
+    let mut loc_hits: Vec<(u64, Rect)> = Vec::new();
+    for (i, (id, x, name)) in locs.iter().enumerate() {
+        let next_x = locs.get(i + 1).map_or(ruler.max.x, |l| l.1);
+        if *x > ruler.max.x || next_x < ruler.min.x {
+            continue;
+        }
+        let selected = app.sel_locator == Some(*id);
+        let tri = vec![pos2(*x, ly + 1.0), pos2(x + 7.0, ly + 5.0), pos2(*x, ly + 9.0)];
+        if selected {
+            p.add(egui::Shape::convex_polygon(tri.clone(), col, Stroke::NONE));
+        }
+        p.add(egui::Shape::line(tri, Stroke::new(1.0, col)));
+        let lab = Rect::from_min_max(pos2(x + 10.0, ly), pos2((next_x - 2.0).max(x + 10.0), ly + 10.0));
+        let renaming = app.loc_rename.as_ref().is_some_and(|r| r.0 == *id);
+        if !renaming {
+            p.with_clip_rect(lab.intersect(p.clip_rect())).text(
+                pos2(lab.min.x, ly + 5.0),
+                Align2::LEFT_CENTER,
+                name,
+                font(FS),
+                if selected { gray(0xe6) } else { text() },
+            );
+        }
+        let w = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), font(FS), text()).size().x);
+        let hit = Rect::from_min_max(pos2(x - 2.0, ly), pos2((x + 12.0 + w).min(next_x.max(x + 9.0)), ly + 11.0));
+        loc_hits.push((*id, hit));
+    }
+    let loc_at = |pos: Pos2| loc_hits.iter().rev().find(|(_, r)| r.contains(pos)).map(|(id, _)| *id);
+    let over_loc = resp.hover_pos().and_then(loc_at).is_some() || ui.ctx().pointer_hover_pos().and_then(loc_at).is_some();
+    loc_rename_editor(app, ui, &loc_hits);
+    if !over_loc && let Some(left) = resp.hover_pos().and_then(edge_at) {
         super::cursors::set(ui.ctx(), if left { Cur::DragLeftEdge } else { Cur::DragRightEdge });
     }
     // Beat ruler (21 px): ┌ markers standing on the bottom edge at grid lines, numbers
@@ -520,7 +569,16 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             ui.data_mut(|d| d.remove::<f64>(zid));
         }
     }
+    let press_loc = ui.input(|i| i.pointer.press_origin()).and_then(loc_at);
     if resp.drag_started()
+        && let Some(id) = press_loc
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin())
+    {
+        app.begin_gesture();
+        app.sel_locator = Some(id);
+        let lb = app.project.locator(id).map_or(0.0, |l| l.beat);
+        ui.data_mut(|d| d.insert_temp(gesture_id(), Gesture::LocMove { id, grab: g.beat_at(pos.x) - lb }));
+    } else if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin())
         && beat_row.contains(pos)
     {
@@ -539,7 +597,19 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
         };
         ui.data_mut(|d| d.insert_temp(gesture_id(), gst));
     }
-    if resp.clicked()
+    // Locator: click selects + jumps there (quantized while playing); double-click
+    // while stopped starts playback from it.
+    if (resp.clicked() || resp.double_clicked())
+        && let Some(id) = resp.interact_pointer_pos().and_then(loc_at)
+    {
+        app.sel_locator = Some(id);
+        let b = app.project.locator(id).map_or(0.0, |l| l.beat);
+        if resp.double_clicked() && !app.status.playing {
+            app.play_at(b);
+        } else if resp.clicked() {
+            app.jump_to(b);
+        }
+    } else if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
     {
         if band.contains(pos) && brace.contains(pos) {
@@ -550,7 +620,90 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) {
             app.set_playhead(g.snap(g.beat_at(pos.x)));
         }
     }
-    super::menu::context(&resp, super::menu::W_CLIP, |ui| grid_section(app, ui));
+    // Context menu: locator menu over a locator, else Add Locator + grid.
+    let ctx_id = resp.id.with("ctx_loc");
+    if resp.secondary_clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let l = loc_at(pos);
+        if let Some(id) = l {
+            app.sel_locator = Some(id);
+        }
+        ui.data_mut(|d| d.insert_temp(ctx_id, (l, g.snap(g.beat_at(pos.x)))));
+    }
+    let (ctx_loc, ctx_beat): (Option<u64>, f64) = ui.data(|d| d.get_temp(ctx_id)).unwrap_or((None, 0.0));
+    super::menu::context(&resp, super::menu::W_CLIP, |ui| {
+        use super::menu::*;
+        if let Some(id) = ctx_loc.filter(|&id| app.project.locator(id).is_some()) {
+            if item(ui, "Loop to Next Locator", "", true) {
+                app.loop_to_next_locator(id);
+            }
+            let start = app.project.song_start == Some(id);
+            if check_item(ui, "Set Song Start Time Here", "", start, true) {
+                app.edit(|p| p.song_start = if start { None } else { Some(id) });
+            }
+            sep(ui);
+            if item(ui, "Rename", "Ctrl+R", true) {
+                let name = app.project.locator(id).map(|l| l.name.clone()).unwrap_or_default();
+                app.loc_rename = Some((id, name, true));
+            }
+            item(ui, "Edit Info Text", "", false);
+            sep(ui);
+            if item(ui, "Delete", "Del", true) {
+                app.delete_locator(id);
+            }
+        } else {
+            if item(ui, "Add Locator", "", true) {
+                app.edit(|p| p.add_locator(ctx_beat));
+            }
+            sep(ui);
+            grid_section(app, ui);
+        }
+    });
+    over_loc
+}
+
+/// Inline locator name editor (Ctrl+R / context menu Rename): Enter or
+/// clicking elsewhere commits, Esc cancels.
+fn loc_rename_editor(app: &mut DawApp, ui: &mut egui::Ui, hits: &[(u64, Rect)]) {
+    let Some((id, _, fresh)) = app.loc_rename.clone() else { return };
+    let Some(&(_, hit)) = hits.iter().find(|h| h.0 == id) else {
+        if app.project.locator(id).is_none() {
+            app.loc_rename = None;
+        }
+        return;
+    };
+    let r = Rect::from_min_size(pos2(hit.min.x + 12.0, hit.min.y - 1.0), vec2(120.0, 13.0));
+    let te_id = ui.make_persistent_id(("loc_rename", id));
+    let Some((_, text, _)) = app.loc_rename.as_mut() else { return };
+    let resp = ui.put(r, egui::TextEdit::singleline(text).id(te_id).font(font(FS)).margin(vec2(1.0, 0.0)));
+    if fresh {
+        if let Some(rn) = app.loc_rename.as_mut() {
+            rn.2 = false;
+        }
+        resp.request_focus();
+        if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), te_id) {
+            let n = app.loc_rename.as_ref().map_or(0, |r| r.1.chars().count());
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+            st.store(ui.ctx(), te_id);
+        }
+        return;
+    }
+    if resp.lost_focus() {
+        let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if let Some((id, text, _)) = app.loc_rename.take()
+            && !cancel
+        {
+            let name = text.trim().to_string();
+            if !name.is_empty() && app.project.locator(id).is_some_and(|l| l.name != name) {
+                app.edit(|p| {
+                    if let Some(l) = p.locators.iter_mut().find(|l| l.id == id) {
+                        l.name = name;
+                    }
+                });
+            }
+        }
+    }
 }
 
 fn drop_zone_row(ui: &mut egui::Ui, g: &Geo, k: usize) {
@@ -795,7 +948,7 @@ fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, 
             (b >= 0.0).then_some(b * fpb + lat)
         };
         let vis = body.intersect(p.clip_rect());
-        super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, 1.0, Color32::from_gray(0x18));
+        super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, wave_zoom(), Color32::from_gray(0x18));
     }
     clip_grid(p, g, r, lane, collapsed);
 }
@@ -1351,7 +1504,7 @@ fn master_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     let cbtn = Rect::from_min_size(pos2(left.min.x + 2.0, row1 - 1.0), vec2(15.0, BOX_H + 2.0));
     let tc = text_on(title_bg);
     draw_collapse_button(p, cbtn.center(), collapsed, tc);
-    p.text(pos2(cbtn.max.x + 3.0, row1 + BOX_H * 0.5), Align2::LEFT_CENTER, "Main", bold(FS), tc);
+    p.text(pos2(cbtn.max.x + 3.0, row1 + BOX_H * 0.5), Align2::LEFT_CENTER, super::theme::main_name(), bold(FS), tc);
     let r = ui.interact(cbtn, ui.scope_id().with("master_collapse"), Sense::click());
     if r.clicked() {
         app.project.master_collapsed = !collapsed;
@@ -1859,6 +2012,16 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
                 app.send_loop();
             }
         }
+        Gesture::LocMove { id, grab } => {
+            let b = g.snap(g.beat_at(pos.x) - grab).max(0.0);
+            if let Some(l) = app.project.locators.iter_mut().find(|l| l.id == *id)
+                && (l.beat - b).abs() > 1e-12
+            {
+                l.beat = b;
+                app.project.sort_locators();
+                app.dirty = true;
+            }
+        }
         Gesture::Tracks { ids } => {
             if !down {
                 let (to, _) = track_drop_target(app, g, pos.y);
@@ -2250,9 +2413,17 @@ fn draw_clip_fill(
                 None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / tempo.max(1.0)),
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
-            draw_wave(p, body, visible, buf, zoom, &frame_of, *gain_db, ink);
+            // Waveform Vertical Zoom Level: display only (the clip gain is untouched).
+            draw_wave(p, body, visible, buf, zoom, &frame_of, *gain_db + 20.0 * wave_zoom().log10(), ink);
         }
     }
+}
+
+static WAVE_ZOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0
+
+/// Arrangement waveform vertical zoom (set from the project each frame).
+fn wave_zoom() -> f32 {
+    f32::from_bits(WAVE_ZOOM.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Status-bar clip overview: the whole clip's notes / waveform squeezed into `r`.
@@ -2431,23 +2602,58 @@ fn overview(app: &DawApp, ui: &mut egui::Ui, g: &Geo, ov: Rect) {
 
 /// Header column above the tracks: Live's locator Set / ◂ ▸ and the two view
 /// switches (greyed: no locators here).
-fn locator_area(ui: &mut egui::Ui, side: Rect) {
-    let p = ui.painter();
+/// Live's locator controls: Set (Del while a locator is selected) and the
+/// Previous / Next Locator buttons; Draw Mode / lock stay greyed.
+fn locator_area(app: &mut DawApp, ui: &mut egui::Ui, side: Rect, over_loc: bool) {
+    let p = ui.painter().clone();
     p.rect_filled(side, CornerRadius::ZERO, panel());
     p.rect_filled(Rect::from_min_max(pos2(side.min.x, side.max.y - 2.0), side.max), CornerRadius::ZERO, sep());
     let dimc = gray(0x62);
     let set = Rect::from_min_size(side.min + vec2(3.0, 23.0), vec2(30.0, 13.0));
-    p.rect_filled(set, CornerRadius::same(6), gray(0x26));
-    p.text(set.center(), Align2::CENTER_CENTER, "Set", font(FS), dimc);
+    let sr = ui.interact(set, ui.scope_id().with("loc_set"), Sense::click());
+    let del = app.sel_locator.is_some();
+    p.rect_filled(
+        set,
+        CornerRadius::same(6),
+        if sr.is_pointer_button_down_on() {
+            gray(0x50)
+        } else if sr.hovered() {
+            gray(0x30)
+        } else {
+            gray(0x26)
+        },
+    );
+    p.rect_stroke(set, CornerRadius::same(6), Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
+    p.text(set.center(), Align2::CENTER_CENTER, if del { "Del" } else { "Set" }, font(FS), text());
+    if sr.clicked() {
+        app.set_locator_button();
+    }
+    sr.on_hover_text(if del { "Delete Locator" } else { "Set Locator" });
     for i in 0..2 {
         let c = pos2(side.min.x + 10.0 + i as f32 * 16.0, side.min.y + 46.0);
-        p.circle_filled(c, 6.0, gray(0x26));
+        let r = ui.interact(Rect::from_center_size(c, vec2(13.0, 13.0)), ui.scope_id().with(("loc_step", i)), Sense::click());
+        p.circle_filled(
+            c,
+            6.0,
+            if r.is_pointer_button_down_on() {
+                gray(0x50)
+            } else if r.hovered() {
+                gray(0x30)
+            } else {
+                gray(0x26)
+            },
+        );
+        p.circle_stroke(c, 6.0, Stroke::new(1.0, outline()));
         let d = if i == 0 { -1.0 } else { 1.0 };
         p.add(egui::Shape::convex_polygon(
             vec![c + vec2(2.5 * d, 0.0), c + vec2(-1.5 * d, -3.0), c + vec2(-1.5 * d, 3.0)],
-            dimc,
+            text(),
             Stroke::NONE,
         ));
+        if r.clicked() {
+            app.locator_step(i == 1);
+        }
+        r.on_hover_text(if i == 0 { "Jump to Previous Locator" } else { "Jump to Next Locator" });
     }
     for i in 0..2 {
         let r = Rect::from_min_size(side.min + vec2(44.0 + i as f32 * (SOLO_W + GAP), 23.0), vec2(SOLO_W, BOX_H));
@@ -2460,14 +2666,22 @@ fn locator_area(ui: &mut egui::Ui, side: Rect) {
             p.rect_filled(Rect::from_center_size(c + vec2(0.0, 1.5), vec2(7.0, 5.0)), CornerRadius::ZERO, dimc);
             p.circle_stroke(c + vec2(0.0, -1.5), 2.5, Stroke::new(1.0, dimc));
         }
+        ui.interact(r, ui.scope_id().with(("arr_lockbox", i)), Sense::hover()).on_hover_text("Not available in this version");
     }
-    let zone = Rect::from_min_max(side.min + vec2(0.0, 20.0), pos2(side.min.x + 120.0, side.max.y - 2.0));
-    ui.interact(zone, ui.scope_id().with("arr_locators"), Sense::hover()).on_hover_text("Locators (not available in this version)");
+    // Any other press deselects the locator (Set/Del keeps it for its click).
+    let press = ui.input(|i| if i.pointer.primary_pressed() || i.pointer.secondary_pressed() { i.pointer.interact_pos() } else { None });
+    if let Some(pos) = press
+        && !over_loc
+        && !set.contains(pos)
+        && !egui::Popup::is_any_open(ui.ctx())
+    {
+        app.sel_locator = None;
+    }
 }
 
 /// Bottom time ruler (min:sec) under the master row; header side: H / W and
 /// zoom display (greyed).
-fn time_ruler(app: &DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect) {
+fn time_ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect) {
     let p = ui.painter();
     p.rect_filled(Rect::from_min_max(lanes.min, pos2(head.max.x, lanes.min.y + 2.0)), CornerRadius::ZERO, sep());
     let r = Rect::from_min_max(pos2(lanes.min.x, lanes.min.y + 2.0), lanes.max);
@@ -2502,13 +2716,78 @@ fn time_ruler(app: &DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: Rect)
     let mut x = h.min.x + 2.0;
     for (w, label) in [(15.0, "|||"), (36.0, "1.00x"), (15.0, "H"), (15.0, "W")] {
         let b = Rect::from_min_size(pos2(x, h.min.y + 4.0), vec2(w, 13.0));
+        x += w + if label == "1.00x" { 10.0 } else { 3.0 };
+        if label == "1.00x" {
+            wave_zoom_box(app, ui, b);
+            continue;
+        }
+        let p = ui.painter();
         p.rect_filled(b, CornerRadius::ZERO, gray(0x26));
         p.rect_stroke(b, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
+        if label == "|||" {
+            // Waveform icon: belongs to the zoom value next to it.
+            let c = b.center();
+            for (dx, hh) in [(-3.0f32, 2.0f32), (-1.0, 4.0), (1.0, 3.0), (3.0, 1.5)] {
+                let xx = (c.x + dx).round() + 0.5;
+                ui.painter().line_segment([pos2(xx, c.y - hh), pos2(xx, c.y + hh)], Stroke::new(1.0, text()));
+            }
+            continue;
+        }
         p.text(b.center(), Align2::CENTER_CENTER, label, font(FS), dimc);
-        x += w + if label == "1.00x" { 10.0 } else { 3.0 };
+        if label == "H" || label == "W" {
+            ui.interact(b, ui.scope_id().with(("arr_hw", label)), Sense::hover())
+                .on_hover_text("Optimize Height / Width (not available in this version)");
+        }
     }
-    ui.interact(Rect::from_min_size(h.min, vec2(x - h.min.x, h.height())), ui.scope_id().with("arr_hw"), Sense::hover())
-        .on_hover_text("Optimize Height / Width (not available in this version)");
+}
+
+/// Waveform Vertical Zoom Level (Live): 1.00x–10.00x for every arrangement
+/// audio clip incl. recordings; display only. Drag up / right like the BPM
+/// box (Shift = fine), wheel ±0.1 (Shift ±0.01), double-click = 1.00x.
+fn wave_zoom_box(app: &mut DawApp, ui: &mut egui::Ui, b: Rect) {
+    let id = ui.scope_id().with("wave_zoom");
+    let resp = ui.interact(b, id, Sense::click_and_drag());
+    let delta = super::widgets::endless_drag(ui, &resp);
+    let shift = ui.input(|i| i.modifiers.shift);
+    let acc_id = id.with("acc");
+    let max = daw_project::WAVE_ZOOM_MAX;
+    let cur = app.project.wave_zoom();
+    let mut target = None;
+    if resp.drag_started() {
+        app.begin_gesture();
+        ui.data_mut(|d| d.insert_temp(acc_id, cur));
+    }
+    if delta != Vec2::ZERO {
+        let k = if shift { 0.001 } else { 0.01 };
+        let acc: f32 = (ui.data(|d| d.get_temp(acc_id)).unwrap_or(cur) + (delta.x - delta.y) * k).clamp(1.0, max);
+        ui.data_mut(|d| d.insert_temp(acc_id, acc));
+        target = Some(acc);
+    }
+    if resp.hovered() {
+        let notch = super::wheel_notch(ui);
+        if notch != 0.0 {
+            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            app.begin_gesture();
+            target = Some(cur + notch * if shift { 0.01 } else { 0.1 });
+        }
+    }
+    if resp.double_clicked() {
+        app.begin_gesture();
+        target = Some(1.0);
+    }
+    if let Some(t) = target {
+        let t = (t.clamp(1.0, max) * 100.0).round() / 100.0;
+        if t != app.project.wave_zoom {
+            app.project.wave_zoom = t;
+            app.dirty = true;
+        }
+    }
+    let p = ui.painter();
+    let active = resp.hovered() || resp.dragged();
+    p.rect_filled(b, CornerRadius::ZERO, if active { gray(0x40) } else { gray(0x26) });
+    p.rect_stroke(b, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
+    p.text(b.center(), Align2::CENTER_CENTER, format!("{:.2}x", app.project.wave_zoom()), font(FS), text());
+    resp.on_hover_text("Waveform Vertical Zoom Level");
 }
 
 /// m:ss, or m:ss.mmm with trailing zeros trimmed (Live's time ruler).

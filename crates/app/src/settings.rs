@@ -102,6 +102,26 @@ pub struct Settings {
     pub zoom_pct: u16,
     /// Browser: collections, columns, sidebar width.
     pub browser: BrowserPrefs,
+    /// Display name of the master track.
+    pub master_name: MasterName,
+}
+
+/// "Main" (Live 12) or "Master" (older Live).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MasterName {
+    #[default]
+    Main,
+    Master,
+}
+
+impl MasterName {
+    pub const ALL: [MasterName; 2] = [Self::Main, Self::Master];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Main => "Main",
+            Self::Master => "Master",
+        }
+    }
 }
 
 /// Saved browser state.
