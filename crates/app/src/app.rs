@@ -220,6 +220,8 @@ pub struct DawApp {
     pub message: Option<(String, Instant)>,
     pub dropped_commands: u32,
     pub last_frame: Instant,
+    /// Smoothed playhead position (see `playclock`).
+    pub play_clock: crate::playclock::PlayClock,
     pub title: String,
     pub allow_close: bool,
 
@@ -385,6 +387,7 @@ impl DawApp {
             message: None,
             dropped_commands: 0,
             last_frame: Instant::now(),
+            play_clock: crate::playclock::PlayClock::new(Instant::now()),
             title: String::new(),
             allow_close: false,
             arr_zoom: 28.0,
@@ -568,6 +571,9 @@ impl DawApp {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
         self.status = self.engine.snapshot();
+        // Drawn playhead: engine position smoothed over wall time (even steps).
+        let lp = self.project.loop_enabled.then_some((self.project.loop_start, self.project.loop_end));
+        self.status.beat_position = self.play_clock.update(self.status.beat_position, self.status.playing, self.status.tempo, lp, now);
         self.track_status =
             self.project.tracks.iter().map(|t| self.slots.get(t.id).map(|rt| self.engine.track(rt)).unwrap_or_default()).collect();
 

@@ -359,8 +359,11 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // Both are 1 px inverted with ▼ at the loop row bottom and ▲ at the time ruler.
     let mut inv = super::invert::Inverted::default();
     let in_view = |x: f32| x >= lanes.min.x && x < lanes.max.x;
-    let xp = g.to_x(app.status.beat_position).round() + 0.5;
-    let xm = g.to_x(app.play_start).round() + 0.5;
+    // Pixel centres in physical pixels (even 1 px steps at any interface scale).
+    let ppp = ui.ctx().pixels_per_point();
+    let px_mid = |x: f32| ((x * ppp).floor() + 0.5) / ppp;
+    let xp = px_mid(g.to_x(app.status.beat_position));
+    let xm = px_mid(g.to_x(app.play_start));
     if app.status.playing && in_view(xp) {
         inv.tri(pos2(xp, top), 7.0, 4.0, true);
         inv.tri(pos2(xp, mb + 2.0), 7.0, 4.0, false);
@@ -1785,12 +1788,7 @@ fn update_gesture(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
     match &gst {
         Gesture::Select { anchor, track } => {
             let t = g.rows.get(g.row_at_clamped(pos.y)).copied().unwrap_or(*track);
-            let mut b = g.snap(g.beat_at(pos.x));
-            // Straight down / up across tracks: one grid cell wide (Live), so a
-            // purely vertical drag still selects.
-            if t != *track && (b - anchor).abs() < 1e-9 {
-                b = anchor + g.grid;
-            }
+            let b = g.snap(g.beat_at(pos.x));
             app.time_sel = Some(TimeSel::new(*anchor, b, *track, t));
             if !down && let Some(ts) = app.time_sel {
                 if ts.len() < 1e-9 {

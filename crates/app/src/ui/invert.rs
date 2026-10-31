@@ -131,8 +131,14 @@ impl CallbackTrait for Cb {
         let s = &self.s;
         let mut v: Vec<f32> = Vec::with_capacity(s.rects.len() * 12 + s.tris.len() * 6);
         for r in &s.rects {
-            // Rects snap to whole pixels.
-            let (x0, y0, x1, y1) = ((r.min.x * ppp).round(), (r.min.y * ppp).round(), (r.max.x * ppp).round(), (r.max.y * ppp).round());
+            // Rects snap to whole pixels and keep a constant pixel size at any
+            // scale (a 1-point line is round(scale) px, never 1 px then 2 px).
+            let snap = |a: f32, b: f32| {
+                let n = ((b - a) * ppp).round().max(1.0);
+                let s = ((a + b) * 0.5 * ppp - n * 0.5).round();
+                (s, s + n)
+            };
+            let ((x0, x1), (y0, y1)) = (snap(r.min.x, r.max.x), snap(r.min.y, r.max.y));
             let (a, b, c, d) = (ndc(x0, y0), ndc(x1, y0), ndc(x1, y1), ndc(x0, y1));
             for q in [a, b, c, a, c, d] {
                 v.extend_from_slice(&q);

@@ -7,6 +7,7 @@ mod clip_ops;
 mod edit_ops;
 mod midi;
 mod pinch;
+mod playclock;
 mod settings;
 mod ui;
 
@@ -161,6 +162,8 @@ fn main() -> ExitCode {
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
             ui::theme::install_fonts(&cc.egui_ctx);
+            // Whole-pixel strokes at fractional interface scales.
+            cc.egui_ctx.add_plugin(ui::pixelsnap::PixelSnap);
             pinch::start(cc);
             // Playhead inversion pipeline (needs the surface format).
             if let Some(rs) = &cc.wgpu_render_state {

@@ -10,6 +10,27 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.7.11] - 2026-10-31
+
+### Changed
+- UI text uses Ableton Sans Light (bold text stays Ableton Sans Small Bold).
+- Settings > Display > Zoom Display takes any whole percentage (50–200 %): same
+  box, but dragged like the BPM field (wheel ±1 %, double-click = 100 %). The
+  interface rescales live while dragging.
+- Strokes are rounded to whole pixels at fractional scales, so lines stay crisp
+  at any zoom; the inverted playhead keeps a constant pixel width.
+- Settings window has rounded corners, like the "Save changes" dialog.
+
+### Fixed
+- Smooth playhead: the drawn position advances with wall time and is pulled
+  towards the engine's (coarse, per-buffer) position; frames are vsync-paced
+  while playing.
+- No black bars at the window edges beside the Arrangement (window colour
+  under all panel margins).
+
+### Removed
+- The 0.7.9 "straight up / down selection drag is one grid cell wide" rule.
+
 ## [0.7.10] - 2026-10-31
 
 ### Changed

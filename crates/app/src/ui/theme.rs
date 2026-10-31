@@ -315,13 +315,13 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
 
-/// Ableton Sans Small (Live's UI face): Regular for UI text, Bold for titles.
+/// Ableton Sans Light for UI text, Ableton Sans Small Bold for titles.
 /// Loaded plainly, like beatlayer / transit: no font tweaks, egui's default
 /// text options (its own hinting and sub-pixel placement).
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in [
-        ("as", &include_bytes!("../../assets/AbletonSansSmall-Regular.ttf")[..]),
+        ("as", &include_bytes!("../../assets/AbletonSans-Light.ttf")[..]),
         ("as-bold", &include_bytes!("../../assets/AbletonSansSmall-Bold.ttf")[..]),
     ] {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());

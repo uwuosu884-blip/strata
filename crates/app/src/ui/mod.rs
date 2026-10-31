@@ -9,6 +9,7 @@ mod detail;
 pub mod invert;
 mod io;
 mod menu;
+pub mod pixelsnap;
 mod prefs;
 mod session;
 pub mod theme;
@@ -112,6 +113,9 @@ impl eframe::App for DawApp {
         // Live layout at 100 %: 47 px top bar, panels separated by 9 px gaps of the
         // window colour, 19 px status bar, 2 px outline around the focused panel.
         let m = |l: i8, r: i8, t: i8, b: i8| egui::Margin { left: l, right: r, top: t, bottom: b };
+        // Window colour under everything: panel gaps / outer margins (e.g. the
+        // 9 px edges beside the Arrangement) never show the black clear colour.
+        ui.painter().rect_filled(ctx.content_rect(), 0.0, win_bg());
         egui::Panel::top("transport")
             .show_separator_line(false)
             .exact_size(47.0)
@@ -248,7 +252,12 @@ impl eframe::App for DawApp {
             || self.track_meters.iter().any(|m| m[0] > 1e-4)
             || self.message.is_some()
             || self.cache.is_pending();
-        ctx.request_repaint_after(if moving { Duration::from_millis(16) } else { Duration::from_millis(250) });
+        if self.status.playing {
+            // Every display refresh (vsync-paced): an even playhead.
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(if moving { Duration::from_millis(16) } else { Duration::from_millis(250) });
+        }
     }
 }
 

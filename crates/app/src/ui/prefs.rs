@@ -42,14 +42,21 @@ pub fn window(app: &mut DawApp, ctx: &egui::Context, tab: &mut SettingsTab) -> b
         .collapsible(false)
         .anchor(Align2::CENTER_CENTER, off)
         .fixed_size([W, H])
-        .frame(egui::Frame::NONE.fill(panel()).stroke(Stroke::new(1.0, outline())).shadow(ctx.global_style().visuals.window_shadow))
+        // Rounded like the "Save changes" dialog (8 px corners).
+        .frame(
+            egui::Frame::NONE
+                .fill(panel())
+                .stroke(Stroke::new(1.0, outline()))
+                .corner_radius(8)
+                .shadow(ctx.global_style().visuals.window_shadow),
+        )
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             let (full, _) = ui.allocate_exact_size(vec2(W, H), Sense::hover());
             let p = ui.painter().clone();
             // Title bar.
             let title = Rect::from_min_size(full.min, vec2(W, TITLE_H));
-            p.rect_filled(title, 0.0, gray(0x20));
+            p.rect_filled(title, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, gray(0x20));
             p.text(title.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, "Settings", font(12.0), gray(0xe6));
             let xr = Rect::from_center_size(title.right_center() - vec2(18.0, 0.0), vec2(20.0, 20.0));
             let xresp = ui.interact(xr, ui.make_persistent_id("set_close"), Sense::click());
@@ -157,6 +164,52 @@ fn chooser<T: Copy + PartialEq>(ui: &mut egui::Ui, label: &str, cur: &mut T, ite
         });
     });
     changed
+}
+
+/// Chooser look, BPM-box behaviour: drag up / right to increase (1 % per 4 px,
+/// pointer hidden so it never hits the screen edge), wheel = ±1, double-click =
+/// default. Returns (value changed, gesture finished → save).
+fn zoom_slider(ui: &mut egui::Ui, label: &str, v: &mut u16, min: u16, max: u16, default: u16) -> (bool, bool) {
+    let (c, mut cui) = row(ui, label, CTRL_W, true);
+    // Painted by the same ComboBox as the other choosers (identical look); its
+    // popup never opens because the drag area below sits on top of it.
+    cui.scope(|ui| {
+        ui.set_width(c.width());
+        egui::ComboBox::from_id_salt(("set_ch", label)).width(c.width()).selected_text(format!("{v} %")).show_ui(ui, |_| {});
+    });
+    let id = ui.make_persistent_id(("set_zoom", label));
+    let r = ui.interact(c.expand2(vec2(0.0, 2.0)), id, Sense::click_and_drag());
+    let acc_id = id.with("acc");
+    let old = *v;
+    let d = super::widgets::endless_drag(ui, &r);
+    if r.drag_started() {
+        ui.data_mut(|m| m.insert_temp(acc_id, *v as f32));
+    }
+    if d != egui::Vec2::ZERO {
+        // Physical pixels: the scale changes under the drag, the speed must not.
+        let px = (d.x - d.y) * ui.ctx().pixels_per_point();
+        let acc = (ui.data(|m| m.get_temp::<f32>(acc_id)).unwrap_or(*v as f32) + px * 0.25).clamp(min as f32, max as f32);
+        ui.data_mut(|m| m.insert_temp(acc_id, acc));
+        *v = acc.round() as u16;
+    }
+    let mut done = r.drag_stopped();
+    if r.drag_stopped() {
+        // The box moved with the new scale: put the pointer back on it.
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(c.center()));
+    }
+    if r.hovered() && !r.dragged() {
+        let n = super::wheel_notch(ui);
+        if n != 0.0 {
+            *v = (*v as i32 + n.signum() as i32).clamp(min as i32, max as i32) as u16;
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            done = true;
+        }
+    }
+    if r.double_clicked() {
+        *v = default;
+        done = true;
+    }
+    (*v != old, done)
 }
 
 fn onoff(ui: &mut egui::Ui, label: &str, v: &mut bool) -> bool {
@@ -283,11 +336,13 @@ fn theme_page(app: &mut DawApp, ui: &mut egui::Ui) {
 
 fn display_page(app: &mut DawApp, ui: &mut egui::Ui) {
     section(ui, "Display");
+    // Any whole percentage, applied live while dragging; saved when done.
     let mut z = app.settings.zoom();
-    let zooms: Vec<(u16, String)> = [50u16, 75, 100, 125, 150, 175, 200].iter().map(|v| (*v, format!("{v} %"))).collect();
-    let items: Vec<(u16, &str)> = zooms.iter().map(|(v, s)| (*v, s.as_str())).collect();
-    if chooser(ui, "Zoom Display", &mut z, &items, true) {
+    let (changed, done) = zoom_slider(ui, "Zoom Display", &mut z, 50, 200, 100);
+    if changed {
         app.settings.zoom_pct = z;
+    }
+    if done {
         app.save_settings();
     }
     for l in ["Language", "Follow Behavior", "Hide Labels"] {

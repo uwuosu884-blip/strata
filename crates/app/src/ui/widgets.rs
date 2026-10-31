@@ -212,7 +212,15 @@ pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (e
         p.rect_filled(Rect::from_x_y_ranges(cx.min(x)..=cx.max(x), rect.y_range()), CornerRadius::ZERO, super::theme::VOL_TEAL);
     }
     p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
-    p.line_segment([pos2(cx, rect.min.y + 1.0), pos2(cx, rect.min.y + 3.0)], Stroke::new(1.0, gray(0x8a)));
+    // 1 px centre tick: clear of the taller Ableton Sans Light caps.
+    // (A mesh: egui turns a 1×1 rect into a zero-length line and drops it.)
+    let ppp = ui.ctx().pixels_per_point();
+    let px = 1.0 / ppp;
+    let tx = (cx * ppp).floor() / ppp;
+    let ty = ((rect.min.y + 1.0) * ppp).round() / ppp;
+    let mut tick = egui::Mesh::default();
+    tick.add_colored_rect(Rect::from_min_size(pos2(tx, ty), vec2(px, px) * ppp.round().max(1.0)), gray(0x8a));
+    p.add(tick);
     p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), super::theme::font(super::theme::FS), Color32::from_gray(0xe0));
     (resp.on_hover_text("Pan · drag · double-click: centre"), changed)
 }
