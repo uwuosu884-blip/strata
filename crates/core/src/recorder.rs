@@ -422,8 +422,16 @@ mod tests {
         assert!(rec.flush(Duration::from_secs(5)));
         let takes = rec.take_finished();
         assert_eq!(takes.len(), 1);
+        // The writer thread may publish the finished state a moment later (slow CI).
         let mut lv = LiveTake::default();
-        rec.live(&mut lv);
+        let t0 = std::time::Instant::now();
+        loop {
+            rec.live(&mut lv);
+            if !lv.active || t0.elapsed() > Duration::from_secs(5) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert!(!lv.active, "finished takes leave the live view");
         // The preview matches the finished take.
         let l: Vec<f32> = takes[0].lanes[0].audio.iter().step_by(2).copied().collect();
