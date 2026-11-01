@@ -598,6 +598,13 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     p.rect_filled(title, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, if selected { SEL_TITLE } else { gray(0x46) });
     let mut cx = Ctx { app, chain: c, dev, params: dev.params, on: dev.on, gesture: false };
 
+    // A click anywhere on the device selects it (widgets created later win).
+    let body = ui.interact(r, egui::Id::unique(("dev_body", dev.id)), Sense::click());
+    if body.clicked() || body.secondary_clicked() {
+        cx.app.dev_sel = Some(dev.id);
+        cx.app.dev_focus = None;
+        cx.app.focus_detail = true;
+    }
     // Title strip: select / drag / context menu.
     let tr = ui.interact(title, egui::Id::unique(("dev_title", dev.id)), Sense::click_and_drag());
     if tr.clicked() || tr.drag_started() || tr.secondary_clicked() {

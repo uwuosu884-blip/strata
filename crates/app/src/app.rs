@@ -291,6 +291,9 @@ pub struct DawApp {
     pub focus_detail: bool,
     /// Selected device (device view) and focused parameter `(device id, param)`.
     pub dev_sel: Option<u64>,
+    /// Insert marker after the last device (shown after a click on empty chain
+    /// space; any other press hides it).
+    pub dev_insert: Option<crate::fx_ops::ChainRef>,
     pub dev_focus: Option<(u64, u8)>,
     /// Device-view meters of the shown chain (chain input, then per device).
     pub dev_meters: DevMeters,
@@ -508,6 +511,7 @@ impl DawApp {
             cv: Default::default(),
             focus_detail: false,
             dev_sel: None,
+            dev_insert: None,
             dev_focus: None,
             dev_meters: DevMeters::default(),
             dev_typing: None,

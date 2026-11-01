@@ -1044,13 +1044,14 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let midi =
         !app.master_selected && app.selected_return.is_none() && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
     let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::click());
+    let chain = app.current_chain();
     if zone.clicked() || zone.secondary_clicked() {
-        // Click on empty chain space: nothing selected.
+        // Click on empty chain space: nothing selected, insert marker at the end.
         app.dev_sel = None;
         app.dev_focus = None;
         app.focus_detail = true;
+        app.dev_insert = zone.clicked().then_some(chain);
     }
-    let chain = app.current_chain();
     // Meter points: [0] = chain input, [i + 1] = after device i.
     let meters = app.dev_meters.pts.clone();
     let mp = |i: usize| meters.get(i);
@@ -1109,6 +1110,13 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         if vis.width() > 20.0 {
             cp.text(vis.center(), Align2::CENTER_CENTER, msg, font(FS), text());
         }
+    }
+    // Insert marker: 1 px inverted line (like the idle start marker) just
+    // left of the drop panel, i.e. after the last device's meter.
+    if app.dev_insert == Some(chain) && app.dev_sel.is_none() {
+        let mut inv = super::invert::Inverted::default();
+        inv.vline(x - 0.5, rect.top(), rect.bottom());
+        inv.paint(&gp);
     }
     // Drag & drop: effects / devices insert at the pointer; instruments and
     // samples replace a MIDI track's instrument.

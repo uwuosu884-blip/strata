@@ -111,8 +111,10 @@ impl eframe::App for DawApp {
         }
         self.handle_close(&ctx);
         // Any press ends header focus; a header click (on release) sets it again.
+        // Same for the device chain's insert marker.
         if ctx.input(|i| i.pointer.primary_pressed()) {
             self.head_focus = false;
+            self.dev_insert = None;
         }
         self.shortcuts(&ctx);
         clip::groove_pool(self, &ctx);
