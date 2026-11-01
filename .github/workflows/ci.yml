@@ -54,10 +54,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test (debug — keeps overflow checks and the no-allocation check)
-        run: cargo test --workspace
+        shell: bash
+        # Failing test names become annotations (job logs need auth).
+        run: |
+          cargo test --workspace --no-fail-fast 2>&1 | tee /tmp/t.log; s=${PIPESTATUS[0]}
+          grep -E "panicked at|^test .* FAILED|^---- " /tmp/t.log | head -20 | sed 's/^/::error::/'
+          exit $s
 
       - name: Test (release)
-        run: cargo test --workspace --release
+        shell: bash
+        # Failing test names become annotations (job logs need auth).
+        run: |
+          cargo test --workspace --release --no-fail-fast 2>&1 | tee /tmp/t.log; s=${PIPESTATUS[0]}
+          grep -E "panicked at|^test .* FAILED|^---- " /tmp/t.log | head -20 | sed 's/^/::error::/'
+          exit $s
 
       - name: Build shipping binaries
         run: cargo build --profile dist -p daw-app -p daw-render

@@ -390,9 +390,17 @@ mod tests {
             engine.process(&mut out, 2);
             if i == 100 {
                 // The take in progress is visible while recording.
-                std::thread::sleep(Duration::from_millis(30));
+                // Poll instead of a fixed sleep: CI runners can lag.
                 let mut lv = LiveTake::default();
-                rec.live(&mut lv);
+                let t0 = std::time::Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(5));
+                    rec.live(&mut lv);
+                    let ready = lv.lanes.len() == 2 && lv.frames() > 50 * 512 && lv.notes.len() >= 2;
+                    if ready || t0.elapsed() > Duration::from_secs(10) {
+                        break;
+                    }
+                }
                 assert!(lv.active && lv.end_beat.is_none());
                 assert_eq!(lv.lanes.len(), 2);
                 assert!(!lv.lanes[0].mono && lv.lanes[1].mono);
