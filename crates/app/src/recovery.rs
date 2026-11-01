@@ -78,10 +78,10 @@ pub fn save(project: &daw_project::Project, path: Option<&Path>, cache: &daw_cor
 /// The project was saved, replaced or closed cleanly: the copy is obsolete.
 pub fn clear(path: Option<&Path>) {
     set_origin(path);
-    if HAVE_COPY.swap(false, Ordering::Relaxed) || exists() {
-        if let Some(d) = dir() {
-            let _ = std::fs::remove_dir_all(d);
-        }
+    if (HAVE_COPY.swap(false, Ordering::Relaxed) || exists())
+        && let Some(d) = dir()
+    {
+        let _ = std::fs::remove_dir_all(d);
     }
 }
 
