@@ -12,6 +12,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, R
 use std::f32::consts::PI;
 
 mod eq8;
+mod rack;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
 const TITLE_H: f32 = 17.0;
@@ -36,6 +37,7 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Utility(_) => 139.0,
         FxParams::AlignDelay(_) => 112.0,
         FxParams::EqEight(_) => eq8::WIDTH,
+        FxParams::Rack(_) => rack::width(d),
     }
 }
 
@@ -124,6 +126,11 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
             _ => return None,
         }),
         FxParams::EqEight(e) => eq8::norm(e, k),
+        FxParams::Rack(r) => match k {
+            0..16 => Some(r.macros[k as usize] / 127.0),
+            rack::SELECTOR => Some(r.selector / 127.0),
+            _ => None,
+        },
     }
 }
 
@@ -147,6 +154,11 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
             _ => {}
         },
         FxParams::EqEight(e) => eq8::set_norm(e, k, v),
+        FxParams::Rack(r) => match k {
+            0..16 => r.macros[k as usize] = (v * 127.0).round(),
+            rack::SELECTOR => r.selector = (v * 127.0).round(),
+            _ => {}
+        },
     }
 }
 
@@ -216,6 +228,11 @@ pub fn reset(p: &mut FxParams, k: u8) {
             _ => {}
         },
         FxParams::EqEight(e) => eq8::reset(e, k),
+        FxParams::Rack(r) => match k {
+            0..16 => r.macros[k as usize] = 0.0,
+            rack::SELECTOR => r.selector = 0.0,
+            _ => {}
+        },
     }
 }
 
@@ -261,8 +278,18 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
             _ => {}
         },
         FxParams::EqEight(e) => eq8::step(e, k, dir),
+        FxParams::Rack(r) => match k {
+            0..16 => r.macros[k as usize] = (r.macros[k as usize].round() + dir).clamp(0.0, 127.0),
+            rack::SELECTOR => r.selector = (r.selector.round() + dir).clamp(0.0, 127.0),
+            _ => {}
+        },
     }
 }
+
+const MACRO_NAMES: [&str; 16] = [
+    "Macro 1", "Macro 2", "Macro 3", "Macro 4", "Macro 5", "Macro 6", "Macro 7", "Macro 8", "Macro 9", "Macro 10", "Macro 11", "Macro 12",
+    "Macro 13", "Macro 14", "Macro 15", "Macro 16",
+];
 
 /// Parameter name (Copy Parameter Name; Live's names).
 fn param_name(p: &FxParams, k: u8) -> &'static str {
@@ -292,6 +319,7 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
             _ => "Temperature Unit",
         },
         FxParams::EqEight(_) => eq8::name(k),
+        FxParams::Rack(_) => MACRO_NAMES.get(k as usize).copied().unwrap_or("Chain Selector"),
     }
 }
 
@@ -488,9 +516,27 @@ struct Ctx<'a> {
     params: FxParams,
     on: bool,
     gesture: bool,
+    /// Map mode of an enclosing rack: (rack chain, rack id, armed macro).
+    map: Option<(ChainRef, u64, Option<u8>)>,
+    /// Parameters driven by a macro (shown, not editable).
+    mapped: Vec<u8>,
 }
 
 impl<'a> Ctx<'a> {
+    fn new(app: &'a mut DawApp, chain: ChainRef, dev: Device) -> Self {
+        let map = rack::map_ctx(app, chain);
+        let mapped = if matches!(chain, ChainRef::Sub(_)) {
+            (0..=255u8).filter(|&k| norm(&dev.params, k).is_some() && app.mapped(chain, dev.id, k).is_some()).collect()
+        } else {
+            Vec::new()
+        };
+        Self { app, chain, params: dev.params, on: dev.on, dev, gesture: false, map, mapped }
+    }
+
+    fn is_mapped(&self, k: u8) -> bool {
+        self.mapped.contains(&k)
+    }
+
     fn focused(&self, k: u8) -> bool {
         self.app.dev_focus == Some((self.dev.id, k))
     }
@@ -517,11 +563,28 @@ impl<'a> Ctx<'a> {
     }
 
     fn sense(&self, ui: &egui::Ui, r: Rect, k: u8, s: Sense) -> Response {
-        ui.interact(r, egui::Id::unique(("devp", self.dev.id, k)), s)
+        let id = egui::Id::unique(("devp", self.dev.id, k));
+        // Map mode: mappable parameters get an overlay; a click maps the
+        // parameter to the armed macro instead of editing it.
+        if let Some((_, rack, armed)) = self.map
+            && norm(&self.params, k).is_some()
+        {
+            let hit = self.is_mapped(k);
+            ui.painter().rect_filled(r, CornerRadius::ZERO, if hit { rack::MAP_HIT } else { rack::MAP_FILL });
+            let resp = ui.interact(r, id.with("map"), Sense::click());
+            if resp.clicked()
+                && let Some(m) = armed
+            {
+                rack::request_map(ui.ctx(), rack, m, self.dev.id, k);
+            }
+            return ui.interact(r, id, Sense::hover());
+        }
+        ui.interact(r, id, s)
     }
 
     /// Click toggle: focus + flip.
     fn toggle(&mut self, ui: &egui::Ui, r: Rect, k: u8, enabled: bool) -> bool {
+        let enabled = enabled && !self.is_mapped(k);
         let resp = self.sense(ui, r, k, Sense::click());
         self.param_menu(&resp, k);
         if resp.clicked() {
@@ -537,6 +600,7 @@ impl<'a> Ctx<'a> {
     /// Drag on a continuous parameter like the track header knobs (cursor
     /// hidden and parked, up / right raises); double-click = default.
     fn drag(&mut self, ui: &egui::Ui, r: Rect, k: u8, enabled: bool) -> Response {
+        let enabled = enabled && !self.is_mapped(k);
         let resp = self.sense(ui, r, k, Sense::click_and_drag());
         if resp.drag_started() || resp.clicked() {
             self.focus(k);
@@ -564,7 +628,29 @@ impl<'a> Ctx<'a> {
         let mut ms_toggle = false;
         let mut to_default = false;
         let mut copy_name = false;
+        let rack_macro = match self.params {
+            FxParams::Rack(q) if k < 16 => Some((q.no_rand & (1 << k) != 0, q.no_var & (1 << k) != 0)),
+            _ => None,
+        };
+        let (mut ex_rand, mut ex_var) = (false, false);
+        let mapped = self.is_mapped(k);
+        let free = if !mapped && norm(&self.params, k).is_some() { rack::free_macro(self.app, self.chain) } else { None };
+        let (mut map_to, mut del_map, mut inv_map) = (false, false, false);
         menu::context(resp, 223.0, |ui| {
+            if let Some((r, v)) = rack_macro {
+                ex_rand = menu::check_item(ui, "Exclude Macro from Randomization", "", r, true);
+                ex_var = menu::check_item(ui, "Exclude Macro From Variations", "", v, true);
+                menu::sep(ui);
+            }
+            if let Some((_, _, m)) = free {
+                map_to = menu::item(ui, &format!("Map to Macro {}", m + 1), "", true);
+                menu::sep(ui);
+            }
+            if mapped {
+                del_map = menu::item(ui, "Delete Mapping", "", true);
+                inv_map = menu::item(ui, "Invert Range", "", true);
+                menu::sep(ui);
+            }
             if width_knob {
                 let ms = matches!(self.params, FxParams::Utility(u) if u.ms_mode);
                 ms_toggle = menu::check_item(ui, "Mid/Side Mode", "", ms, true);
@@ -599,6 +685,23 @@ impl<'a> Ctx<'a> {
         if copy_name {
             resp.ctx.copy_text(param_name(&self.params, k).to_string());
         }
+        if (ex_rand || ex_var) && matches!(self.params, FxParams::Rack(_)) {
+            self.undo_step();
+        }
+        if let FxParams::Rack(q) = &mut self.params {
+            if ex_rand {
+                q.no_rand ^= 1 << k;
+            }
+            if ex_var {
+                q.no_var ^= 1 << k;
+            }
+        }
+        if let Some((rc, rid, m)) = free.filter(|_| map_to) {
+            rack::add_mapping(self.app, rc, rid, m, self.dev.id, k);
+        }
+        if del_map || inv_map {
+            rack::edit_mapping(self.app, self.chain, self.dev.id, k, inv_map);
+        }
     }
 }
 
@@ -608,15 +711,22 @@ impl<'a> Ctx<'a> {
 
 /// Draw device `idx` of chain `c` in `r` (full height).
 pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usize) {
-    let Some(&dev) = chain(&app.project, c).get(idx) else { return };
+    let Some(dev) = chain(&app.project, c).get(idx).cloned() else { return };
+    if matches!(dev.params, FxParams::Rack(_)) {
+        return rack::rack(app, ui, r, c, idx);
+    }
     let p = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
     let (l, t) = (r.left(), r.top());
-    p.rect_filled(r, CornerRadius::same(3), panel());
+    // Devices inside a rack sit flush in its frame (square corners).
+    let nested = matches!(c, ChainRef::Sub(_));
+    let rad = if nested { 0 } else { 3 };
+    p.rect_filled(r, CornerRadius::same(rad), panel());
     let title = Rect::from_min_size(r.min, vec2(r.width(), TITLE_H));
-    // Selected device: light blue title bar with dark name (Live).
-    let selected = app.dev_sel == Some(dev.id);
-    p.rect_filled(title, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, if selected { SEL_TITLE } else { gray(0x46) });
-    let mut cx = Ctx { app, chain: c, dev, params: dev.params, on: dev.on, gesture: false };
+    // Selected device (or a selected rack around it): light blue title bar
+    // with dark name (Live).
+    let selected = app.dev_sel == Some(dev.id) || rack::ancestor_selected(app, c);
+    p.rect_filled(title, CornerRadius { nw: rad, ne: rad, sw: 0, se: 0 }, if selected { SEL_TITLE } else { gray(0x46) });
+    let mut cx = Ctx::new(app, c, dev.clone());
 
     // A click anywhere on the device selects it (widgets created later win).
     let body = ui.interact(r, egui::Id::unique(("dev_body", dev.id)), Sense::click());
@@ -639,6 +749,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let mut delete = false;
     let mut dup = false;
     let mut oversample = false;
+    let mut group = false;
     let eq_os = match dev.params {
         FxParams::EqEight(e) => Some(e.oversample),
         _ => None,
@@ -652,8 +763,8 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         menu::item(ui, "Rename", "Ctrl+R", false);
         menu::item(ui, "Edit Info Text", "", false);
         menu::sep(ui);
-        menu::item(ui, "Group", "Ctrl+G", false);
-        menu::item(ui, "Group to Audio Effect Rack", "", false);
+        group = menu::item(ui, "Group", "Ctrl+G", true);
+        group |= menu::item(ui, "Group to Audio Effect Rack", "", true);
         menu::sep(ui);
         menu::item(ui, "Fold", "", false);
         menu::item(ui, "Show Preset Name", "", false);
@@ -679,28 +790,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let right = r.right();
     let glyph = gray(0x75);
     for (i, dx) in [42.5, 26.5, 10.5].into_iter().enumerate() {
-        let bc = pos2(right - dx, t + 8.5);
-        p.circle_filled(bc, 6.5, gray(0x1e));
-        match i {
-            0 => {
-                // Hot-swap: two curved arrows.
-                arc(&p, bc, 3.2, -2.6, -0.3, Stroke::new(1.2, glyph));
-                arc(&p, bc, 3.2, 0.55, 2.85, Stroke::new(1.2, glyph));
-                p.add(Shape::convex_polygon(vec![bc + vec2(1.2, -4.8), bc + vec2(3.8, -2.4), bc + vec2(0.6, -1.6)], glyph, Stroke::NONE));
-                p.add(Shape::convex_polygon(vec![bc + vec2(-1.2, 4.8), bc + vec2(-3.8, 2.4), bc + vec2(-0.6, 1.6)], glyph, Stroke::NONE));
-            }
-            1 => {
-                // Save: floppy.
-                let f = Rect::from_center_size(bc, vec2(7.0, 7.0));
-                p.rect_filled(f, CornerRadius::same(1), glyph);
-                p.rect_filled(Rect::from_min_size(f.min + vec2(2.0, 1.0), vec2(3.0, 2.0)), CornerRadius::ZERO, gray(0x1e));
-            }
-            _ => {
-                for k in [-3.0, 0.0, 3.0] {
-                    p.circle_filled(bc + vec2(k, 0.0), 0.9, glyph);
-                }
-            }
-        }
+        rack::header_button(&p, pos2(right - dx, t + 8.5), i);
     }
     let mut name_right = right - 49.0 - 2.0;
     if matches!(dev.params, FxParams::AlignDelay(_)) {
@@ -733,6 +823,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Utility(_) => utility(&mut cx, ui, &p, l, t),
         FxParams::AlignDelay(_) => align_delay(&mut cx, ui, &p, l, t),
         FxParams::EqEight(_) => eq8::eq_eight(&mut cx, ui, &p, r),
+        FxParams::Rack(_) => {}
     }
     if oversample && let FxParams::EqEight(e) = &mut cx.params {
         e.oversample = !e.oversample;
@@ -741,6 +832,9 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let app = cx.commit();
     if dup {
         app.duplicate_device(c, dev.id);
+    }
+    if group {
+        app.group_device(c, dev.id);
     }
     if delete {
         app.delete_device(c, dev.id);
@@ -1098,6 +1192,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::AlignDelay(a) => k == ap::LEFT || (k == ap::RIGHT && !a.link) || (k == ap::TEMP && a.mode == DelayMode::Distance),
         FxParams::Utility(_) => false,
         FxParams::EqEight(_) => eq8::typable(k),
+        FxParams::Rack(_) => false,
     }
 }
 

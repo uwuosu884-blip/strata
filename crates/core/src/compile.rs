@@ -401,7 +401,17 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
 
 /// Device chain → engine slots (allocates the DSP state).
 fn fx(devices: &[p::Device]) -> Vec<e::FxSlot> {
-    devices.iter().map(|d| e::FxSlot::new(d.id, d.on, d.params)).collect()
+    devices
+        .iter()
+        .map(|d| {
+            let mut s = e::FxSlot::new(d.id, d.on, d.params);
+            if let Some(r) = d.rack.as_deref() {
+                let chains = r.chains.iter().map(|c| e::rack::ChainDsp::new(c.id, c.mix, fx(&c.devices))).collect();
+                s.rack = Some(Box::new(e::rack::RackDsp::new(chains)));
+            }
+            s
+        })
+        .collect()
 }
 
 fn input(t: &p::Track, slots: &RtSlots, io: &IoMap) -> e::TrackInput {

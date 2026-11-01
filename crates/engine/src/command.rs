@@ -118,6 +118,19 @@ pub enum Command {
         on: bool,
         params: crate::fx::FxParams,
     },
+    /// Device `id` at any rack depth in runtime track `track`'s chain.
+    SetFxById {
+        track: u16,
+        id: u64,
+        on: bool,
+        params: crate::fx::FxParams,
+    },
+    /// Mixer / zone of rack chain `id` in runtime track `track`'s chain.
+    SetRackChain {
+        track: u16,
+        id: u64,
+        mix: crate::rack::ChainMix,
+    },
 }
 
 /// `Command::SetFx` target for the Main track's chain.

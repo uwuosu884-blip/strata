@@ -16,6 +16,7 @@ pub mod fx;
 pub mod instruments;
 mod metronome;
 pub mod pv;
+pub mod rack;
 mod sample;
 mod smoother;
 mod song;
@@ -32,6 +33,7 @@ pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
+pub use rack::{ChainMix, RackParams, Zone};
 pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
 pub use song::{
     ArrangementClip, AudioClip, Clip, ClipContent, ClipExtra, DEFAULT_REL_VEL, Follow, Launch, LaunchMode, MAX_IO_CHANNELS, MAX_SENDS,
@@ -402,6 +404,16 @@ impl Engine {
         }
     }
 
+    /// Device chain of runtime track `track` ([`MASTER_FX`] = Main).
+    fn fx_chain(&mut self, track: u16) -> Option<&mut [fx::FxSlot]> {
+        if track == MASTER_FX {
+            Some(&mut self.song.master_fx)
+        } else {
+            let i = self.rt_to_song.get(track as usize).copied().unwrap_or(NONE);
+            self.song.tracks.get_mut(i as usize).map(|t| t.fx.as_mut_slice())
+        }
+    }
+
     fn receive_songs(&mut self) {
         while let Ok(mut new) = self.songs.pop() {
             // Effect DSP state (delay lines, filters) moves to the new song.
@@ -669,6 +681,19 @@ impl Engine {
                     {
                         s.on = on;
                         s.params = params;
+                    }
+                }
+                Command::SetFxById { track, id, on, params } => {
+                    if let Some(s) = self.fx_chain(track).and_then(|c| fx::find_slot(c, id))
+                        && std::mem::discriminant(&s.params) == std::mem::discriminant(&params)
+                    {
+                        s.on = on;
+                        s.params = params;
+                    }
+                }
+                Command::SetRackChain { track, id, mix } => {
+                    if let Some(c) = self.fx_chain(track).and_then(|c| fx::find_rack_chain(c, id)) {
+                        c.mix = mix;
                     }
                 }
                 Command::StopTrack { track } => self.launch(track, Action::Stop),

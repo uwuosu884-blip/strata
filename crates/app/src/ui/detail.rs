@@ -1091,7 +1091,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // Effect chain, left to right; `slots` = (left, right) of each device.
     let mut slots = Vec::with_capacity(n);
     for i in 0..n {
-        let Some(d) = crate::fx_ops::chain(&app.project, chain).get(i).copied() else { break };
+        let Some(d) = crate::fx_ops::chain(&app.project, chain).get(i).cloned() else { break };
         let w = super::devices::width(&d);
         let r = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height()));
         super::devices::device(app, ui, r, chain, i);
@@ -1120,7 +1120,9 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     }
     // Drag & drop: effects / devices insert at the pointer; instruments and
     // samples replace a MIDI track's instrument.
-    let hover = zone.dnd_hover_payload::<DragItem>();
+    // A rack's own drop zones (chain list, its devices) take precedence.
+    let claimed = std::mem::take(&mut app.dev_drop_claimed);
+    let hover = zone.dnd_hover_payload::<DragItem>().filter(|_| !claimed);
     let ptr = ui.ctx().pointer_latest_pos().unwrap_or(rect.center());
     let at = slots.iter().filter(|s| (s.0 + s.1) / 2.0 < ptr.x).count();
     if hover.as_deref().is_some_and(|d| matches!(d, DragItem::AudioEffect(_) | DragItem::ChainDevice { .. })) {
@@ -1133,7 +1135,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     } else if inst_drop_ok && hover.as_deref().is_some_and(|d| super::instrument_for(d).is_some() || matches!(d, DragItem::Sample { .. })) {
         ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, focus()), egui::StrokeKind::Inside);
     }
-    let Some(item) = zone.dnd_release_payload::<DragItem>() else { return };
+    let Some(item) = zone.dnd_release_payload::<DragItem>().filter(|_| !claimed) else { return };
     match &*item {
         DragItem::AudioEffect(p) => app.insert_device(chain, Some(at), *p),
         DragItem::ChainDevice { chain: from, id } => {

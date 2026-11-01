@@ -819,7 +819,7 @@ impl Project {
                 a.clip.id = self.alloc_id();
             }
             for d in &mut t.devices {
-                d.id = self.alloc_id();
+                d.reid(&mut || self.alloc_id());
             }
         }
         for t in &mut copy {
@@ -1060,8 +1060,11 @@ impl Project {
                 std::iter::once(t.id).chain(t.slots.iter().flatten().map(|c| c.id)).chain(t.arrangement.iter().map(|a| a.clip.id))
             })
             .chain(self.locators.iter().map(|l| l.id))
-            .chain(self.tracks.iter().chain(&self.returns).flat_map(|t| t.devices.iter().map(|d| d.id)))
-            .chain(self.master_devices.iter().map(|d| d.id))
+            .chain(self.tracks.iter().chain(&self.returns).flat_map(|t| &t.devices).chain(&self.master_devices).flat_map(|d| {
+                let mut v = Vec::new();
+                d.ids(&mut v);
+                v
+            }))
             .max()
             .unwrap_or(0);
         self.next_id = self.next_id.max(max_id + 1);
@@ -1088,7 +1091,7 @@ impl Project {
             fix(&mut l.id);
         }
         for d in self.tracks.iter_mut().chain(&mut self.returns).flat_map(|t| &mut t.devices).chain(&mut self.master_devices) {
-            fix(&mut d.id);
+            d.fix_ids(&mut fix);
         }
         self.next_id = next;
         self.normalize_groups();

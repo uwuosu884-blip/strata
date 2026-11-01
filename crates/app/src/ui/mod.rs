@@ -7,7 +7,9 @@ pub mod cursors;
 mod cview;
 mod detail;
 mod devices;
-pub use devices::{EQ_DOTS, eq_arrow, reset as devices_reset, step as devices_step, typable as devices_typable};
+pub use devices::{
+    EQ_DOTS, eq_arrow, reset as devices_reset, set_norm as devices_set_norm, step as devices_step, typable as devices_typable,
+};
 pub mod invert;
 mod io;
 mod menu;
@@ -386,10 +388,11 @@ impl DawApp {
         if cmd(Key::T) {
             self.add_track(TrackKind::Audio);
         }
-        if cmd_shift(Key::G) {
+        let dev_keys = self.focus_detail && self.device_view_shown();
+        if cmd_shift(Key::G) && !(dev_keys && self.group_selected_device(true)) {
             self.ungroup_selected();
         }
-        if cmd(Key::G) {
+        if cmd(Key::G) && !(dev_keys && self.group_selected_device(false)) {
             self.group_selected_tracks();
         }
         if cmd_shift(Key::M) {

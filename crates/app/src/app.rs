@@ -294,6 +294,8 @@ pub struct DawApp {
     /// Insert marker after the last device (shown after a click on empty chain
     /// space; any other press hides it).
     pub dev_insert: Option<crate::fx_ops::ChainRef>,
+    /// A rack drop zone handled the current drag (the chain's zone skips it).
+    pub dev_drop_claimed: bool,
     pub dev_focus: Option<(u64, u8)>,
     /// Device-view meters of the shown chain (chain input, then per device).
     pub dev_meters: DevMeters,
@@ -514,6 +516,7 @@ impl DawApp {
             focus_detail: false,
             dev_sel: None,
             dev_insert: None,
+            dev_drop_claimed: false,
             dev_focus: None,
             dev_meters: DevMeters::default(),
             dev_typing: None,
@@ -703,6 +706,7 @@ impl DawApp {
         let raw = match chain {
             crate::fx_ops::ChainRef::Main => Some(self.engine.fx_meters(daw_engine::MASTER_FX)),
             crate::fx_ops::ChainRef::Track(id) => self.slots.get(id).map(|rt| self.engine.fx_meters(rt)),
+            crate::fx_ops::ChainRef::Sub(_) => None,
         };
         if let Some(raw) = raw {
             self.dev_meters.update(chain, &raw, dt);

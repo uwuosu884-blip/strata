@@ -111,7 +111,34 @@ pub fn solo_dimmed(c: Color32) -> Color32 {
     shade(c, 0.42)
 }
 
+/// Rack chain volume box: teal fill, "0.0 dB" (Live chain list).
+pub fn chain_volume_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32) -> (egui::Response, bool) {
+    level_box_fmt(ui, rect, id, db, super::theme::VOL_TEAL, "Chain volume (dB) · drag · double-click: 0 dB", |db| {
+        if db <= METER_FLOOR_DB { "-inf dB".to_string() } else { format!("{db:.1} dB") }
+    })
+}
+
 fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Color32, tip: &str) -> (egui::Response, bool) {
+    level_box_fmt(ui, rect, id, db, fill, tip, |db| {
+        if db <= METER_FLOOR_DB {
+            "-inf".to_string()
+        } else if db.abs() < 0.05 {
+            "0".to_string()
+        } else {
+            format!("{db:.1}")
+        }
+    })
+}
+
+fn level_box_fmt(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: egui::Id,
+    db: &mut f32,
+    fill: Color32,
+    tip: &str,
+    fmt: fn(f32) -> String,
+) -> (egui::Response, bool) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut changed = false;
     let d = endless_drag(ui, &resp);
@@ -135,13 +162,7 @@ fn level_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, fill: Co
         p.rect_filled(Rect::from_min_size(rect.min, vec2(w, rect.height())), CornerRadius::ZERO, fill);
     }
     p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, super::theme::outline()), egui::StrokeKind::Inside);
-    let text = if *db <= METER_FLOOR_DB {
-        "-inf".to_string()
-    } else if db.abs() < 0.05 {
-        "0".to_string()
-    } else {
-        format!("{db:.1}")
-    };
+    let text = fmt(*db);
     let fg = if plain { super::theme::text() } else { Color32::from_gray(0xe0) };
     p.text(rect.center(), egui::Align2::CENTER_CENTER, text, super::theme::font(super::theme::FS), fg);
     (resp.on_hover_text(tip), changed)
@@ -190,6 +211,11 @@ pub fn send_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, db: &mut f32, lette
 
 /// Live-style pan box: 50L … C … 50R, drag up/down (Shift = fine), double-click = centre.
 pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (egui::Response, bool) {
+    pan_box_ex(ui, rect, true, id, pan)
+}
+
+/// `pan_box`; `tick` = the 1 px centre mark (rack chains have none).
+pub fn pan_box_ex(ui: &mut egui::Ui, rect: Rect, tick_on: bool, id: egui::Id, pan: &mut f32) -> (egui::Response, bool) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut changed = false;
     let d = endless_drag(ui, &resp);
@@ -220,7 +246,9 @@ pub fn pan_box(ui: &mut egui::Ui, rect: Rect, id: egui::Id, pan: &mut f32) -> (e
     let ty = ((rect.min.y + 1.0) * ppp).round() / ppp;
     let mut tick = egui::Mesh::default();
     tick.add_colored_rect(Rect::from_min_size(pos2(tx, ty), vec2(px, px) * ppp.round().max(1.0)), gray(0x8a));
-    p.add(tick);
+    if tick_on {
+        p.add(tick);
+    }
     p.text(rect.center(), egui::Align2::CENTER_CENTER, pan_label(*pan), super::theme::font(super::theme::FS), Color32::from_gray(0xe0));
     (resp.on_hover_text("Pan · drag · double-click: centre"), changed)
 }

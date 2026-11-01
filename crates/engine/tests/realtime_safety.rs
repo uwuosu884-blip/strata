@@ -167,6 +167,8 @@ fn process_is_allocation_free() {
             params: FxParams::AlignDelay(AlignDelayParams { time_l: 50.0, ..Default::default() }),
         },
         Command::SetFx { track: MASTER_FX, slot: 0, on: false, params: FxParams::Utility(UtilityParams::default()) },
+        Command::SetFxById { track: 1, id: 99, on: true, params: FxParams::Utility(UtilityParams::default()) },
+        Command::SetRackChain { track: 1, id: 98, mix: daw_engine::ChainMix::default() },
         Command::SetTempoFollow(true),
         Command::NoteOff { track: 1, pitch: 60 },
         Command::SetLaunchQuantize(0.25),

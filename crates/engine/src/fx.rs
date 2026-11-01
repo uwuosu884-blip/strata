@@ -217,6 +217,7 @@ pub enum FxParams {
     Utility(UtilityParams),
     AlignDelay(AlignDelayParams),
     EqEight(EqEightParams),
+    Rack(crate::rack::RackParams),
 }
 
 impl FxParams {
@@ -225,6 +226,7 @@ impl FxParams {
             FxParams::Utility(_) => "Utility",
             FxParams::AlignDelay(_) => "Align Delay",
             FxParams::EqEight(_) => "EQ Eight",
+            FxParams::Rack(_) => "Audio Effect Rack",
         }
     }
 }
@@ -237,6 +239,8 @@ pub struct FxSlot {
     pub on: bool,
     pub params: FxParams,
     pub state: Box<FxState>,
+    /// Audio Effect Rack chains (`FxParams::Rack`).
+    pub rack: Option<Box<crate::rack::RackDsp>>,
 }
 
 impl FxSlot {
@@ -246,19 +250,47 @@ impl FxSlot {
         if let StateKind::Eq(e) = &mut state.kind {
             *e = Box::new(EqState::new(Some(crate::eq8::spectrum_tap(id))));
         }
-        Self { id, on, params, state: Box::new(state) }
+        Self { id, on, params, state: Box::new(state), rack: None }
     }
 }
 
-/// Move DSP states from `old` into `new` for slots with the same id (no allocation).
+/// Move DSP states from `old` into `new` for slots with the same id, at any
+/// rack depth (no allocation).
 pub(crate) fn carry_states(new: &mut [FxSlot], old: &mut [FxSlot]) {
     for n in new.iter_mut() {
-        if let Some(o) = old.iter_mut().find(|o| o.id == n.id)
+        if let Some(o) = find_slot(old, n.id)
             && o.state.kind == n.state.kind
         {
             std::mem::swap(&mut n.state, &mut o.state);
         }
+        if let Some(r) = n.rack.as_deref_mut() {
+            for c in r.chains.iter_mut() {
+                carry_states(&mut c.devices, old);
+            }
+        }
     }
+}
+
+/// Device `id` anywhere in `chain` (racks searched recursively).
+pub fn find_slot(chain: &mut [FxSlot], id: u64) -> Option<&mut FxSlot> {
+    for s in chain.iter_mut() {
+        if s.id == id {
+            return Some(s);
+        }
+        if let Some(r) = s.rack.as_deref_mut() {
+            for c in r.chains.iter_mut() {
+                if let Some(x) = find_slot(&mut c.devices, id) {
+                    return Some(x);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Rack chain `id` anywhere in `chain`.
+pub fn find_rack_chain(chain: &mut [FxSlot], id: u64) -> Option<&mut crate::rack::ChainDsp> {
+    chain.iter_mut().filter_map(|s| s.rack.as_deref_mut()).find_map(|r| r.chain_mut(id))
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +305,7 @@ enum StateKind {
     Utility(Box<UtilityState>),
     Align(AlignState),
     Eq(Box<EqState>),
+    Rack,
 }
 
 impl PartialEq for StateKind {
@@ -287,6 +320,7 @@ impl FxState {
             FxParams::Utility(_) => StateKind::Utility(Box::default()),
             FxParams::AlignDelay(_) => StateKind::Align(AlignState::new()),
             FxParams::EqEight(_) => StateKind::Eq(Box::new(EqState::new(None))),
+            FxParams::Rack(_) => StateKind::Rack,
         };
         Self { kind, was_on: false }
     }
@@ -296,6 +330,7 @@ impl FxState {
             StateKind::Utility(u) => u.reset(),
             StateKind::Align(a) => a.reset(),
             StateKind::Eq(e) => e.reset(),
+            StateKind::Rack => {}
         }
     }
 }
@@ -324,6 +359,11 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Utility(p), StateKind::Utility(st)) => st.process(p, l, r, sr),
             (FxParams::AlignDelay(p), StateKind::Align(st)) => st.process(p, l, r, sr),
             (FxParams::EqEight(p), StateKind::Eq(st)) => st.process(p, l, r, sr),
+            (FxParams::Rack(p), StateKind::Rack) => {
+                if let Some(rk) = s.rack.as_deref_mut() {
+                    rk.process(p, l, r, sr);
+                }
+            }
             _ => {}
         }
         if let Some(m) = meters.get(i + 1) {

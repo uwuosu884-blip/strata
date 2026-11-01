@@ -856,8 +856,8 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
 
 /// The unfolded display in the main window (Live's maximised EQ Eight).
 pub fn maximised(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, id: u64) {
-    let Some(dev) = chain(&app.project, c).iter().find(|d| d.id == id).copied() else { return };
-    let mut cx = Ctx { app, chain: c, dev, params: dev.params, on: dev.on, gesture: false };
+    let Some(dev) = chain(&app.project, c).iter().find(|d| d.id == id).cloned() else { return };
+    let mut cx = Ctx::new(app, c, dev.clone());
     let p = ui.painter().clone();
     display(&mut cx, ui, &p, r, true);
     cx.commit();
