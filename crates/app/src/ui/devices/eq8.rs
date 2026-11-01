@@ -3,7 +3,6 @@
 //! toggles. Geometry measured from Live 12 at 100 % (l/t = device left/top).
 
 use super::*;
-use std::time::Duration;
 
 pub const WIDTH: f32 = 482.0;
 
@@ -652,31 +651,31 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
     p.rect_filled(r, CornerRadius::ZERO, gray(0x18));
     let sr = cx.app.spectra.sample_rate(id).max(8000.0);
 
-    // Analyzer (filled, behind the grid).
-    if e0.analyze {
-        let (spec, wait) = cx.app.spectra.update(id, e0.block, e0.refresh, e0.avg);
+    // Analyzer (filled, behind the grid); empty while the device is off.
+    if e0.analyze && cx.on {
+        let spec = cx.app.spectra.update(id, e0.block, e0.refresh, e0.avg);
+        let live = spec.live;
+        let cols = r.width().max(1.0) as usize + 1;
+        let db = crate::spectrum::curve_db(spec, sr, cols, |i| ax.g_freq(r.left() + i));
         let mut mesh = egui::Mesh::default();
         let col = gray(0x53);
         let bottom = r.bottom();
-        let mut x = r.left();
-        let mut first = true;
-        while x <= r.right() {
-            let f0 = ax.g_freq(x - 0.5).max(1.0);
-            let f1 = ax.g_freq(x + 0.5).max(1.0);
-            let db = spec.level_db(f0, f1, sr);
+        for (i, db) in db.iter().enumerate() {
+            let x = r.left() + i as f32;
             let y = (bottom - (db - SPEC_LO) / (SPEC_HI - SPEC_LO) * r.height()).clamp(r.top(), bottom);
-            let i = mesh.vertices.len() as u32;
+            let v = mesh.vertices.len() as u32;
             mesh.colored_vertex(pos2(x, y), col);
             mesh.colored_vertex(pos2(x, bottom), col);
-            if !first {
-                mesh.add_triangle(i - 2, i - 1, i);
-                mesh.add_triangle(i - 1, i, i + 1);
+            if i > 0 {
+                mesh.add_triangle(v - 2, v - 1, v);
+                mesh.add_triangle(v - 1, v, v + 1);
             }
-            first = false;
-            x += 1.0;
         }
         p.add(Shape::mesh(mesh));
-        ui.ctx().request_repaint_after(wait.max(Duration::from_millis(5)));
+        // Every frame while it moves: the spectrum glides.
+        cx.app.animating |= live;
+    } else {
+        cx.app.spectra.clear(id);
     }
 
     // Grid: decades brighter, labels on top.
@@ -735,8 +734,8 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
     p.add(Shape::line(curve(ch), Stroke::new(2.0, ccol)));
 
     // Dots of the edited channel's active bands.
-    // 13 px dots: 2 px ring over the curve, number inside.
-    let rad = 5.5;
+    // 11 px dots: 1.5 px ring over the curve, small number inside.
+    let rad = 4.5;
     let dot_col = if cx.on { ORANGE } else { gray(0x69) };
     let bands = e0.bands[ch];
     let dots: Vec<(usize, Pos2)> = (0..8).filter(|&b| bands[b].on).map(|b| (b, dot_pos(&ax, &bands[b]))).collect();
@@ -746,10 +745,10 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
             p.circle_filled(c, rad + 1.0, dot_col);
         } else {
             p.circle_filled(c, rad, gray(0x18));
-            p.circle_stroke(c, rad, Stroke::new(2.0, dot_col));
+            p.circle_stroke(c, rad, Stroke::new(1.5, dot_col));
         }
         let tc = if selected { Color32::from_rgb(0x20, 0x20, 0x20) } else { dot_col };
-        text_at(&p, c.x, c.y + 3.5, Align2::CENTER_BOTTOM, &(b + 1).to_string(), if big { font(FS_SMALL) } else { font(FS) }, tc);
+        text_at(&p, c.x, c.y + 3.0, Align2::CENTER_BOTTOM, &(b + 1).to_string(), font(FS_SMALL), tc);
     }
 
     // Interaction.
@@ -757,7 +756,7 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
     let did = egui::Id::unique(("eq_drag", id));
     let hit = |pos: Pos2| {
         dots.iter()
-            .filter(|(_, c)| c.distance(pos) <= rad + 2.5)
+            .filter(|(_, c)| c.distance(pos) <= rad + 3.0)
             .min_by(|a, b| a.1.distance(pos).total_cmp(&b.1.distance(pos)))
             .map(|d| d.0)
     };
@@ -854,7 +853,7 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
     }
 }
 
-/// The unfolded display in the main window (Live's maximised EQ Eight).
+/// The unfolded display above the Device View (Live's maximised EQ Eight).
 pub fn maximised(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, id: u64) {
     let Some(dev) = chain(&app.project, c).iter().find(|d| d.id == id).cloned() else { return };
     let mut cx = Ctx::new(app, c, dev.clone());
@@ -863,13 +862,23 @@ pub fn maximised(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, id: 
     cx.commit();
 }
 
-/// First device of the shown chain whose display is unfolded.
+/// First EQ Eight of the shown chain (at any rack depth) whose display is
+/// unfolded, with the chain directly holding it.
 pub fn unfolded(app: &DawApp) -> Option<(ChainRef, u64)> {
+    fn find(v: &[daw_project::Device]) -> Option<u64> {
+        v.iter().find_map(|d| {
+            if matches!(d.params, FxParams::EqEight(e) if e.expanded) {
+                return Some(d.id);
+            }
+            d.rack.as_deref().and_then(|r| r.chains.iter().find_map(|c| find(&c.devices)))
+        })
+    }
     if !app.device_view_shown() {
         return None;
     }
-    let c = app.current_chain();
-    chain(&app.project, c).iter().find(|d| matches!(d.params, FxParams::EqEight(e) if e.expanded)).map(|d| (c, d.id))
+    let top = app.current_chain();
+    let id = find(chain(&app.project, top))?;
+    Some((crate::fx_ops::chain_of(&app.project, top, id)?, id))
 }
 
 #[cfg(test)]

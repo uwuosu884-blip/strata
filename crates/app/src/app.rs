@@ -292,6 +292,11 @@ pub struct DawApp {
     pub focus_detail: bool,
     /// Selected device (device view) and focused parameter `(device id, param)`.
     pub dev_sel: Option<u64>,
+    /// Other selected devices of the same chain (Ctrl / Shift+click), valid
+    /// while `dev_sel` is still `dev_multi_owner`; Shift+click range anchor.
+    pub dev_multi: Vec<u64>,
+    pub dev_multi_owner: Option<u64>,
+    pub dev_anchor: Option<u64>,
     /// Insert marker after the last device (shown after a click on empty chain
     /// space; any other press hides it).
     pub dev_insert: Option<crate::fx_ops::ChainRef>,
@@ -304,6 +309,10 @@ pub struct DawApp {
     pub dev_typing: Option<String>,
     /// EQ Eight analyzers (per device).
     pub spectra: crate::spectrum::Spectra,
+    /// Something on screen animates this frame (repaint at display rate).
+    pub animating: bool,
+    /// Height of the unfolded EQ Eight display.
+    pub eq_big_h: f32,
     /// Where Space starts playback (set by clicking the timeline).
     pub play_start: f64,
     pub renaming: Option<Rename>,
@@ -516,12 +525,17 @@ impl DawApp {
             cv: Default::default(),
             focus_detail: false,
             dev_sel: None,
+            dev_multi: Vec::new(),
+            dev_multi_owner: None,
+            dev_anchor: None,
             dev_insert: None,
             dev_drop_claimed: false,
             dev_focus: None,
             dev_meters: DevMeters::default(),
             dev_typing: None,
             spectra: Default::default(),
+            animating: false,
+            eq_big_h: 207.0,
             play_start: 0.0,
             renaming: None,
             touched_track: None,

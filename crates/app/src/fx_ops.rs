@@ -192,21 +192,92 @@ impl DawApp {
 
     /// Ctrl+G: wrap device `id` of chain `c` in an Audio Effect Rack.
     pub fn group_device(&mut self, c: ChainRef, id: u64) {
-        let Some(i) = chain(&self.project, c).iter().position(|d| d.id == id) else { return };
+        self.group_devices(c, &[id]);
+    }
+
+    /// Ctrl+G on several devices of chain `c`: one rack (at the first one's
+    /// place) with one chain holding them in chain order.
+    pub fn group_devices(&mut self, c: ChainRef, ids: &[u64]) {
+        let v = chain(&self.project, c);
+        let Some(i0) = v.iter().position(|d| ids.contains(&d.id)) else { return };
         let rid = self.edit(|p| {
             let (rid, cid) = (p.alloc_id(), p.alloc_id());
             let v = chain_mut(p, c)?;
-            let d = v.remove(i);
+            let mut moved = Vec::new();
+            let mut k = 0;
+            while k < v.len() {
+                if ids.contains(&v[k].id) {
+                    moved.push(v.remove(k));
+                } else {
+                    k += 1;
+                }
+            }
             let mut rack = Device::new(rid, FxParams::Rack(Default::default()));
             if let Some(r) = rack.rack.as_deref_mut() {
-                r.chains.push(RackChain { id: cid, devices: vec![d], ..Default::default() });
+                r.chains.push(RackChain { id: cid, devices: moved, ..Default::default() });
             }
-            v.insert(i, rack);
+            v.insert(i0.min(v.len()), rack);
             Some(rid)
         });
         if rid.is_some() {
-            self.dev_sel = rid;
+            self.select_only(rid);
         }
+    }
+
+    /// Plain selection of one device (or none).
+    pub fn select_only(&mut self, id: Option<u64>) {
+        self.dev_sel = id;
+        self.dev_multi.clear();
+        self.dev_multi_owner = id;
+        self.dev_anchor = id;
+    }
+
+    /// Device `id` is selected (alone or with others).
+    pub fn dev_selected(&self, id: u64) -> bool {
+        self.dev_sel == Some(id) || (self.dev_multi_owner == self.dev_sel && self.dev_multi.contains(&id))
+    }
+
+    /// The selected devices (chain order) and their chain.
+    pub fn selected_devices(&self) -> Option<(ChainRef, Vec<u64>)> {
+        let (c, _) = self.selected_device()?;
+        let v: Vec<u64> = chain(&self.project, c).iter().map(|d| d.id).filter(|&id| self.dev_selected(id)).collect();
+        (!v.is_empty()).then_some((c, v))
+    }
+
+    /// Click on device `id` of chain `c`: plain = select it alone, Ctrl =
+    /// toggle it, Shift = the range from the last clicked device (the same
+    /// chain only; like clips).
+    pub fn click_device(&mut self, c: ChainRef, id: u64, mods: egui::Modifiers) {
+        if self.dev_multi_owner != self.dev_sel {
+            self.dev_multi.clear();
+        }
+        let same = self.selected_device().is_some_and(|(sc, _)| sc == c);
+        if mods.command && same {
+            if self.dev_selected(id) {
+                if self.dev_sel == Some(id) {
+                    self.dev_sel = self.dev_multi.pop();
+                } else {
+                    self.dev_multi.retain(|&x| x != id);
+                }
+            } else {
+                if let Some(s) = self.dev_sel {
+                    self.dev_multi.push(s);
+                }
+                self.dev_sel = Some(id);
+                self.dev_anchor = Some(id);
+            }
+        } else if mods.shift && same {
+            let v = chain(&self.project, c);
+            let anchor = self.dev_anchor.filter(|a| v.iter().any(|d| d.id == *a)).or(self.dev_sel);
+            let (Some(ia), Some(ib)) = (anchor.and_then(|a| v.iter().position(|d| d.id == a)), v.iter().position(|d| d.id == id)) else {
+                return self.select_only(Some(id));
+            };
+            self.dev_multi = v[ia.min(ib)..=ia.max(ib)].iter().map(|d| d.id).filter(|&x| x != id).collect();
+            self.dev_sel = Some(id);
+        } else {
+            return self.select_only(Some(id));
+        }
+        self.dev_multi_owner = self.dev_sel;
     }
 
     /// Ctrl+Shift+G: replace rack `id` by its chains' devices in series.
@@ -220,7 +291,7 @@ impl DawApp {
                 v.insert(i + k, x);
             }
         });
-        self.dev_sel = None;
+        self.select_only(None);
     }
 
     /// Insert a new device at `at` (None: after the selected device, else at
@@ -239,6 +310,17 @@ impl DawApp {
             self.dev_focus = None;
             self.detail_mode = crate::app::DetailMode::Device;
         }
+    }
+
+    /// Delete several devices of chain `c` (one undo step).
+    pub fn delete_devices(&mut self, c: ChainRef, ids: &[u64]) {
+        self.edit(|p| {
+            if let Some(v) = chain_mut(p, c) {
+                v.retain(|d| !ids.contains(&d.id));
+            }
+        });
+        self.select_only(None);
+        self.dev_focus = None;
     }
 
     pub fn delete_device(&mut self, c: ChainRef, id: u64) {
@@ -317,7 +399,10 @@ impl DawApp {
         }
         let Some((id, c)) = self.dev_sel.and_then(|id| Some((id, chain_of(&self.project, top, id)?))) else { return false };
         if matches!(key, Key::Delete | Key::Backspace) && !repeat {
-            self.delete_device(c, id);
+            match self.selected_devices() {
+                Some((c, ids)) if ids.len() > 1 => self.delete_devices(c, &ids),
+                _ => self.delete_device(c, id),
+            }
             return true;
         }
         // Rack selected: Up / Down walk its chain list.
@@ -343,18 +428,52 @@ impl DawApp {
     }
 
     pub fn duplicate_selected_device(&mut self) -> bool {
-        let Some((c, id)) = self.selected_device() else { return false };
-        self.duplicate_device(c, id);
+        let Some((c, ids)) = self.selected_devices() else { return false };
+        if ids.len() == 1 {
+            self.duplicate_device(c, ids[0]);
+        } else {
+            self.duplicate_devices(c, &ids);
+        }
         true
     }
 
-    /// Ctrl+G / Ctrl+Shift+G on the selected device.
+    /// Ctrl+D on several devices: copies (in order) after the last one, selected.
+    pub fn duplicate_devices(&mut self, c: ChainRef, ids: &[u64]) {
+        let new = self.edit(|p| {
+            let v = chain(p, c);
+            let last = v.iter().rposition(|d| ids.contains(&d.id))?;
+            let mut copies: Vec<Device> = v.iter().filter(|d| ids.contains(&d.id)).cloned().collect();
+            for d in &mut copies {
+                d.reid(&mut || p.alloc_id());
+            }
+            let nids: Vec<u64> = copies.iter().map(|d| d.id).collect();
+            let v = chain_mut(p, c)?;
+            for (k, d) in copies.into_iter().enumerate() {
+                v.insert(last + 1 + k, d);
+            }
+            Some(nids)
+        });
+        if let Some(mut n) = new
+            && let Some(last) = n.pop()
+        {
+            self.dev_sel = Some(last);
+            self.dev_multi = n;
+            self.dev_multi_owner = Some(last);
+        }
+    }
+
+    /// Ctrl+G / Ctrl+Shift+G on the selected device(s).
     pub fn group_selected_device(&mut self, ungroup: bool) -> bool {
-        let Some((c, id)) = self.selected_device() else { return false };
+        let Some((c, ids)) = self.selected_devices() else { return false };
         if ungroup {
-            self.ungroup_device(c, id);
+            // Every selected rack is replaced by its devices.
+            let racks: Vec<u64> =
+                ids.iter().copied().filter(|&id| chain(&self.project, c).iter().any(|d| d.id == id && d.rack.is_some())).collect();
+            for id in racks {
+                self.ungroup_device(c, id);
+            }
         } else {
-            self.group_device(c, id);
+            self.group_devices(c, &ids);
         }
         true
     }
@@ -486,5 +605,66 @@ mod tests {
         assert_eq!(chain(&p, ChainRef::Sub(11)).len(), 2);
         let m = MacroMap { macro_idx: 0, device: 12, param: 0, min: 0.2, max: 0.6 };
         assert!((map_value(&m, 127.0) - 0.6).abs() < 1e-6 && (map_value(&m, 0.0) - 0.2).abs() < 1e-6);
+    }
+
+    fn app_with(n: u64) -> (crate::app::DawApp, ChainRef) {
+        let (audio, engine) = crate::audio::start(&crate::audio::AudioOptions { force_null: true, no_input: true, ..Default::default() });
+        let mut a = crate::app::DawApp::new(engine, audio, Project::default(), None, false, Default::default(), Default::default());
+        let t = a.project.add_track(daw_project::TrackKind::Audio);
+        a.selected_track = t;
+        let tid = a.project.tracks[t].id;
+        for k in 0..n {
+            a.project.tracks[t].devices.push(Device::new(100 + k, FxParams::Utility(Default::default())));
+        }
+        (a, ChainRef::Track(tid))
+    }
+
+    #[test]
+    fn ctrl_and_shift_click_select_like_clips() {
+        let (mut a, c) = app_with(4);
+        let (ctrl, shift) = (egui::Modifiers::COMMAND, egui::Modifiers::SHIFT);
+        a.click_device(c, 100, egui::Modifiers::NONE);
+        a.click_device(c, 102, ctrl);
+        assert_eq!(a.selected_devices().unwrap().1, vec![100, 102]);
+        a.click_device(c, 100, ctrl);
+        assert_eq!(a.selected_devices().unwrap().1, vec![102]);
+        a.click_device(c, 100, shift);
+        assert_eq!(a.selected_devices().unwrap().1, vec![100, 101, 102]);
+        // A plain selection elsewhere drops the others.
+        a.dev_sel = Some(103);
+        assert_eq!(a.selected_devices().unwrap().1, vec![103]);
+    }
+
+    #[test]
+    fn group_several_and_ungroup_keeps_devices() {
+        let (mut a, c) = app_with(4);
+        a.click_device(c, 101, egui::Modifiers::NONE);
+        a.click_device(c, 103, egui::Modifiers::COMMAND);
+        assert!(a.group_selected_device(false));
+        let v = chain(&a.project, c);
+        assert_eq!(v.len(), 3);
+        assert_eq!((v[0].id, v[2].id), (100, 102));
+        let rack = v[1].id;
+        let inner: Vec<u64> = v[1].rack.as_ref().unwrap().chains[0].devices.iter().map(|d| d.id).collect();
+        assert_eq!(inner, vec![101, 103]);
+        assert_eq!(a.dev_sel, Some(rack));
+        assert!(a.group_selected_device(true));
+        let ids: Vec<u64> = chain(&a.project, c).iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![100, 101, 103, 102]);
+    }
+
+    #[test]
+    fn duplicate_and_delete_several() {
+        let (mut a, c) = app_with(3);
+        a.click_device(c, 100, egui::Modifiers::NONE);
+        a.click_device(c, 101, egui::Modifiers::SHIFT);
+        assert!(a.duplicate_selected_device());
+        assert_eq!(chain(&a.project, c).len(), 5);
+        let (_, sel) = a.selected_devices().unwrap();
+        assert_eq!(sel.len(), 2);
+        assert!(sel.iter().all(|id| ![100, 101, 102].contains(id)));
+        a.delete_devices(c, &sel);
+        let ids: Vec<u64> = chain(&a.project, c).iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![100, 101, 102]);
     }
 }

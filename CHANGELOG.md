@@ -10,6 +10,39 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.3] - 2026-11-01
+
+### Added
+- Device View multi-selection like clips: Ctrl+click toggles a device,
+  Shift+click selects the range from the last clicked one (same chain).
+  Delete, Ctrl+D and the device menu act on all selected devices.
+- Ctrl+G on several selected devices groups them into one Audio Effect
+  Rack (one chain, in chain order). Ctrl+Shift+G on a selected rack puts
+  its devices back in its place and removes the rack.
+- `--gpu integrated|discrete|<adapter name>` (or `DAW_GPU`); the chosen
+  graphics adapter is printed at start (`gpu: …`).
+
+### Changed
+- Rendering uses the integrated GPU by default (hybrid laptops rendered on
+  the discrete GPU before).
+- Frame pacing: at most ~250 fps, 60 fps while the window is unfocused and
+  a few fps while hidden (a window on another workspace was repainted flat
+  out during playback).
+- EQ Eight analyzer: analysed every frame and smoothed on the log frequency
+  axis; Refresh sets how fast it follows (rises in Refresh / 2, falls in
+  Refresh × Avg). Smooth both on a track and inside a rack.
+- EQ Eight unfold button: the big display opens in a strip above the Device
+  View (drag the gap above it to resize) instead of replacing the main view.
+- Smaller EQ Eight band dots and numbers.
+
+### Fixed
+- EQ Eight inside a rack couldn't be unfolded.
+- Turning EQ Eight off left its last spectrum frame on screen; the display
+  is now empty.
+- Wayland: "cursor position can be set only for locked cursor" warnings
+  after knob drags.
+- Panel resize handles follow the pointer exactly.
+
 ## [0.8.2] - 2026-11-01
 
 ### Added

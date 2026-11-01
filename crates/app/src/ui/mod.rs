@@ -89,11 +89,18 @@ impl eframe::App for DawApp {
             self.emergency_restart("a GPU device loss");
         }
         let ctx = ui.ctx().clone();
+        self.animating = false;
         {
             // Analyzers of deleted EQ Eights.
             let p = &self.project;
-            self.spectra
-                .retain(|id| p.tracks.iter().chain(&p.returns).flat_map(|t| &t.devices).chain(&p.master_devices).any(|d| d.id == id));
+            self.spectra.retain(|id| {
+                p.tracks
+                    .iter()
+                    .chain(&p.returns)
+                    .map(|t| t.devices.as_slice())
+                    .chain([p.master_devices.as_slice()])
+                    .any(|v| daw_project::devices::find_device(v, id).is_some())
+            });
         }
         theme::update(&ctx, &self.settings.theme);
         wave::set_style(self.settings.theme.wave_style);
@@ -184,6 +191,29 @@ impl eframe::App for DawApp {
         if let Some(p) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) {
             self.focus_detail = detail_inner.contains(p);
         }
+        // An unfolded EQ Eight display: its own strip above the Device View,
+        // resizable from the 9 px gap above it (Live shows it in the main window).
+        if let Some((c, id)) = devices::eq_unfolded(self) {
+            let avail = ui.available_rect_before_wrap().height();
+            let hmax = (avail - 9.0 - 160.0).max(EQ_BIG_MIN);
+            self.eq_big_h = self.eq_big_h.clamp(EQ_BIG_MIN, hmax);
+            let r = egui::Panel::bottom("eq_big")
+                .show_separator_line(false)
+                .resizable(false)
+                .exact_size(self.eq_big_h + 9.0)
+                .frame(egui::Frame::NONE.fill(win_bg()).inner_margin(m(9, 9, 9, 0)))
+                .show(ui, |ui| {
+                    let r = ui.max_rect();
+                    devices::eq_maximised(self, ui, r, c, id);
+                })
+                .response
+                .rect;
+            let inner = r - m(9, 9, 9, 0);
+            let hr = egui::Rect::from_min_max(egui::pos2(inner.left(), inner.top() - 8.0), egui::pos2(inner.right(), inner.top()));
+            if let Some(nh) = session::resize_handle(ui, hr, egui::Id::unique("eq_big_resize"), self.eq_big_h) {
+                self.eq_big_h = nh.clamp(EQ_BIG_MIN, hmax);
+            }
+        }
         // Browser: window-coloured 9 px margins left / right, rounded panel inside.
         let browser_inner = self.show_browser.then(|| {
             let r = egui::Panel::left("browser")
@@ -228,16 +258,9 @@ impl eframe::App for DawApp {
         });
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(left, 9, 0, 0)))
-            .show(ui, |ui| match devices::eq_unfolded(self) {
-                // An unfolded EQ Eight display takes the main window (Live).
-                Some((c, id)) => {
-                    let r = ui.max_rect();
-                    devices::eq_maximised(self, ui, r, c, id);
-                }
-                None => match self.view {
-                    View::Session => session::session_view(self, ui),
-                    View::Arrangement => arrangement::arrangement_view(self, ui),
-                },
+            .show(ui, |ui| match self.view {
+                View::Session => session::session_view(self, ui),
+                View::Arrangement => arrangement::arrangement_view(self, ui),
             })
             .response
             .rect;
@@ -284,13 +307,49 @@ impl eframe::App for DawApp {
             || self.track_meters.iter().any(|m| m[0] > 1e-4)
             || self.message.is_some()
             || self.cache.is_pending();
-        if self.status.playing {
-            // Every display refresh (vsync-paced): an even playhead.
-            ctx.request_repaint();
+        // Hidden / unfocused windows repaint less: a window on another
+        // workspace gets no vsync on Wayland, and repainting it flat out kept
+        // the GPU busy for nothing (and hung some drivers).
+        let (focused, hidden) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.focused.unwrap_or(true), v.occluded == Some(true) || v.minimized == Some(true))
+        });
+        let fid = egui::Id::unique("frame_start");
+        let now = std::time::Instant::now();
+        let since = ctx.data(|d| d.get_temp::<std::time::Instant>(fid)).map_or(Duration::MAX, |t| now.duration_since(t));
+        ctx.data_mut(|d| d.insert_temp(fid, now));
+        if hidden {
+            ctx.request_repaint_after(Duration::from_millis(if moving { 200 } else { 500 }));
+        } else if (self.status.playing || self.animating) && focused {
+            // Every display refresh (vsync-paced): an even playhead; never
+            // above ~250 fps when the compositor doesn't pace us.
+            ctx.request_repaint_after(min_frame(since));
+        } else if self.status.playing || self.animating || moving {
+            ctx.request_repaint_after(Duration::from_millis(16));
         } else {
-            ctx.request_repaint_after(if moving { Duration::from_millis(16) } else { Duration::from_millis(250) });
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #[test]
+    fn min_frame_caps_at_250_fps() {
+        use std::time::Duration;
+        assert_eq!(super::min_frame(Duration::from_millis(1)), Duration::from_millis(3));
+        assert_eq!(super::min_frame(Duration::from_millis(7)), Duration::ZERO);
+        assert_eq!(super::min_frame(Duration::MAX), Duration::ZERO);
+    }
+}
+
+/// Smallest unfolded EQ Eight display.
+const EQ_BIG_MIN: f32 = 100.0;
+
+/// Delay before the next frame so frames start at most every 4 ms
+/// (`since` = time since the previous frame started).
+fn min_frame(since: Duration) -> Duration {
+    Duration::from_millis(4).saturating_sub(since)
 }
 
 impl DawApp {

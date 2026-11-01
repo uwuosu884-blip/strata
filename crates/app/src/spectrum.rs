@@ -1,17 +1,22 @@
-//! EQ Eight analyzer: reads the engine's output tap of a device, runs a
-//! Hann-windowed FFT every Refresh ms and averages Avg blocks.
+//! EQ Eight analyzer: reads the engine's output tap of a device and runs a
+//! Hann-windowed FFT every frame; the shown spectrum follows it with a time
+//! constant set by Refresh (ms) × Avg, so it moves smoothly at any frame rate.
 
 use daw_engine::{SpecTap, spectrum_tap};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub struct EqSpec {
     tap: Arc<SpecTap>,
     /// Smoothed power per bin (len = block / 2 + 1).
     pub pow: Vec<f32>,
     pub block: usize,
+    /// Something above −100 dB is shown (the display still moves).
+    pub live: bool,
     last: Option<Instant>,
+    /// Tap position at the last analysis (no new audio → decay to silence).
+    seen: usize,
     buf: Vec<f32>,
     re: Vec<f32>,
     im: Vec<f32>,
@@ -34,7 +39,9 @@ impl Spectra {
             tap: spectrum_tap(id),
             pow: Vec::new(),
             block: 0,
+            live: false,
             last: None,
+            seen: 0,
             buf: Vec::new(),
             re: Vec::new(),
             im: Vec::new(),
@@ -42,10 +49,9 @@ impl Spectra {
         })
     }
 
-    /// Update (when due) and return the averaged power spectrum and the
-    /// time until the next refresh.
-    pub fn update(&mut self, id: u64, block: u32, refresh_ms: f32, avg: f32) -> (&EqSpec, Duration) {
-        let refresh = Duration::from_secs_f32(refresh_ms.clamp(1.0, 2000.0) / 1000.0);
+    /// Analyse the newest block (at most every 4 ms) and return the smoothed
+    /// power spectrum. Rises follow in Refresh / 2, falls in Refresh × Avg.
+    pub fn update(&mut self, id: u64, block: u32, refresh_ms: f32, avg: f32) -> &EqSpec {
         let e = self.entry(id);
         let n = (block as usize).clamp(256, daw_engine::eq8::TAP_LEN).next_power_of_two();
         let now = Instant::now();
@@ -58,10 +64,17 @@ impl Spectra {
             e.win = (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos()).collect();
             e.last = None;
         }
-        let due = e.last.is_none_or(|t| now.duration_since(t) >= refresh);
-        if due {
+        let dt = e.last.map_or(1.0, |t| now.duration_since(t).as_secs_f32());
+        if dt >= 0.004 {
             e.last = Some(now);
-            e.tap.read(&mut e.buf);
+            let written = e.tap.written();
+            let fresh = written != e.seen;
+            e.seen = written;
+            if fresh {
+                e.tap.read(&mut e.buf);
+            } else {
+                e.buf.iter_mut().for_each(|x| *x = 0.0);
+            }
             for i in 0..n {
                 e.re[i] = e.buf[i] * e.win[i];
                 e.im[i] = 0.0;
@@ -69,14 +82,25 @@ impl Spectra {
             fft(&mut e.re, &mut e.im);
             // Full-scale sine = 0 dB: amplitude 2|X| / Σw, Σw = n / 2.
             let k = 4.0 / n as f32;
-            let a = 1.0 / avg.max(1.0);
+            let tau = (refresh_ms.clamp(1.0, 2000.0) / 1000.0).max(0.001);
+            let up = 1.0 - (-dt / (0.5 * tau)).exp();
+            let down = 1.0 - (-dt / (tau * avg.max(1.0))).exp();
             for (b, p) in e.pow.iter_mut().enumerate() {
                 let m = (e.re[b] * e.re[b] + e.im[b] * e.im[b]) * k * k;
-                *p = if a >= 1.0 { m } else { *p + (m - *p) * a };
+                let a = if m > *p { up } else { down };
+                *p += (m - *p) * a;
             }
+            e.live = e.pow.iter().any(|&p| p > 1e-10);
         }
-        let wait = e.last.map(|t| refresh.saturating_sub(now.duration_since(t))).unwrap_or(refresh);
-        (self.map.get(&id).expect("entry"), wait)
+        self.map.get(&id).expect("entry")
+    }
+
+    /// Clear a device's analyzer (device off / analyzer off: empty display).
+    pub fn clear(&mut self, id: u64) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.pow.iter_mut().for_each(|p| *p = 0.0);
+            e.live = false;
+        }
     }
 
     /// Forget devices that no longer exist.
@@ -110,6 +134,37 @@ impl EqSpec {
         let t2 = t * t;
         0.5 * (2.0 * p1 + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t2 * t)
     }
+}
+
+/// The analyzer curve for `xs.len()` pixel columns: `freq(x)` maps a column
+/// edge to Hz. Each column takes the loudest bin it covers (interpolated
+/// where bins are wider than a column), then neighbouring columns are mixed
+/// (≈ 1/60 octave): a smooth curve on the log axis.
+pub fn curve_db(spec: &EqSpec, sr: f32, cols: usize, freq: impl Fn(f32) -> f32) -> Vec<f32> {
+    let raw: Vec<f32> = (0..cols)
+        .map(|i| {
+            let (f0, f1) = (freq(i as f32 - 0.5).max(1.0), freq(i as f32 + 0.5).max(1.0));
+            10f32.powf(spec.level_db(f0, f1, sr) / 10.0)
+        })
+        .collect();
+    // Smoothing width in columns ∝ display width (a constant octave fraction).
+    let per_oct = cols as f32 / (freq(cols as f32) / freq(0.0)).max(2.0).log2();
+    let sigma = (per_oct / 60.0).clamp(0.6, 4.0);
+    let rad = (2.5 * sigma).ceil() as isize;
+    let w: Vec<f32> = (-rad..=rad).map(|d| (-(d * d) as f32 / (2.0 * sigma * sigma)).exp()).collect();
+    (0..cols as isize)
+        .map(|i| {
+            let (mut acc, mut ws) = (0.0f32, 0.0f32);
+            for (j, wj) in (-rad..=rad).zip(&w) {
+                let k = i + j;
+                if k >= 0 && (k as usize) < cols {
+                    acc += raw[k as usize] * wj;
+                    ws += wj;
+                }
+            }
+            10.0 * (acc / ws.max(1e-9)).max(1e-20).log10()
+        })
+        .collect()
 }
 
 /// In-place iterative radix-2 FFT (`re.len()` a power of two).
@@ -174,7 +229,9 @@ mod tests {
             tap: spectrum_tap(u64::MAX),
             pow: vec![1e-6, 1.0, 1e-6, 1e-6, 1e-6],
             block: 8,
+            live: true,
             last: None,
+            seen: 0,
             buf: vec![],
             re: vec![],
             im: vec![],
@@ -184,5 +241,30 @@ mod tests {
         assert!(s.level_db(900.0, 2100.0, 8000.0).abs() < 1e-3);
         assert!(s.level_db(1000.0, 1000.0, 8000.0).abs() < 1e-3);
         assert!(s.level_db(3000.0, 3000.0, 8000.0) < -50.0);
+    }
+
+    #[test]
+    fn curve_is_smooth_and_keeps_a_tone_visible() {
+        let mut pow = vec![1e-12f32; 513];
+        pow[100] = 1.0;
+        let s = EqSpec {
+            tap: spectrum_tap(u64::MAX - 1),
+            pow,
+            block: 1024,
+            live: true,
+            last: None,
+            seen: 0,
+            buf: vec![],
+            re: vec![],
+            im: vec![],
+            win: vec![],
+        };
+        let sr = 48_000.0;
+        // 400 columns over 10 Hz..22 kHz (log).
+        let f = |x: f32| 10.0 * (2200f32).powf(x / 400.0);
+        let db = curve_db(&s, sr, 400, f);
+        let peak = db.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(peak > -6.0, "{peak}");
+        assert!(db.iter().all(|d| d.is_finite()));
     }
 }

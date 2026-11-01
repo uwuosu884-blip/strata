@@ -39,6 +39,8 @@ OPTIONS:
         --no-input        Don't open an audio input (no audio recording)
         --no-midi         Don't open MIDI ports
 Device / buffer choices made in Settings (Ctrl+,) are saved; options here override them.
+        --gpu <WHICH>     Graphics adapter: integrated (default), discrete, or part
+                          of an adapter name (also DAW_GPU=...)
         --list-devices    Show available audio hosts and output devices
     -h, --help            Show this help";
 
@@ -48,11 +50,13 @@ struct Args {
     audio: audio::AudioOptions,
     midi: bool,
     project: Option<std::path::PathBuf>,
+    gpu: Option<String>,
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
     let mut opts = audio::AudioOptions::default();
     let (mut midi, mut project, mut recover) = (true, None, false);
+    let mut gpu = std::env::var("DAW_GPU").ok().filter(|s| !s.is_empty());
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -79,6 +83,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--input-device" => opts.input_device = Some(args.next().ok_or("--input-device needs a name")?),
             "--no-midi" => midi = false,
             "--recover" => recover = true,
+            "--gpu" => gpu = Some(args.next().ok_or("--gpu needs integrated, discrete or an adapter name")?),
             "--list-devices" => {
                 audio::list_devices();
                 return Ok(None);
@@ -91,7 +96,37 @@ fn parse_args() -> Result<Option<Args>, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(Some(Args { recover, audio: opts, midi, project }))
+    Ok(Some(Args { recover, audio: opts, midi, project, gpu }))
+}
+
+/// Adapter choice. The GUI is light, so it renders on the integrated GPU by
+/// default: on hybrid laptops the discrete GPU (often a less stable driver,
+/// plus a cross-GPU copy per frame) froze the whole session (0.8.1/0.8.2).
+fn wgpu_options(gpu: Option<&str>) -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup};
+    use eframe::wgpu::PowerPreference;
+    let mut cfg = WgpuConfiguration::default();
+    if let WgpuSetup::CreateNew(c) = &mut cfg.wgpu_setup {
+        let want = gpu.map(|s| s.trim().to_lowercase());
+        c.power_preference = match want.as_deref() {
+            Some("discrete" | "high" | "dgpu") => PowerPreference::HighPerformance,
+            Some("integrated" | "low" | "igpu") => PowerPreference::LowPower,
+            // WGPU_POWER_PREF still works when no choice is made here.
+            None => PowerPreference::from_env().unwrap_or(PowerPreference::LowPower),
+            Some(_) => PowerPreference::LowPower,
+        };
+        if let Some(name) = want.filter(|w| !matches!(w.as_str(), "discrete" | "high" | "dgpu" | "integrated" | "low" | "igpu")) {
+            c.native_adapter_selector = Some(std::sync::Arc::new(move |adapters: &[eframe::wgpu::Adapter], _surface| {
+                adapters
+                    .iter()
+                    .find(|a| a.get_info().name.to_lowercase().contains(&name))
+                    .or_else(|| adapters.first())
+                    .cloned()
+                    .ok_or_else(|| "no graphics adapter".to_string())
+            }));
+        }
+    }
+    cfg
 }
 
 /// Panics (any thread) are appended to `crash.log` next to the settings
@@ -188,6 +223,7 @@ fn main() -> ExitCode {
             .with_inner_size([1920.0, 1080.0])
             .with_maximized(true)
             .with_min_inner_size([800.0, 500.0]),
+        wgpu_options: wgpu_options(args.gpu.as_deref()),
         ..Default::default()
     };
 
@@ -204,6 +240,8 @@ fn main() -> ExitCode {
                 pinch::start(cc);
                 // Playhead inversion pipeline (needs the surface format).
                 if let Some(rs) = &cc.wgpu_render_state {
+                    let a = rs.adapter.get_info();
+                    println!("gpu: {} · {:?} · {} {}", a.name, a.backend, a.driver, a.driver_info);
                     ui::invert::init(rs);
                     recovery::watch_device(rs);
                 }

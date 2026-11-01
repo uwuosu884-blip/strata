@@ -72,10 +72,12 @@ pub fn endless_drag(ui: &egui::Ui, resp: &egui::Response) -> Vec2 {
         }
     }
     if resp.drag_stopped() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
+        // Park the pointer while still locked (Wayland only accepts a
+        // position hint for a locked pointer), then release it.
         if let Some(a) = anchor {
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(a));
         }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
         ctx.data_mut(|d| d.remove::<egui::Pos2>(anchor_id));
     }

@@ -710,6 +710,22 @@ impl<'a> Ctx<'a> {
 // ----------------------------------------------------------------------------
 
 /// Draw device `idx` of chain `c` in `r` (full height).
+/// Body / title clicks on device `id`: plain click selects it alone, Ctrl
+/// toggles, Shift selects a range; a drag or right-click on an unselected
+/// device selects it alone (a selected one keeps the selection).
+pub(super) fn select_clicks(app: &mut DawApp, ui: &egui::Ui, c: ChainRef, id: u64, body: &egui::Response, title: &egui::Response) {
+    let mods = ui.input(|i| i.modifiers);
+    if body.clicked() || title.clicked() {
+        app.click_device(c, id, mods);
+    } else if (body.secondary_clicked() || title.secondary_clicked() || title.drag_started()) && !app.dev_selected(id) {
+        app.select_only(Some(id));
+    } else if !(body.secondary_clicked() || title.secondary_clicked() || title.drag_started()) {
+        return;
+    }
+    app.dev_focus = None;
+    app.focus_detail = true;
+}
+
 pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usize) {
     let Some(dev) = chain(&app.project, c).get(idx).cloned() else { return };
     if matches!(dev.params, FxParams::Rack(_)) {
@@ -724,24 +740,15 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let title = Rect::from_min_size(r.min, vec2(r.width(), TITLE_H));
     // Selected device (or a selected rack around it): light blue title bar
     // with dark name (Live).
-    let selected = app.dev_sel == Some(dev.id) || rack::ancestor_selected(app, c);
+    let selected = app.dev_selected(dev.id) || rack::ancestor_selected(app, c);
     p.rect_filled(title, CornerRadius { nw: rad, ne: rad, sw: 0, se: 0 }, if selected { SEL_TITLE } else { gray(0x46) });
     let mut cx = Ctx::new(app, c, dev.clone());
 
     // A click anywhere on the device selects it (widgets created later win).
     let body = ui.interact(r, egui::Id::unique(("dev_body", dev.id)), Sense::click());
-    if body.clicked() || body.secondary_clicked() {
-        cx.app.dev_sel = Some(dev.id);
-        cx.app.dev_focus = None;
-        cx.app.focus_detail = true;
-    }
     // Title strip: select / drag / context menu.
     let tr = ui.interact(title, egui::Id::unique(("dev_title", dev.id)), Sense::click_and_drag());
-    if tr.clicked() || tr.drag_started() || tr.secondary_clicked() {
-        cx.app.dev_sel = Some(dev.id);
-        cx.app.dev_focus = None;
-        cx.app.focus_detail = true;
-    }
+    select_clicks(cx.app, ui, c, dev.id, &body, &tr);
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {
         super::cursors::set(ui.ctx(), super::cursors::Cur::Drag);
@@ -830,14 +837,27 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         cx.undo_step();
     }
     let app = cx.commit();
+    // Menu commands act on the whole selection when the device is in it.
+    let in_sel = app.dev_selected(dev.id);
     if dup {
-        app.duplicate_device(c, dev.id);
+        if in_sel {
+            app.duplicate_selected_device();
+        } else {
+            app.duplicate_device(c, dev.id);
+        }
     }
     if group {
-        app.group_device(c, dev.id);
+        if in_sel {
+            app.group_selected_device(false);
+        } else {
+            app.group_device(c, dev.id);
+        }
     }
     if delete {
-        app.delete_device(c, dev.id);
+        match app.selected_devices() {
+            Some((sc, ids)) if in_sel && ids.len() > 1 => app.delete_devices(sc, &ids),
+            _ => app.delete_device(c, dev.id),
+        }
     }
 }
 

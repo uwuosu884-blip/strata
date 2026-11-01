@@ -198,8 +198,21 @@ pub fn resize_handle(ui: &mut egui::Ui, r: Rect, id: egui::Id, h: f32) -> Option
     if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
-    let dy = resp.drag_delta().y;
-    (resp.dragged() && dy != 0.0).then_some(h - dy)
+    // Height at the press + pointer travel since (no lost / doubled deltas).
+    let hid = id.with("h0");
+    if resp.drag_started() {
+        ui.data_mut(|d| d.insert_temp(hid, h));
+    }
+    if !resp.dragged() {
+        return None;
+    }
+    let h0 = ui.data(|d| d.get_temp::<f32>(hid)).unwrap_or(h);
+    let (o, p) = ui.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos()));
+    let nh = match (o, p) {
+        (Some(o), Some(p)) => h0 - (p.y - o.y),
+        _ => h - resp.drag_delta().y,
+    };
+    (nh != h).then_some(nh)
 }
 
 /// One track column: header, slots, stop row, In/Out, mixer, colour strip.

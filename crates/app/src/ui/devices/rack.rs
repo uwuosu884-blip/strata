@@ -79,7 +79,7 @@ pub fn width(d: &Device) -> f32 {
 
 /// A rack above chain `c` is selected (its devices draw selected).
 pub fn ancestor_selected(app: &DawApp, c: ChainRef) -> bool {
-    matches!(c, ChainRef::Sub(_)) && racks_above(&app.project, c).iter().any(|r| app.dev_sel == Some(*r))
+    matches!(c, ChainRef::Sub(_)) && racks_above(&app.project, c).iter().any(|r| app.dev_selected(*r))
 }
 
 /// Macro name: custom, the single mapped parameter's name, else "Macro N".
@@ -169,7 +169,7 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
     let Some(dev) = chain(&app.project, c).get(idx).cloned() else { return };
     let p0 = rp(&dev);
     let (l, t, b) = (r.left(), r.top(), r.bottom());
-    let selected = app.dev_sel == Some(dev.id) || ancestor_selected(app, c);
+    let selected = app.dev_selected(dev.id) || ancestor_selected(app, c);
     let frame = if selected { SEL_TITLE } else { gray(0x46) };
     let p = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
     let fold = folded(&p0);
@@ -191,22 +191,13 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
 
     // Body / title: select, drag, context menu (created first: widgets win).
     let body = ui.interact(panel_rect, egui::Id::unique(("rack_body", dev.id)), Sense::click());
-    if body.clicked() || body.secondary_clicked() {
-        app.dev_sel = Some(dev.id);
-        app.dev_focus = None;
-        app.focus_detail = true;
-    }
     let title = if fold {
         Rect::from_min_max(pos2(l, t + 88.0), pos2(pr, t + 135.0))
     } else {
         Rect::from_min_max(pos2(l + 17.0, t), pos2(pr - 50.0, t + TITLE_H))
     };
     let tr = ui.interact(title, egui::Id::unique(("rack_title", dev.id)), Sense::click_and_drag());
-    if tr.clicked() || tr.drag_started() || tr.secondary_clicked() {
-        app.dev_sel = Some(dev.id);
-        app.dev_focus = None;
-        app.focus_detail = true;
-    }
+    super::select_clicks(app, ui, c, dev.id, &body, &tr);
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {
         super::super::cursors::set(ui.ctx(), super::super::cursors::Cur::Drag);
@@ -567,17 +558,34 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
 
     // ---- pending map request (a parameter clicked in Map mode) ------------------
     take_map_request(app, ui.ctx(), c, &dev);
+    // Menu commands act on the whole selection when the device is in it.
+    let in_sel = app.dev_selected(dev.id);
     if dup {
-        app.duplicate_device(c, dev.id);
+        if in_sel {
+            app.duplicate_selected_device();
+        } else {
+            app.duplicate_device(c, dev.id);
+        }
     }
     if group {
-        app.group_device(c, dev.id);
+        if in_sel {
+            app.group_selected_device(false);
+        } else {
+            app.group_device(c, dev.id);
+        }
     }
     if ungroup {
-        app.ungroup_device(c, dev.id);
+        if in_sel {
+            app.group_selected_device(true);
+        } else {
+            app.ungroup_device(c, dev.id);
+        }
     }
     if del {
-        app.delete_device(c, dev.id);
+        match app.selected_devices() {
+            Some((sc, ids)) if in_sel && ids.len() > 1 => app.delete_devices(sc, &ids),
+            _ => app.delete_device(c, dev.id),
+        }
     }
 }
 
