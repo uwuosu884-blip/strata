@@ -318,7 +318,8 @@ fn effect_chains_on_tracks_and_main() {
     h.send(Command::SetFx { track: 0, slot: 0, on: true, params: FxParams::AlignDelay(AlignDelayParams::default()) }).unwrap();
     let out = run(&mut e, &mut input, 4800, 2);
     assert!((ch(&out, 2, 0) - 0.15).abs() < 1e-4, "type mismatch ignored");
-    h.send(Command::SetFx { track: MASTER_FX, slot: 0, on: true, params: util(UtilityParams { mute: true, ..Default::default() }) }).unwrap();
+    h.send(Command::SetFx { track: MASTER_FX, slot: 0, on: true, params: util(UtilityParams { mute: true, ..Default::default() }) })
+        .unwrap();
     let out = run(&mut e, &mut input, 4800, 2);
     assert_eq!((ch(&out, 2, 0), ch(&out, 2, 1)), (0.0, 0.0), "main muted");
 }

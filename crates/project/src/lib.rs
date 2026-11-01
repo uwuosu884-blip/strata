@@ -18,8 +18,8 @@ pub use history::History;
 pub use routing::{AudioIn, AudioOut, MidiIn, MidiOut, Monitor, Tap};
 pub use tracks::TrackDrop;
 
-pub use devices::Device;
 pub use daw_engine::{AdsrParams, MetroSound, MetronomeSettings, Note, SamplerParams, SynthParams, Wave};
+pub use devices::Device;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

@@ -69,7 +69,7 @@ impl DawApp {
         let sel = self.dev_sel;
         let id = self.edit(|p| {
             let id = p.alloc_id();
-            let Some(v) = chain_mut(p, c) else { return None };
+            let v = chain_mut(p, c)?;
             let at = at.or_else(|| sel.and_then(|s| v.iter().position(|d| d.id == s)).map(|i| i + 1)).unwrap_or(v.len()).min(v.len());
             v.insert(at, Device::new(id, params));
             Some(id)
@@ -126,7 +126,8 @@ impl DawApp {
             }
             return true;
         }
-        if matches!(key, Key::Delete | Key::Backspace) && !repeat
+        if matches!(key, Key::Delete | Key::Backspace)
+            && !repeat
             && let Some(id) = self.dev_sel.filter(|&id| chain(&self.project, c).iter().any(|d| d.id == id))
         {
             self.delete_device(c, id);

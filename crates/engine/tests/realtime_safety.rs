@@ -126,7 +126,7 @@ fn big_song(variant: usize) -> Song {
         ..Default::default()
     });
     let align = FxParams::AlignDelay(AlignDelayParams { mode: DelayMode::Distance, dist_l: 3.0, ..Default::default() });
-    song.tracks[1].fx = vec![FxSlot::new(10, true, util), FxSlot::new(11, variant % 2 == 0, align)];
+    song.tracks[1].fx = vec![FxSlot::new(10, true, util), FxSlot::new(11, variant.is_multiple_of(2), align)];
     song.master_fx = vec![FxSlot::new(12, true, align)];
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;
@@ -160,7 +160,12 @@ fn process_is_allocation_free() {
         Command::SetTempoFollow(false),
         Command::LaunchClip { track: 7, scene: 0 },
         Command::Nudge(1.0),
-        Command::SetFx { track: 1, slot: 1, on: true, params: FxParams::AlignDelay(AlignDelayParams { time_l: 50.0, ..Default::default() }) },
+        Command::SetFx {
+            track: 1,
+            slot: 1,
+            on: true,
+            params: FxParams::AlignDelay(AlignDelayParams { time_l: 50.0, ..Default::default() }),
+        },
         Command::SetFx { track: MASTER_FX, slot: 0, on: false, params: FxParams::Utility(UtilityParams::default()) },
         Command::SetTempoFollow(true),
         Command::NoteOff { track: 1, pitch: 60 },

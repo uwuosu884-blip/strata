@@ -459,7 +459,18 @@ fn instruments(app: &mut DawApp, ui: &mut egui::Ui, st: &mut State, ind: usize) 
 fn audio_effects(app: &mut DawApp, ui: &mut egui::Ui, st: &mut State, ind: usize, q: &str) {
     for (name, params) in daw_project::devices::audio_effects() {
         if matches(name, q) {
-            let r = leaf(app, ui, st, ind, Ico::AudioFx, name, &format!("afx:{name}"), DragItem::AudioEffect(params), None, LIB_INFO("Audio Effect"));
+            let r = leaf(
+                app,
+                ui,
+                st,
+                ind,
+                Ico::AudioFx,
+                name,
+                &format!("afx:{name}"),
+                DragItem::AudioEffect(params),
+                None,
+                LIB_INFO("Audio Effect"),
+            );
             if r.double_clicked() {
                 let c = app.current_chain();
                 app.insert_device(c, None, params);

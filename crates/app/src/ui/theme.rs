@@ -394,6 +394,11 @@ pub fn font(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
+/// Plain Ableton Sans Light regardless of the weight setting (Max displays).
+pub fn thin(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("thin".into()))
+}
+
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
@@ -404,7 +409,8 @@ pub fn bold(size: f32) -> FontId {
 pub fn install_fonts(ctx: &egui::Context, f: UiFont, w: FontWeight) {
     let mut fonts = FontDefinitions::default();
     let (regular, bold) = font_files(f, w);
-    for (name, bytes) in [("as", regular), ("as-bold", bold)] {
+    let thin: &'static [u8] = include_bytes!("../../assets/AbletonSans-Light.ttf");
+    for (name, bytes) in [("as", regular), ("as-bold", bold), ("as-thin", thin)] {
         fonts.font_data.insert(name.into(), FontData::from_static(bytes).into());
     }
     // egui's built-in faces stay only as glyph fallback (symbols etc.).
@@ -413,6 +419,7 @@ pub fn install_fonts(ctx: &egui::Context, f: UiFont, w: FontWeight) {
     fonts.families.insert(FontFamily::Proportional, with("as"));
     fonts.families.insert(FontFamily::Monospace, with("as"));
     fonts.families.insert(FontFamily::Name("bold".into()), with("as-bold"));
+    fonts.families.insert(FontFamily::Name("thin".into()), with("as-thin"));
     ctx.set_fonts(fonts);
 }
 

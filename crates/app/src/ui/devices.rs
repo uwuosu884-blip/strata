@@ -13,6 +13,8 @@ use std::f32::consts::PI;
 
 const TITLE_H: f32 = 17.0;
 /// Space between devices: 2 px, grip (2 + 1 + 2), 2 px.
+/// Device chain background grey.
+pub const CHAIN_BG: u8 = 0x2a;
 pub const GAP: f32 = 9.0;
 const TEAL: Color32 = Color32::from_rgb(3, 195, 213);
 const BOX_TEAL: Color32 = VOL_TEAL;
@@ -21,7 +23,7 @@ const DRAG_PX: f32 = 200.0;
 
 pub fn width(d: &Device) -> f32 {
     match d.params {
-        FxParams::Utility(_) => 140.0,
+        FxParams::Utility(_) => 139.0,
         FxParams::AlignDelay(_) => 112.0,
     }
 }
@@ -341,6 +343,11 @@ fn angle(v: f32) -> f32 {
     (-150.0 + 300.0 * v.clamp(0.0, 1.0)) * PI / 180.0
 }
 
+/// Unsnapped filled rect (egui snaps `rect_filled` to whole pixels).
+fn quad(p: &Painter, r: Rect, c: Color32) {
+    p.add(Shape::convex_polygon(vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], c, Stroke::NONE));
+}
+
 fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, stroke: Stroke) {
     let (a0, a1) = if a0 <= a1 { (a0, a1) } else { (a1, a0) };
     let n = (((a1 - a0) / (3.0 * PI / 180.0)).ceil() as usize).max(1);
@@ -353,14 +360,28 @@ fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, stroke: Stroke) {
 fn knob_look(p: &Painter, c: Pos2, v: f32, def: f32, enabled: bool) {
     let changed = (v - def).abs() > 1e-4;
     let (track, hi, needle) = if enabled { (gray(0x11), TEAL, gray(0x18)) } else { (gray(0x2a), gray(0x75), gray(0x2a)) };
-    arc(p, c, 12.25, angle(0.0), angle(1.0), Stroke::new(2.5, track));
+    // Live breaks the ring ±GAP around the needle.
+    const GAP: f32 = 0.2;
+    const R: f32 = 11.9;
+    let w = Stroke::new(2.15, track);
+    let (a, lo, top) = (angle(v), angle(0.0), angle(1.0));
+    if a - GAP > lo {
+        arc(p, c, R, lo, a - GAP, w);
+    }
+    if a + GAP < top {
+        arc(p, c, R, a + GAP, top, w);
+    }
     if changed {
-        arc(p, c, 12.25, angle(def), angle(v), Stroke::new(2.5, hi));
+        let d = angle(def);
+        let e = if a > d { (a - GAP).max(d) } else { (a + GAP).min(d) };
+        if (e - d).abs() > 1e-3 {
+            arc(p, c, R, d, e, Stroke::new(2.15, hi));
+        }
     }
     let tri = if changed { hi } else { track };
     p.add(Shape::convex_polygon(vec![pos2(c.x - 3.5, c.y - 18.5), pos2(c.x + 3.5, c.y - 18.5), pos2(c.x, c.y - 14.0)], tri, Stroke::NONE));
-    let a = angle(v);
-    p.line_segment([c, c + vec2(a.sin(), -a.cos()) * 12.5], Stroke::new(1.5, needle));
+    // A path, not a line segment: egui would snap the segment to pixels.
+    p.add(Shape::line(vec![c, c + vec2(a.sin(), -a.cos()) * 12.5], Stroke::new(2.1, needle)));
 }
 
 /// Focus corner brackets (4 px arms, #919191).
@@ -386,7 +407,7 @@ pub fn grip(p: &Painter, x: f32, top: f32, bottom: f32) {
     }
     for dx in [0.0, 3.0] {
         p.rect_filled(Rect::from_min_max(pos2(x + dx, gy0), pos2(x + dx + 2.0, gy1)), 0.0, gray(0x18));
-        p.rect_filled(Rect::from_min_max(pos2(x + dx, gy0 + 11.0), pos2(x + dx + 2.0, gy0 + 12.0)), 0.0, panel());
+        p.rect_filled(Rect::from_min_max(pos2(x + dx, gy0 + 11.0), pos2(x + dx + 2.0, gy0 + 12.0)), 0.0, gray(CHAIN_BG));
     }
 }
 
@@ -598,7 +619,12 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         // Max for Live edit icon (greyed).
         let ir = Rect::from_min_size(pos2(right - 60.0, t + 4.0), vec2(9.0, 9.0));
         let s = Stroke::new(1.0, glyph);
-        p.rect_stroke(Rect::from_min_max(ir.min + vec2(0.5, 1.5), ir.max - vec2(0.5, 1.5)), CornerRadius::ZERO, s, egui::StrokeKind::Middle);
+        p.rect_stroke(
+            Rect::from_min_max(ir.min + vec2(0.5, 1.5), ir.max - vec2(0.5, 1.5)),
+            CornerRadius::ZERO,
+            s,
+            egui::StrokeKind::Middle,
+        );
         p.line_segment([pos2(ir.left(), ir.top() + 2.0), pos2(ir.right(), ir.top() + 2.0)], s);
         for x in [ir.left() + 2.5, ir.right() - 2.5] {
             p.line_segment([pos2(x, ir.top()), pos2(x, ir.top() + 1.5)], s);
@@ -632,7 +658,11 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     let (ci, co) = (l + 34.5, l + 104.5); // column centres
     // Column divider with its ▸.
     p.rect_filled(Rect::from_min_max(pos2(l + 69.0, t + 21.0), pos2(l + 70.0, t + 183.0)), CornerRadius::ZERO, gray(0x24));
-    p.add(Shape::convex_polygon(vec![pos2(l + 69.0, t + 98.0), pos2(l + 73.0, t + 101.5), pos2(l + 69.0, t + 105.0)], gray(0x24), Stroke::NONE));
+    p.add(Shape::convex_polygon(
+        vec![pos2(l + 69.0, t + 98.0), pos2(l + 73.0, t + 101.5), pos2(l + 69.0, t + 105.0)],
+        gray(0x24),
+        Stroke::NONE,
+    ));
     text_at(p, ci, t + 31.0, Align2::CENTER_BOTTOM, "Input", font(FS), text());
     text_at(p, co, t + 31.0, Align2::CENTER_BOTTOM, "Output", font(FS), text());
 
@@ -696,11 +726,13 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     cx.drag(ui, fr, up::FREQ, true);
     let hc = pos2(l + 56.5, t + 175.5);
     let aud = u0.bass_audition;
-    p.circle_filled(hc, 6.5, if aud { ORANGE } else { gray(0x1e) });
+    // #111 rim, #1E (or orange) face, headphone glyph.
+    p.circle_filled(hc, 6.0, gray(0x11));
+    p.circle_filled(hc, 5.0, if aud { ORANGE } else { gray(0x1e) });
     let gcol = if aud { Color32::from_rgb(0x20, 0x20, 0x20) } else { gray(0xaa) };
-    arc(p, hc + vec2(0.0, 0.5), 3.5, -PI / 2.0 - 0.2, PI / 2.0 + 0.2, Stroke::new(1.2, gcol));
-    for dx in [-3.5, 2.5] {
-        p.rect_filled(Rect::from_min_size(hc + vec2(dx, 0.5), vec2(1.2, 3.0)), CornerRadius::ZERO, gcol);
+    arc(p, hc, 3.55, -PI / 2.0 - 0.28, PI / 2.0 + 0.28, Stroke::new(1.2, gcol));
+    for dx in [-3.05, 1.05] {
+        quad(p, Rect::from_min_size(hc + vec2(dx, 1.85), vec2(2.0, 2.0)), gcol);
     }
     if cx.toggle(ui, Rect::from_center_size(hc, vec2(13.0, 13.0)), up::AUDITION, true)
         && let FxParams::Utility(u) = &mut cx.params
@@ -755,7 +787,11 @@ fn chooser(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, cur: &s
     let col = if enabled { text() } else { dim() };
     text_at(p, r.left() + 2.0, r.top() + 10.0, Align2::LEFT_BOTTOM, cur, font(FS), col);
     let tr = r.right();
-    p.add(Shape::convex_polygon(vec![pos2(tr - 10.0, r.top() + 4.0), pos2(tr - 3.0, r.top() + 4.0), pos2(tr - 6.5, r.top() + 8.5)], col, Stroke::NONE));
+    p.add(Shape::convex_polygon(
+        vec![pos2(tr - 10.0, r.top() + 4.0), pos2(tr - 3.0, r.top() + 4.0), pos2(tr - 6.5, r.top() + 8.5)],
+        col,
+        Stroke::NONE,
+    ));
     let resp = cx.sense(ui, r, k, Sense::click());
     if resp.clicked() {
         cx.focus(k);
@@ -794,8 +830,10 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
         let base = t + 44.0 + 22.0 * i as f32;
         text_at(p, disp.left() + 6.0, base, Align2::LEFT_BOTTOM, name, font(FS), dimc);
         let col = if ms > 0.0 { ORANGE } else { dimc };
-        text_at(p, disp.right() - 1.0, base, Align2::RIGHT_BOTTOM, "ms", font(FS), col);
-        text_at(p, disp.right() - 18.0, base, Align2::RIGHT_BOTTOM, &format!("{ms:.2}"), font(15.0), col);
+        // Max letter-spaces the unit by 1 px.
+        let m = text_at(p, disp.right() - 18.0, base, Align2::LEFT_BOTTOM, "m", font(FS), col);
+        text_at(p, m.right() + 1.0, base, Align2::LEFT_BOTTOM, "s", font(FS), col);
+        text_at(p, disp.right() - 21.0, base, Align2::RIGHT_BOTTOM, &format!("{ms:.2}"), super::theme::thin(13.0), col);
     }
     text_at(p, disp.right() - 1.0, t + 89.0, Align2::RIGHT_BOTTOM, &format!("{:.2} kHz SR", sr / 1000.0), font(FS), dimc);
 
@@ -815,7 +853,7 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     boxed(p, lk, gray(0x1e));
     let gc = if a0.link { ORANGE } else { text() };
     let s = Stroke::new(1.0, gc);
-    let (x, y) = (lk.left(), lk.top());
+    let (x, y) = (lk.left() + 1.0, lk.top());
     p.rect_stroke(Rect::from_min_max(pos2(x + 5.5, y + 4.5), pos2(x + 11.5, y + 8.5)), CornerRadius::ZERO, s, egui::StrokeKind::Middle);
     p.line_segment([pos2(x + 3.0, y + 6.5), pos2(x + 7.0, y + 6.5)], s);
     p.line_segment([pos2(x + 10.0, y + 6.5), pos2(x + 14.0, y + 6.5)], s);

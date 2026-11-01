@@ -48,14 +48,23 @@ pub enum ClipRef {
 /// Drag & drop payloads.
 #[derive(Clone, Debug)]
 pub enum DragItem {
-    Sample { key: String, name: String },
+    Sample {
+        key: String,
+        name: String,
+    },
     SynthPreset(String),
     DrumKit,
-    SessionClip { track: usize, scene: usize },
+    SessionClip {
+        track: usize,
+        scene: usize,
+    },
     /// Browser audio effect (default parameters).
     AudioEffect(daw_project::devices::FxParams),
     /// A device dragged by its title bar.
-    ChainDevice { chain: crate::fx_ops::ChainRef, id: u64 },
+    ChainDevice {
+        chain: crate::fx_ops::ChainRef,
+        id: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

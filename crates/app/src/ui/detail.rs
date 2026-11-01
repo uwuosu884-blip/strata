@@ -1038,13 +1038,15 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
 fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
     ui.allocate_rect(rect, Sense::hover());
+    // The device chain sits on #2A; devices are #36.
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, gray(super::devices::CHAIN_BG));
     // Grip: two 2 px bars at panel.left-7 / -4, inset 40 px, notch 11 px below the top.
     let gp = ui.painter().with_clip_rect(rect.expand2(vec2(9.0, 0.0)));
     let (gy0, gy1) = (rect.top() + 40.0, rect.bottom() - 40.0);
     for dx in [-7.0, -4.0] {
         let x = rect.left() + dx;
         gp.rect_filled(Rect::from_min_max(pos2(x, gy0), pos2(x + 2.0, gy1)), 0.0, gray(0x18));
-        gp.rect_filled(Rect::from_min_max(pos2(x, gy0 + 11.0), pos2(x + 2.0, gy0 + 12.0)), 0.0, panel());
+        gp.rect_filled(Rect::from_min_max(pos2(x, gy0 + 11.0), pos2(x + 2.0, gy0 + 12.0)), 0.0, gray(super::devices::CHAIN_BG));
     }
     let t = app.selected_track;
     let midi =
@@ -1092,7 +1094,11 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let at = slots.iter().filter(|s| (s.0 + s.1) / 2.0 < ptr.x).count();
     if hover.as_deref().is_some_and(|d| matches!(d, DragItem::AudioEffect(_) | DragItem::ChainDevice { .. })) {
         let lx = if at == 0 { slots.first().map(|s| s.0 - 4.0).unwrap_or(x) } else { slots[at - 1].1 + 4.0 };
-        ui.painter().rect_filled(Rect::from_min_max(pos2(lx - 1.0, rect.top()), pos2(lx + 1.0, rect.bottom())), CornerRadius::ZERO, focus());
+        ui.painter().rect_filled(
+            Rect::from_min_max(pos2(lx - 1.0, rect.top()), pos2(lx + 1.0, rect.bottom())),
+            CornerRadius::ZERO,
+            focus(),
+        );
     } else if inst_drop_ok && hover.as_deref().is_some_and(|d| super::instrument_for(d).is_some() || matches!(d, DragItem::Sample { .. })) {
         ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, focus()), egui::StrokeKind::Inside);
     }
