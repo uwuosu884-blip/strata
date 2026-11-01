@@ -1242,10 +1242,12 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if hr.dragged() && name_drag {
         super::cursors::set(ui.ctx(), Cur::Drag);
     }
-    if let Some(item) = hr.dnd_release_payload::<DragItem>()
-        && let Some(def) = super::instrument_for(&item)
-    {
-        app.set_instrument(t, def);
+    if let Some(item) = hr.dnd_release_payload::<DragItem>() {
+        if let DragItem::AudioEffect(fx) = &*item {
+            super::devices::effect_on_track(app, t, *fx);
+        } else if let Some(def) = super::instrument_for(&item) {
+            app.set_instrument(t, def);
+        }
     }
     super::session::open_track_menu(app, &hr, t);
     if renaming {
@@ -2128,6 +2130,10 @@ fn os_file_drop(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo) {
 /// (sample → audio track + clip, instrument → MIDI track, Session clip → a
 /// track of its kind with the clip at `at`).
 fn drop_new_track(app: &mut DawApp, item: &DragItem, at: f64) {
+    if let DragItem::AudioEffect(fx) = item {
+        super::devices::effect_on_new_track(app, *fx);
+        return;
+    }
     let clip = match item {
         DragItem::Sample { key, name } => app.audio_clip_for(key, name).map(|c| (c, TrackKind::Audio, format!("# {name}"), true)),
         DragItem::SessionClip { track, scene } => {
@@ -2179,6 +2185,10 @@ fn drop_new_track(app: &mut DawApp, item: &DragItem, at: f64) {
 }
 
 fn drop_on_lane(app: &mut DawApp, item: &DragItem, t: usize, at: f64) {
+    if let DragItem::AudioEffect(fx) = item {
+        super::devices::effect_on_track(app, t, *fx);
+        return;
+    }
     let kind = app.project.tracks[t].kind;
     if kind == TrackKind::Group {
         return;

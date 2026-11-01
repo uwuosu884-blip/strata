@@ -1050,45 +1050,73 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let midi =
         !app.master_selected && app.selected_return.is_none() && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
     let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::hover());
-    let mut fx = rect;
+    let chain = app.current_chain();
+    let mut x = rect.left();
     let mut inst_drop_ok = false;
+    let mut empty_msg = "Drop Audio Effects Here";
     if midi {
         inst_drop_ok = true;
         match app.project.tracks[t].instrument {
-            InstrumentDef::None => {
-                // Empty MIDI track: the whole chain takes an instrument.
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Drop an Instrument or Sample Here", font(FS), text());
-                fx = Rect::NOTHING;
-            }
+            InstrumentDef::None => empty_msg = "Drop an Instrument or Sample Here",
             _ => {
                 let used = instrument_device(app, ui, rect);
-                fx = Rect::from_min_max(pos2(used.right() + 1.0, rect.top()), rect.max);
+                super::devices::grip(ui.painter(), used.right() + 3.0, rect.top(), rect.bottom());
+                x = used.right() + 1.0 + super::devices::GAP;
             }
         }
     }
-    if fx.is_positive() {
-        ui.painter().with_clip_rect(fx).text(fx.center(), Align2::CENTER_CENTER, "Drop Audio Effects Here", font(FS), text());
+    // Effect chain, left to right; `slots` = (left, right) of each device.
+    let n = crate::fx_ops::chain(&app.project, chain).len();
+    let mut slots = Vec::with_capacity(n);
+    for i in 0..n {
+        let Some(d) = crate::fx_ops::chain(&app.project, chain).get(i).copied() else { break };
+        let w = super::devices::width(&d);
+        let r = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height()));
+        super::devices::device(app, ui, r, chain, i);
+        super::devices::grip(ui.painter(), r.right() + 2.0, rect.top(), rect.bottom());
+        slots.push((r.left(), r.right()));
+        x = r.right() + super::devices::GAP;
     }
-    // Drag & drop: instruments / samples replace the device (audio effects: Phase 6).
+    let fx = Rect::from_min_max(pos2(x, rect.top()), rect.max);
+    if fx.width() > 20.0 {
+        // An empty MIDI track: the whole view takes an instrument.
+        let whole = slots.is_empty() && empty_msg != "Drop Audio Effects Here";
+        let msg = if slots.is_empty() { empty_msg } else { "Drop Audio Effects Here" };
+        let c = if whole { rect.center() } else { fx.center() };
+        ui.painter().with_clip_rect(rect).text(c, Align2::CENTER_CENTER, msg, font(FS), text());
+    }
+    // Drag & drop: effects / devices insert at the pointer; instruments and
+    // samples replace a MIDI track's instrument.
     let hover = zone.dnd_hover_payload::<DragItem>();
-    if inst_drop_ok && hover.as_deref().is_some_and(|d| super::instrument_for(d).is_some() || matches!(d, DragItem::Sample { .. })) {
+    let ptr = ui.ctx().pointer_latest_pos().unwrap_or(rect.center());
+    let at = slots.iter().filter(|s| (s.0 + s.1) / 2.0 < ptr.x).count();
+    if hover.as_deref().is_some_and(|d| matches!(d, DragItem::AudioEffect(_) | DragItem::ChainDevice { .. })) {
+        let lx = if at == 0 { slots.first().map(|s| s.0 - 4.0).unwrap_or(x) } else { slots[at - 1].1 + 4.0 };
+        ui.painter().rect_filled(Rect::from_min_max(pos2(lx - 1.0, rect.top()), pos2(lx + 1.0, rect.bottom())), CornerRadius::ZERO, focus());
+    } else if inst_drop_ok && hover.as_deref().is_some_and(|d| super::instrument_for(d).is_some() || matches!(d, DragItem::Sample { .. })) {
         ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(3), Stroke::new(1.0, focus()), egui::StrokeKind::Inside);
     }
-    if !inst_drop_ok {
-        return;
-    }
-    if let Some(item) = zone.dnd_release_payload::<DragItem>() {
-        let inst = app.project.tracks[t].instrument.clone();
-        if let Some(def) = match &*item {
-            // Sample onto a sampler: keep its params; onto anything else: new Sampler.
-            DragItem::Sample { key, .. } => match &inst {
-                InstrumentDef::Sampler { params, .. } => Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: *params }),
-                InstrumentDef::Drums { .. } => None, // pads take samples individually
-                _ => super::instrument_for(&item),
-            },
-            other => super::instrument_for(other),
-        } {
-            app.set_instrument(t, def);
+    let Some(item) = zone.dnd_release_payload::<DragItem>() else { return };
+    match &*item {
+        DragItem::AudioEffect(p) => app.insert_device(chain, Some(at), *p),
+        DragItem::ChainDevice { chain: from, id } => {
+            let copy = ui.input(|i| i.modifiers.command);
+            app.move_device(*from, *id, chain, at, copy);
+        }
+        _ if !inst_drop_ok => {}
+        other => {
+            let inst = app.project.tracks[t].instrument.clone();
+            if let Some(def) = match other {
+                // Sample onto a sampler: keep its params; onto anything else: new Sampler.
+                DragItem::Sample { key, .. } => match &inst {
+                    InstrumentDef::Sampler { params, .. } => Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: *params }),
+                    InstrumentDef::Drums { .. } => None, // pads take samples individually
+                    _ => super::instrument_for(other),
+                },
+                other => super::instrument_for(other),
+            } {
+                app.set_instrument(t, def);
+            }
         }
     }
 }

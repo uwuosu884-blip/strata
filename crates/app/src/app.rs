@@ -52,6 +52,10 @@ pub enum DragItem {
     SynthPreset(String),
     DrumKit,
     SessionClip { track: usize, scene: usize },
+    /// Browser audio effect (default parameters).
+    AudioEffect(daw_project::devices::FxParams),
+    /// A device dragged by its title bar.
+    ChainDevice { chain: crate::fx_ops::ChainRef, id: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -274,6 +278,9 @@ pub struct DawApp {
     pub detail_mode: DetailMode,
     /// Last mouse press was in the detail panel (keys like Del/Ctrl+D/0 act on notes).
     pub focus_detail: bool,
+    /// Selected device (device view) and focused parameter `(device id, param)`.
+    pub dev_sel: Option<u64>,
+    pub dev_focus: Option<(u64, u8)>,
     /// Where Space starts playback (set by clicking the timeline).
     pub play_start: f64,
     pub renaming: Option<Rename>,
@@ -430,6 +437,8 @@ impl DawApp {
             detail_mode: DetailMode::Device,
             cv: Default::default(),
             focus_detail: false,
+            dev_sel: None,
+            dev_focus: None,
             play_start: 0.0,
             renaming: None,
             touched_track: None,

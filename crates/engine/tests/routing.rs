@@ -298,3 +298,27 @@ fn soloed_return_keeps_its_senders_and_set_send_retunes() {
     h.send(Command::SetSend { track: 0, ret: 1, gain: 0.0 }).unwrap();
     assert!(level(&mut e, &mut input).abs() < 1e-4, "send at 0 → return silent");
 }
+
+#[test]
+fn effect_chains_on_tracks_and_main() {
+    let (mut e, mut h, mut input) = engine4();
+    let util = FxParams::Utility;
+    let mut t = ext(0, 2, true, Monitor::In); // L 0.3, R 0.4
+    t.fx = vec![FxSlot::new(1, true, util(UtilityParams { channel: ChannelMode::Swap, ..Default::default() }))];
+    let mut s = Song::new(vec![t]);
+    s.master_fx = vec![FxSlot::new(2, true, util(UtilityParams { gain_db: -6.0206, ..Default::default() }))];
+    h.set_song(s).unwrap();
+    let out = run(&mut e, &mut input, 4800, 2);
+    assert!((ch(&out, 2, 0) - 0.2).abs() < 1e-4 && (ch(&out, 2, 1) - 0.15).abs() < 1e-4, "swap + main -6 dB {out:?}");
+    // Live change: track device off → unswapped.
+    h.send(Command::SetFx { track: 0, slot: 0, on: false, params: util(UtilityParams::default()) }).unwrap();
+    let out = run(&mut e, &mut input, 4800, 2);
+    assert!((ch(&out, 2, 0) - 0.15).abs() < 1e-4 && (ch(&out, 2, 1) - 0.2).abs() < 1e-4, "device off");
+    // A different device type at that slot is ignored.
+    h.send(Command::SetFx { track: 0, slot: 0, on: true, params: FxParams::AlignDelay(AlignDelayParams::default()) }).unwrap();
+    let out = run(&mut e, &mut input, 4800, 2);
+    assert!((ch(&out, 2, 0) - 0.15).abs() < 1e-4, "type mismatch ignored");
+    h.send(Command::SetFx { track: MASTER_FX, slot: 0, on: true, params: util(UtilityParams { mute: true, ..Default::default() }) }).unwrap();
+    let out = run(&mut e, &mut input, 4800, 2);
+    assert_eq!((ch(&out, 2, 0), ch(&out, 2, 1)), (0.0, 0.0), "main muted");
+}

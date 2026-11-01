@@ -5,6 +5,7 @@
 
 mod arrange;
 pub mod clipx;
+pub mod devices;
 mod history;
 pub mod midifile;
 pub mod miditools;
@@ -17,6 +18,7 @@ pub use history::History;
 pub use routing::{AudioIn, AudioOut, MidiIn, MidiOut, Monitor, Tap};
 pub use tracks::TrackDrop;
 
+pub use devices::Device;
 pub use daw_engine::{AdsrParams, MetroSound, MetronomeSettings, Note, SamplerParams, SynthParams, Wave};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -108,6 +110,8 @@ pub struct Project {
     pub song_start: Option<u64>,
     /// Arrangement "Waveform Vertical Zoom Level" (display only, 1..=10).
     pub wave_zoom: f32,
+    /// Main track device chain.
+    pub master_devices: Vec<devices::Device>,
 }
 
 /// Arrangement locator (Live 6.4).
@@ -154,6 +158,7 @@ impl Default for Project {
             song_start: None,
             wave_zoom: 1.0,
             frame_rate: 0,
+            master_devices: Vec::new(),
         }
     }
 }
@@ -213,6 +218,8 @@ pub struct Track {
     /// Post-fader send levels (dB) to `Project::returns`, by index;
     /// ≤ [`SEND_OFF_DB`] = off (Live's −inf). Kept as long as the return list.
     pub sends: Vec<f32>,
+    /// Audio effect chain.
+    pub devices: Vec<devices::Device>,
     /// Return tracks only: expanded in the arrangement (they start collapsed,
     /// 17 px; `collapsed` is unused for returns). View state.
     pub ret_open: bool,
@@ -249,6 +256,7 @@ impl Default for Track {
             height: 0.0,
             collapsed: false,
             sends: Vec::new(),
+            devices: Vec::new(),
             ret_open: false,
         }
     }
@@ -809,6 +817,9 @@ impl Project {
             for a in &mut t.arrangement {
                 a.clip.id = self.alloc_id();
             }
+            for d in &mut t.devices {
+                d.id = self.alloc_id();
+            }
         }
         for t in &mut copy {
             t.group = t.group.map(|g| remap.get(&g).copied().unwrap_or(g));
@@ -1048,6 +1059,8 @@ impl Project {
                 std::iter::once(t.id).chain(t.slots.iter().flatten().map(|c| c.id)).chain(t.arrangement.iter().map(|a| a.clip.id))
             })
             .chain(self.locators.iter().map(|l| l.id))
+            .chain(self.tracks.iter().chain(&self.returns).flat_map(|t| t.devices.iter().map(|d| d.id)))
+            .chain(self.master_devices.iter().map(|d| d.id))
             .max()
             .unwrap_or(0);
         self.next_id = self.next_id.max(max_id + 1);
@@ -1072,6 +1085,9 @@ impl Project {
         }
         for l in &mut self.locators {
             fix(&mut l.id);
+        }
+        for d in self.tracks.iter_mut().chain(&mut self.returns).flat_map(|t| &mut t.devices).chain(&mut self.master_devices) {
+            fix(&mut d.id);
         }
         self.next_id = next;
         self.normalize_groups();

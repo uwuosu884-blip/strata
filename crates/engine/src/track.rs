@@ -90,6 +90,10 @@ pub(crate) struct TrackRt {
     pub bus_l: Vec<f32>,
     pub bus_r: Vec<f32>,
     pub bus_active: bool,
+    /// Pre-FX copy of `l`/`r` (Pre FX taps) when the chain is not empty.
+    pub pre_l: Vec<f32>,
+    pub pre_r: Vec<f32>,
+    pub has_fx: bool,
     /// Post-mixer signal (for routing / Post Mixer taps).
     pub post_l: Vec<f32>,
     pub post_r: Vec<f32>,
@@ -147,6 +151,9 @@ impl TrackRt {
             bus_active: false,
             post_l: vec![0.0; max_block],
             post_r: vec![0.0; max_block],
+            pre_l: vec![0.0; max_block],
+            pre_r: vec![0.0; max_block],
+            has_fx: false,
             pads: (0..crate::DRUM_PADS).map(|_| PadBuf { l: vec![0.0; max_block], r: vec![0.0; max_block] }).collect(),
             events: [NoteEvent::default(); MAX_EVENTS],
             n_events: 0,
@@ -356,6 +363,23 @@ impl TrackRt {
         self.bus_r[..n].fill(0.0);
         self.bus_active = false;
         self.silent = false;
+    }
+
+    /// Run the track's effect chain over the pre-fader signal. Runs on silence
+    /// too (delay tails, filters); the track stays silent if the output is.
+    pub fn run_fx(&mut self, chain: &mut [crate::fx::FxSlot], n: usize, sr: f32) {
+        self.has_fx = !chain.is_empty();
+        if chain.is_empty() {
+            return;
+        }
+        if self.silent {
+            self.l[..n].fill(0.0);
+            self.r[..n].fill(0.0);
+        }
+        self.pre_l[..n].copy_from_slice(&self.l[..n]);
+        self.pre_r[..n].copy_from_slice(&self.r[..n]);
+        let pk = crate::fx::run_chain(chain, &mut self.l[..n], &mut self.r[..n], sr);
+        self.silent = pk == 0.0;
     }
 
     /// Apply gain/pan (smoothed) into `post_l/post_r`. Returns false when the

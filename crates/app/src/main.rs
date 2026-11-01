@@ -5,6 +5,7 @@ mod arr_ops;
 mod audio;
 mod clip_ops;
 mod edit_ops;
+mod fx_ops;
 mod midi;
 mod pinch;
 mod playclock;

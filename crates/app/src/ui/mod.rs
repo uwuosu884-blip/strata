@@ -6,6 +6,8 @@ pub mod clip;
 pub mod cursors;
 mod cview;
 mod detail;
+mod devices;
+pub use devices::{reset as devices_reset, step as devices_step};
 pub mod invert;
 mod io;
 mod menu;
@@ -417,6 +419,7 @@ impl DawApp {
             }
         }
         if cmd(Key::D)
+            && !(self.focus_detail && self.device_view_shown() && self.duplicate_selected_device())
             && !self.duplicate_selected_notes()
             && !(!self.focus_detail && self.duplicate_selected_tracks())
             && !(self.view == View::Arrangement && self.duplicate_arrangement_selection())
@@ -491,6 +494,11 @@ impl DawApp {
         for ev in events {
             let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
             if modifiers.command || modifiers.alt {
+                continue;
+            }
+            // Device view: focused parameter (arrows, Delete = default) or
+            // selected device (Delete).
+            if pressed && self.focus_detail && self.device_view_shown() && self.device_key(key, repeat) {
                 continue;
             }
             // Selected locator: Left/Right move it by the grid, Delete removes it.
@@ -1411,6 +1419,8 @@ fn drag_preview(ctx: &egui::Context) {
         DragItem::SynthPreset(n) => format!("Synth: {n}"),
         DragItem::DrumKit => "Drum Rack".into(),
         DragItem::SessionClip { .. } => "Clip".into(),
+        DragItem::AudioEffect(fx) => fx.name().into(),
+        DragItem::ChainDevice { .. } => "Device".into(),
     };
     egui::Area::new(egui::Id::new("drag_preview"))
         .order(egui::Order::Tooltip)
@@ -1427,7 +1437,7 @@ pub fn instrument_for(item: &DragItem) -> Option<InstrumentDef> {
         DragItem::SynthPreset(n) => Some(InstrumentDef::Synth(daw_engine::SynthParams::preset(n))),
         DragItem::DrumKit => Some(InstrumentDef::factory_drums()),
         DragItem::Sample { key, .. } => Some(InstrumentDef::Sampler { sample: Some(key.clone()), params: Default::default() }),
-        DragItem::SessionClip { .. } => None,
+        DragItem::SessionClip { .. } | DragItem::AudioEffect(_) | DragItem::ChainDevice { .. } => None,
     }
 }
 

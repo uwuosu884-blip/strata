@@ -742,10 +742,12 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect) {
             false,
         );
     }
-    if let Some(item) = resp.dnd_release_payload::<DragItem>()
-        && let Some(def) = super::instrument_for(&item)
-    {
-        app.set_instrument(t, def);
+    if let Some(item) = resp.dnd_release_payload::<DragItem>() {
+        if let DragItem::AudioEffect(fx) = &*item {
+            super::devices::effect_on_track(app, t, *fx);
+        } else if let Some(def) = super::instrument_for(&item) {
+            app.set_instrument(t, def);
+        }
     }
     open_track_menu(app, &resp, t);
 }
@@ -1087,6 +1089,10 @@ fn clip_menu(app: &mut DawApp, ui: &mut egui::Ui, t: usize, s: usize) {
 }
 
 pub fn drop_on_slot(app: &mut DawApp, item: &DragItem, t: usize, s: usize, copy: bool) {
+    if let DragItem::AudioEffect(fx) = item {
+        super::devices::effect_on_track(app, t, *fx);
+        return;
+    }
     if app.project.tracks[t].kind == TrackKind::Group {
         return;
     }
@@ -1131,6 +1137,7 @@ pub fn drop_on_slot(app: &mut DawApp, item: &DragItem, t: usize, s: usize, copy:
 
 fn drop_new_track(app: &mut DawApp, item: &DragItem) {
     match item {
+        DragItem::AudioEffect(fx) => super::devices::effect_on_new_track(app, *fx),
         DragItem::Sample { key, name } => {
             let Some(mut clip) = app.audio_clip_for(key, name) else { return };
             let t = app.edit(|p| {

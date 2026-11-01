@@ -370,6 +370,7 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
                     .map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache, &cx) })
                     .collect(),
                 sends: sends(t),
+                fx: fx(&t.devices),
                 ..Default::default()
             })
         })
@@ -385,15 +386,22 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
                     p::AudioOut::Ext { ch, stereo } => e::TrackOutput::Ext { ch, stereo },
                     _ => e::TrackOutput::Master,
                 },
+                fx: fx(&r.devices),
                 ..Default::default()
             })
         }))
         .collect::<Vec<_>>();
     let mut song = e::Song::new(tracks);
     song.master_out = (project.master_out_ch, project.master_out_stereo);
+    song.master_fx = fx(&project.master_devices);
     song.base_tempo = project.tempo_bpm;
     song.tempo_map = leader_tempo(project, cache);
     song
+}
+
+/// Device chain → engine slots (allocates the DSP state).
+fn fx(devices: &[p::Device]) -> Vec<e::FxSlot> {
+    devices.iter().map(|d| e::FxSlot::new(d.id, d.on, d.params)).collect()
 }
 
 fn input(t: &p::Track, slots: &RtSlots, io: &IoMap) -> e::TrackInput {
@@ -628,5 +636,23 @@ mod tests {
         assert_eq!(song.base_tempo, 100.0);
         let m: Vec<(f64, f64)> = song.tempo_map.iter().map(|&(b, t)| (b, (t * 1000.0).round() / 1000.0)).collect();
         assert_eq!(m, vec![(8.0, 120.0), (10.0, 60.0), (12.0, 100.0)]);
+    }
+
+    #[test]
+    fn devices_compile_to_fx_chains() {
+        use daw_project::devices::{AlignDelayParams, Device, FxParams, UtilityParams};
+        let mut proj = Project::new_default();
+        let u = FxParams::Utility(UtilityParams { mute: true, ..Default::default() });
+        let a = FxParams::AlignDelay(AlignDelayParams::default());
+        proj.tracks[0].devices = vec![Device::new(7, u), Device { on: false, ..Device::new(8, a) }];
+        proj.returns[0].devices = vec![Device::new(9, a)];
+        proj.master_devices = vec![Device::new(10, u)];
+        let mut slots = RtSlots::default();
+        let song = compile(&proj, &mut SampleCache::new(48_000), &mut slots);
+        let t = song.tracks.iter().find(|t| Some(t.rt) == slots.get(proj.tracks[0].id)).unwrap();
+        assert_eq!(t.fx.iter().map(|f| (f.id, f.on, f.params)).collect::<Vec<_>>(), vec![(7, true, u), (8, false, a)]);
+        let r = song.tracks.iter().find(|t| Some(t.rt) == slots.get(proj.returns[0].id)).unwrap();
+        assert_eq!(r.fx.len(), 1);
+        assert_eq!(song.master_fx.iter().map(|f| f.id).collect::<Vec<_>>(), vec![10]);
     }
 }

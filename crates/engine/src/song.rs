@@ -427,6 +427,8 @@ pub struct SongTrack {
     pub midi_listeners: u64,
     /// Post-fader sends: (return track rt, linear gain), at most [`MAX_SENDS`].
     pub sends: Vec<(u16, f32)>,
+    /// Audio effect chain (after the instrument / input, before the mixer).
+    pub fx: Vec<crate::fx::FxSlot>,
 }
 
 impl Default for SongTrack {
@@ -447,6 +449,7 @@ impl Default for SongTrack {
             pad_outs: 0,
             midi_listeners: 0,
             sends: Vec::new(),
+            fx: Vec::new(),
         }
     }
 }
@@ -463,6 +466,8 @@ pub struct Song {
     /// Filled by [`Song::prepare`]: processing order (indices into `tracks`);
     /// every track comes after the tracks it reads from.
     pub order: Vec<u16>,
+    /// Main track effect chain (before the Main volume / pan).
+    pub master_fx: Vec<crate::fx::FxSlot>,
 }
 
 impl Default for Song {
@@ -473,7 +478,7 @@ impl Default for Song {
 
 impl Song {
     pub fn new(tracks: Vec<SongTrack>) -> Self {
-        Self { tracks, master_out: (0, true), tempo_map: Vec::new(), base_tempo: 120.0, order: Vec::new() }
+        Self { tracks, master_out: (0, true), tempo_map: Vec::new(), base_tempo: 120.0, order: Vec::new(), master_fx: Vec::new() }
     }
 
     /// Normalise before sending to the audio thread: sort notes and

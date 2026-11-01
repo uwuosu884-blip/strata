@@ -25,6 +25,7 @@ enum Cat {
     Sounds,
     Drums,
     Instruments,
+    AudioFx,
     Samples,
     Files,
     Collection(u8),
@@ -62,7 +63,7 @@ const LIB: [(Ico, &str, Cat); 14] = [
     (Ico::Sounds, "Sounds", Cat::Sounds),
     (Ico::Drums, "Drums", Cat::Drums),
     (Ico::Instruments, "Instruments", Cat::Instruments),
-    (Ico::AudioFx, "Audio Effects", Cat::Other),
+    (Ico::AudioFx, "Audio Effects", Cat::AudioFx),
     (Ico::MidiFx, "MIDI Effects", Cat::Other),
     (Ico::Modulators, "Modulators", Cat::Other),
     (Ico::Max, "Max for Live", Cat::Other),
@@ -391,7 +392,7 @@ fn leaf(
     payload: DragItem,
     preview: Option<&str>,
     mut info: Info,
-) {
+) -> egui::Response {
     info.mask = app.settings.browser.collections.get(key).copied().unwrap_or(0);
     let resp = row(ui, st, indent, None, ic, name, st.selected.as_deref() == Some(key), Sense::click_and_drag(), Some(info));
     resp.dnd_set_drag_payload(payload);
@@ -414,8 +415,9 @@ fn leaf(
     if let Some(k) = preview
         && let Some(e) = app.cache.error(k)
     {
-        resp.on_hover_text(format!("Failed: {e}"));
+        return resp.on_hover_text(format!("Failed: {e}"));
     }
+    resp
 }
 
 fn toggle_collection(app: &mut DawApp, key: &str, i: usize) {
@@ -449,6 +451,20 @@ fn instruments(app: &mut DawApp, ui: &mut egui::Ui, st: &mut State, ind: usize) 
     }
     if folder(ui, st, ind, Ico::Instruments, "Synth") {
         sounds(app, ui, st, ind + 1, "");
+    }
+}
+
+/// Audio effects (Live lists the devices alphabetically). Double-click loads
+/// onto the selected track (after the selected device).
+fn audio_effects(app: &mut DawApp, ui: &mut egui::Ui, st: &mut State, ind: usize, q: &str) {
+    for (name, params) in daw_project::devices::audio_effects() {
+        if matches(name, q) {
+            let r = leaf(app, ui, st, ind, Ico::AudioFx, name, &format!("afx:{name}"), DragItem::AudioEffect(params), None, LIB_INFO("Audio Effect"));
+            if r.double_clicked() {
+                let c = app.current_chain();
+                app.insert_device(c, None, params);
+            }
+        }
     }
 }
 
@@ -962,6 +978,7 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
                         leaf(app, ui, &mut st, 0, Ico::Rack, "Factory Kit", "kit", DragItem::DrumKit, None, LIB_INFO("Rack"));
                     }
                     sounds(app, ui, &mut st, 0, &q);
+                    audio_effects(app, ui, &mut st, 0, &q);
                     samples(app, ui, &mut st, 0, &q);
                 }
             }
@@ -978,6 +995,9 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
                 if folder(ui, &mut st, 0, Ico::Instruments, "Instruments") {
                     instruments(app, ui, &mut st, 1);
                 }
+                if folder(ui, &mut st, 0, Ico::AudioFx, "Audio Effects") {
+                    audio_effects(app, ui, &mut st, 1, "");
+                }
                 if folder(ui, &mut st, 0, Ico::Samples, "Samples") {
                     samples(app, ui, &mut st, 1, "");
                 }
@@ -991,6 +1011,7 @@ pub fn browser(app: &mut DawApp, ui: &mut egui::Ui) {
                 samples(app, ui, &mut st, 0, "");
             }
             Cat::Instruments => instruments(app, ui, &mut st, 0),
+            Cat::AudioFx => audio_effects(app, ui, &mut st, 0, ""),
             Cat::Samples => samples(app, ui, &mut st, 0, ""),
             Cat::Files => files(app, ui, &mut st, 0, ""),
             Cat::Collection(_) => collection(app, ui, &mut st, ""),

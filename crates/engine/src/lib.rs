@@ -11,6 +11,7 @@
 
 mod buffer;
 mod command;
+pub mod fx;
 pub mod instruments;
 mod metronome;
 pub mod pv;
@@ -23,7 +24,8 @@ mod transport;
 pub mod warp;
 
 pub use buffer::StereoBuffer;
-pub use command::{Command, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
+pub use command::{Command, MASTER_FX, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
+pub use fx::{AlignDelayParams, ChannelMode, DelayMode, FxParams, FxSlot, UtilityParams};
 pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
@@ -399,7 +401,14 @@ impl Engine {
     }
 
     fn receive_songs(&mut self) {
-        while let Ok(new) = self.songs.pop() {
+        while let Ok(mut new) = self.songs.pop() {
+            // Effect DSP state (delay lines, filters) moves to the new song.
+            for nt in new.tracks.iter_mut() {
+                if let Some(ot) = self.song.tracks.iter_mut().find(|o| o.rt == nt.rt) {
+                    fx::carry_states(&mut nt.fx, &mut ot.fx);
+                }
+            }
+            fx::carry_states(&mut new.master_fx, &mut self.song.master_fx);
             // Hanging notes on a MIDI port the track no longer sends to.
             for ot in &self.song.tracks {
                 if let TrackOutput::MidiPort { port, channel } = ot.output {
@@ -646,6 +655,20 @@ impl Engine {
                 Command::ReleaseClip { track, scene } => self.release_clip(track, scene),
                 Command::SetTempoFollow(on) => self.follow_tempo = on,
                 Command::Nudge(k) => self.transport.nudge = if k.is_finite() { k.clamp(0.5, 2.0) } else { 1.0 },
+                Command::SetFx { track, slot, on, params } => {
+                    let chain = if track == MASTER_FX {
+                        Some(&mut self.song.master_fx)
+                    } else {
+                        let i = self.rt_to_song.get(track as usize).copied().unwrap_or(NONE);
+                        self.song.tracks.get_mut(i as usize).map(|t| &mut t.fx)
+                    };
+                    if let Some(s) = chain.and_then(|c| c.get_mut(slot as usize))
+                        && std::mem::discriminant(&s.params) == std::mem::discriminant(&params)
+                    {
+                        s.on = on;
+                        s.params = params;
+                    }
+                }
                 Command::StopTrack { track } => self.launch(track, Action::Stop),
                 Command::LaunchScene { scene } => {
                     for i in 0..self.song.tracks.len() {
@@ -1279,7 +1302,8 @@ impl Engine {
         let rlen = res_l.len();
         let delay = rlen / 2;
 
-        for &i in &song.order {
+        for oi in 0..song.order.len() {
+            let i = song.order[oi];
             let st = &song.tracks[i as usize];
             let rt = st.rt as usize;
             let armed = st.arm || *auto_arm == st.rt;
@@ -1360,6 +1384,7 @@ impl Engine {
                     TrackInput::Track { rt: src, tap } => {
                         let (t, s) = two_mut(tracks, rt, src as usize);
                         let (sl, sr) = match tap {
+                            Tap::PreFx if s.has_fx => (&s.pre_l, &s.pre_r),
                             Tap::PreFx | Tap::PostFx => (&s.l, &s.r),
                             Tap::PostMixer => (&s.post_l, &s.post_r),
                             Tap::Pad(p) => match s.pads.get(p as usize) {
@@ -1382,6 +1407,8 @@ impl Engine {
                 }
             }
             tracks[rt].add_bus(n);
+            tracks[rt].run_fx(&mut song.tracks[i as usize].fx, n, ctx.sr);
+            let st = &song.tracks[i as usize];
 
             let send_only = any_solo && !up[rt] && !down[rt] && feed[rt];
             let audible = !any_solo || up[rt] || down[rt] || feed[rt];
@@ -1448,6 +1475,9 @@ impl Engine {
             }
         }
 
+        if !song.master_fx.is_empty() {
+            fx::run_chain(&mut song.master_fx, ml, mr, ctx.sr);
+        }
         let (cl, cr) = self.cue.range_mut(offset, n);
         for i in 0..n {
             let g = self.master_gain.next();

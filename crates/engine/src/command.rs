@@ -109,7 +109,19 @@ pub enum Command {
     SetTempoFollow(bool),
     /// Phase nudge: playback rate factor while held (1 = off).
     Nudge(f64),
+    /// Device parameters / activator of chain slot `slot` on runtime track
+    /// `track` ([`MASTER_FX`] = the Main track). Ignored if the slot's
+    /// device type differs (the chain changed: a new song follows).
+    SetFx {
+        track: u16,
+        slot: u8,
+        on: bool,
+        params: crate::fx::FxParams,
+    },
 }
+
+/// `Command::SetFx` target for the Main track's chain.
+pub const MASTER_FX: u16 = u16::MAX;
 
 /// Events from hardware MIDI input (parsed on the MIDI thread).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
