@@ -11,6 +11,9 @@ use daw_project::devices::*;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, pos2, vec2};
 use std::f32::consts::PI;
 
+mod eq8;
+pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
+
 const TITLE_H: f32 = 17.0;
 /// Space between devices: 2 px, grip (2 + 1 + 2), 2 px.
 /// Device chain background grey.
@@ -32,6 +35,7 @@ pub fn width(d: &Device) -> f32 {
     match d.params {
         FxParams::Utility(_) => 139.0,
         FxParams::AlignDelay(_) => 112.0,
+        FxParams::EqEight(_) => eq8::WIDTH,
     }
 }
 
@@ -119,6 +123,7 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
             ap::TEMP => (a.temp - ALIGN_TEMP_MIN_C) / (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
             _ => return None,
         }),
+        FxParams::EqEight(e) => eq8::norm(e, k),
     }
 }
 
@@ -141,6 +146,7 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
             ap::TEMP => a.temp = ALIGN_TEMP_MIN_C + v * (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
             _ => {}
         },
+        FxParams::EqEight(e) => eq8::set_norm(e, k, v),
     }
 }
 
@@ -209,6 +215,7 @@ pub fn reset(p: &mut FxParams, k: u8) {
             ap::FAHRENHEIT => a.fahrenheit = false,
             _ => {}
         },
+        FxParams::EqEight(e) => eq8::reset(e, k),
     }
 }
 
@@ -253,6 +260,7 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
             }
             _ => {}
         },
+        FxParams::EqEight(e) => eq8::step(e, k, dir),
     }
 }
 
@@ -283,6 +291,7 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
             ap::TEMP => "Temperature",
             _ => "Temperature Unit",
         },
+        FxParams::EqEight(_) => eq8::name(k),
     }
 }
 
@@ -367,6 +376,11 @@ fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, stroke: Stroke) {
 /// Live knob: #111 track over ±150°, teal arc from the default to the value,
 /// marker triangle on top (teal when off-default), dark needle.
 fn knob_look(p: &Painter, c: Pos2, v: f32, def: f32, enabled: bool) {
+    knob_look_m(p, c, v, def, enabled, true);
+}
+
+/// `knob_look`; `marker` = the triangle above (bipolar / Utility knobs).
+fn knob_look_m(p: &Painter, c: Pos2, v: f32, def: f32, enabled: bool, marker: bool) {
     let changed = (v - def).abs() > 1e-4;
     let (track, hi, needle) = if enabled { (gray(0x11), TEAL, gray(0x18)) } else { (gray(0x2a), gray(0x75), gray(0x2a)) };
     // Live breaks the ring ±GAP around the needle.
@@ -388,7 +402,13 @@ fn knob_look(p: &Painter, c: Pos2, v: f32, def: f32, enabled: bool) {
         }
     }
     let tri = if changed { hi } else { track };
-    p.add(Shape::convex_polygon(vec![pos2(c.x - 3.5, c.y - 18.5), pos2(c.x + 3.5, c.y - 18.5), pos2(c.x, c.y - 14.0)], tri, Stroke::NONE));
+    if marker {
+        p.add(Shape::convex_polygon(
+            vec![pos2(c.x - 3.5, c.y - 18.5), pos2(c.x + 3.5, c.y - 18.5), pos2(c.x, c.y - 14.0)],
+            tri,
+            Stroke::NONE,
+        ));
+    }
     // A path, not a line segment: egui would snap the segment to pixels.
     p.add(Shape::line(vec![c, c + vec2(a.sin(), -a.cos()) * 12.5], Stroke::new(2.1, needle)));
 }
@@ -618,6 +638,11 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     }
     let mut delete = false;
     let mut dup = false;
+    let mut oversample = false;
+    let eq_os = match dev.params {
+        FxParams::EqEight(e) => Some(e.oversample),
+        _ => None,
+    };
     menu::context(&tr, 223.0, |ui| {
         menu::item(ui, "Cut", "Ctrl+X", false);
         menu::item(ui, "Copy", "Ctrl+C", false);
@@ -635,6 +660,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         menu::sep(ui);
         menu::item(ui, "Save as Default Preset", "", false);
         menu::item(ui, "Lock to Control Surface", "", false);
+        if let Some(on) = eq_os {
+            menu::sep(ui);
+            oversample = menu::check_item(ui, "Oversampling", "", on, true);
+        }
     });
 
     // Activator.
@@ -691,13 +720,23 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         }
         name_right = ir.left() - 2.0;
     }
+    let mut name_x = l + 20.0;
+    if matches!(dev.params, FxParams::EqEight(_)) {
+        eq8::header_button(&mut cx, ui, &p, l, t);
+        name_x = l + 36.0;
+    }
     let nf = bold(FS);
-    let name = fit(&p, dev.params.name(), &nf, name_right - (l + 20.0));
-    text_at(&p, l + 20.0, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
+    let name = fit(&p, dev.params.name(), &nf, name_right - name_x);
+    text_at(&p, name_x, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
 
     match dev.params {
         FxParams::Utility(_) => utility(&mut cx, ui, &p, l, t),
         FxParams::AlignDelay(_) => align_delay(&mut cx, ui, &p, l, t),
+        FxParams::EqEight(_) => eq8::eq_eight(&mut cx, ui, &p, r),
+    }
+    if oversample && let FxParams::EqEight(e) = &mut cx.params {
+        e.oversample = !e.oversample;
+        cx.undo_step();
     }
     let app = cx.commit();
     if dup {
@@ -984,11 +1023,19 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
 /// Max number box: #242424, teal fill for the value, #919191 outline when
 /// focused; drag vertically, double-click to type.
 fn value_box(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, shown: &str, enabled: bool) {
+    let bg = box_fill(cx.on);
+    value_box_ex(cx, ui, p, r, k, shown, enabled, true, bg);
+}
+
+/// `value_box`; an inactive one (EQ Eight band off) is an outline on `bg`
+/// without the value fill.
+#[allow(clippy::too_many_arguments)]
+fn value_box_ex(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, shown: &str, enabled: bool, active: bool, bg: Color32) {
     let eid = egui::Id::unique(("devp_edit", cx.dev.id, k));
     let editing = ui.data(|d| d.get_temp::<String>(eid));
-    boxed(p, r, box_fill(cx.on));
+    boxed(p, r, if active { box_fill(cx.on) } else { bg });
     let inner = r.shrink(1.0);
-    if let Some(v) = norm(&cx.params, k) {
+    if let Some(v) = norm(&cx.params, k).filter(|_| active) {
         let w = (v.clamp(0.0, 1.0) * inner.width()).round();
         if w > 0.0 {
             let fill = if !cx.on {
@@ -1050,6 +1097,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
     match p {
         FxParams::AlignDelay(a) => k == ap::LEFT || (k == ap::RIGHT && !a.link) || (k == ap::TEMP && a.mode == DelayMode::Distance),
         FxParams::Utility(_) => false,
+        FxParams::EqEight(_) => eq8::typable(k),
     }
 }
 
@@ -1057,6 +1105,9 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
 fn set_typed(p: &mut FxParams, k: u8, x: f32) {
     if !x.is_finite() {
         return;
+    }
+    if let FxParams::EqEight(e) = p {
+        eq8::set_typed(e, k, x);
     }
     if let FxParams::AlignDelay(a) = p {
         match k {

@@ -7,7 +7,7 @@ pub mod cursors;
 mod cview;
 mod detail;
 mod devices;
-pub use devices::{reset as devices_reset, step as devices_step, typable as devices_typable};
+pub use devices::{EQ_DOTS, eq_arrow, reset as devices_reset, step as devices_step, typable as devices_typable};
 pub mod invert;
 mod io;
 mod menu;
@@ -87,6 +87,12 @@ impl eframe::App for DawApp {
             self.emergency_restart("a GPU device loss");
         }
         let ctx = ui.ctx().clone();
+        {
+            // Analyzers of deleted EQ Eights.
+            let p = &self.project;
+            self.spectra
+                .retain(|id| p.tracks.iter().chain(&p.returns).flat_map(|t| &t.devices).chain(&p.master_devices).any(|d| d.id == id));
+        }
         theme::update(&ctx, &self.settings.theme);
         wave::set_style(self.settings.theme.wave_style);
         theme::set_main_name(self.settings.master_name);
@@ -220,9 +226,16 @@ impl eframe::App for DawApp {
         });
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel()).outer_margin(m(left, 9, 0, 0)))
-            .show(ui, |ui| match self.view {
-                View::Session => session::session_view(self, ui),
-                View::Arrangement => arrangement::arrangement_view(self, ui),
+            .show(ui, |ui| match devices::eq_unfolded(self) {
+                // An unfolded EQ Eight display takes the main window (Live).
+                Some((c, id)) => {
+                    let r = ui.max_rect();
+                    devices::eq_maximised(self, ui, r, c, id);
+                }
+                None => match self.view {
+                    View::Session => session::session_view(self, ui),
+                    View::Arrangement => arrangement::arrangement_view(self, ui),
+                },
             })
             .response
             .rect;

@@ -121,6 +121,22 @@ pub fn check_item(ui: &mut Ui, label: &str, key: &str, checked: bool, enabled: b
     clicked
 }
 
+/// Entry drawn by `draw` (rect right of the check column, glyph colour):
+/// icon choosers such as EQ Eight's filter types.
+pub fn icon_item(ui: &mut Ui, h: f32, checked: bool, draw: impl FnOnce(&egui::Painter, Rect, Color32)) -> bool {
+    let (rect, resp) = row(ui, h, true);
+    let p = ui.painter();
+    if checked {
+        check_mark(p, pos2(rect.min.x + CHECK_X, rect.center().y - 3.0), line());
+    }
+    draw(p, Rect::from_min_max(pos2(rect.min.x + TEXT_X, rect.min.y), rect.max), line());
+    let clicked = resp.clicked();
+    if clicked {
+        ui.close();
+    }
+    clicked
+}
+
 /// 1 px line across the menu with Live's spacing around it.
 pub fn sep(ui: &mut Ui) {
     ui.add_space(5.0);

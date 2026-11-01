@@ -11,6 +11,7 @@ mod pinch;
 mod playclock;
 mod recovery;
 mod settings;
+mod spectrum;
 mod ui;
 
 use std::process::ExitCode;

@@ -128,6 +128,17 @@ impl DawApp {
                 return false;
             }
             let mut p = d.params;
+            if let FxParams::EqEight(e) = &mut p
+                && k == crate::ui::EQ_DOTS
+                && matches!(key, Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight)
+            {
+                crate::ui::eq_arrow(e, key);
+                if !repeat {
+                    self.begin_gesture();
+                }
+                self.set_device(c, id, d.on, p);
+                return true;
+            }
             match key {
                 Key::ArrowUp | Key::ArrowRight => crate::ui::devices_step(&mut p, k, 1.0),
                 Key::ArrowDown | Key::ArrowLeft => crate::ui::devices_step(&mut p, k, -1.0),

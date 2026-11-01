@@ -1,10 +1,12 @@
-//! Audio effects (Live's Utility and Align Delay).
+//! Audio effects (Live's Utility, Align Delay and EQ Eight).
 //!
 //! Parameters are plain `Copy` data in user units (they are also the project
 //! file format). Each effect slot owns a boxed DSP state that the control
 //! thread allocates; when a new song arrives, the audio thread moves the state
 //! of slots with the same id over, so edits never reset delay lines/filters.
 
+pub use crate::eq8::EqEightParams;
+use crate::eq8::EqState;
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -214,6 +216,7 @@ impl AlignDelayParams {
 pub enum FxParams {
     Utility(UtilityParams),
     AlignDelay(AlignDelayParams),
+    EqEight(EqEightParams),
 }
 
 impl FxParams {
@@ -221,6 +224,7 @@ impl FxParams {
         match self {
             FxParams::Utility(_) => "Utility",
             FxParams::AlignDelay(_) => "Align Delay",
+            FxParams::EqEight(_) => "EQ Eight",
         }
     }
 }
@@ -238,7 +242,11 @@ pub struct FxSlot {
 impl FxSlot {
     /// Allocates the DSP state (control thread).
     pub fn new(id: u64, on: bool, params: FxParams) -> Self {
-        Self { id, on, params, state: Box::new(FxState::for_params(&params)) }
+        let mut state = FxState::for_params(&params);
+        if let StateKind::Eq(e) = &mut state.kind {
+            *e = Box::new(EqState::new(Some(crate::eq8::spectrum_tap(id))));
+        }
+        Self { id, on, params, state: Box::new(state) }
     }
 }
 
@@ -264,6 +272,7 @@ pub struct FxState {
 enum StateKind {
     Utility(Box<UtilityState>),
     Align(AlignState),
+    Eq(Box<EqState>),
 }
 
 impl PartialEq for StateKind {
@@ -277,6 +286,7 @@ impl FxState {
         let kind = match p {
             FxParams::Utility(_) => StateKind::Utility(Box::default()),
             FxParams::AlignDelay(_) => StateKind::Align(AlignState::new()),
+            FxParams::EqEight(_) => StateKind::Eq(Box::new(EqState::new(None))),
         };
         Self { kind, was_on: false }
     }
@@ -285,6 +295,7 @@ impl FxState {
         match &mut self.kind {
             StateKind::Utility(u) => u.reset(),
             StateKind::Align(a) => a.reset(),
+            StateKind::Eq(e) => e.reset(),
         }
     }
 }
@@ -312,6 +323,7 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
         match (&s.params, &mut s.state.kind) {
             (FxParams::Utility(p), StateKind::Utility(st)) => st.process(p, l, r, sr),
             (FxParams::AlignDelay(p), StateKind::Align(st)) => st.process(p, l, r, sr),
+            (FxParams::EqEight(p), StateKind::Eq(st)) => st.process(p, l, r, sr),
             _ => {}
         }
         if let Some(m) = meters.get(i + 1) {

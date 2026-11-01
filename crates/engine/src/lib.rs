@@ -11,6 +11,7 @@
 
 mod buffer;
 mod command;
+pub mod eq8;
 pub mod fx;
 pub mod instruments;
 mod metronome;
@@ -25,6 +26,7 @@ pub mod warp;
 
 pub use buffer::StereoBuffer;
 pub use command::{Command, MASTER_FX, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
+pub use eq8::{EqBand, EqEightParams, EqFilter, EqMode, SpecTap, spectrum_tap};
 pub use fx::{AlignDelayParams, ChannelMode, DelayMode, FxParams, FxSlot, UtilityParams};
 pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;

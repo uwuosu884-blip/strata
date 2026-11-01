@@ -299,6 +299,8 @@ pub struct DawApp {
     pub dev_meters: DevMeters,
     /// A character typed on the focused value box: opens its editor.
     pub dev_typing: Option<String>,
+    /// EQ Eight analyzers (per device).
+    pub spectra: crate::spectrum::Spectra,
     /// Where Space starts playback (set by clicking the timeline).
     pub play_start: f64,
     pub renaming: Option<Rename>,
@@ -515,6 +517,7 @@ impl DawApp {
             dev_focus: None,
             dev_meters: DevMeters::default(),
             dev_typing: None,
+            spectra: Default::default(),
             play_start: 0.0,
             renaming: None,
             touched_track: None,
