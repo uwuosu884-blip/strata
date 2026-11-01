@@ -7,8 +7,44 @@ and the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Planned
-- Effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
+- More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
+
+## [0.8.0] - 2026-11-01
+
+### Added
+- Audio effect chain (Live-style) on every audio/MIDI track, return track and
+  Main. Devices sit left to right in the Device View on the #2A chain
+  background with grips between them; the chain is saved in the project,
+  compiled to the engine (per-device DSP state survives edits) and rendered
+  by Export. "Pre FX" track taps now take the signal before the chain.
+- Browser > Audio Effects: Align Delay, Utility. Drag onto the Device View
+  (insert marker at the drop position), onto a track in Arrangement/Session,
+  or onto empty space for a new audio track; double-click adds to the
+  selected track's chain.
+- Device frame: activator (bypass), title click selects, title drag
+  reorders (Ctrl = copy), title context menu with
+  Duplicate / Delete (others greyed). Ctrl+D duplicates, Delete removes the
+  selected device. Hot-swap / save / ⋯ header buttons are drawn greyed.
+- Utility (Live manual 29.40): Phase ØL/ØR, Channel Mode (Left, Right, Swap,
+  Stereo), Width 0–400 % or Mid/Side mode (knob context menu, 100M–100S),
+  Mono, Bass Mono 50–500 Hz with Audition, Gain −inf…+35 dB, Balance, Mute,
+  DC filter. Width/Mid-Side disabled for Left/Right, Width and Bass Mono
+  greyed while Mono is on.
+- Align Delay: Time / Samples / Distance modes, L/R with Stereo Link (R
+  greyed and following L), m/ft and °C/°F toggles, temperature-dependent
+  speed of sound (7.60 m @ 20 °C = 22.12 ms), read-out of both delays in ms
+  (orange when non-zero) and the engine sample rate.
+- Device parameters: drag (200 px full range, Shift = fine), double-click a
+  value box to type, arrow keys step the focused parameter (Gain 1 dB steps,
+  accelerating below −18 dB), Delete returns it to default; focus brackets
+  around the focused knob; one undo step per gesture. Parameter context menu
+  per Live (Mid/Side Mode, Return to Default, Copy Parameter Name enabled,
+  the rest greyed).
+- Geometry and colours of both devices measured from Live screenshots and
+  checked pixel by pixel at 100 % scale (knob ring breaks around the needle,
+  thin Ableton Sans Light read-out digits, teal value-box fill with
+  square-root taper for ms / m, linear −50…50 °C).
 
 ## [0.7.12] - 2026-10-31
 
