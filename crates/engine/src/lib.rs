@@ -36,7 +36,7 @@ pub use song::{
     MAX_TRACKS, MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput,
     WarpSetup, fade_gain,
 };
-pub use status::{PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
+pub use status::{FX_METERS, PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};
 pub use warp::{LoopMode, StretchMode, StretchParams, WarpMap};
 
@@ -1221,6 +1221,7 @@ impl Engine {
             res_x,
             midi_out,
             auto_arm,
+            status,
             ..
         } = self;
         let (ml, mr) = master.range_mut(offset, n);
@@ -1407,7 +1408,7 @@ impl Engine {
                 }
             }
             tracks[rt].add_bus(n);
-            tracks[rt].run_fx(&mut song.tracks[i as usize].fx, n, ctx.sr);
+            tracks[rt].run_fx(&mut song.tracks[i as usize].fx, n, ctx.sr, status.fx_meters(rt));
             let st = &song.tracks[i as usize];
 
             let send_only = any_solo && !up[rt] && !down[rt] && feed[rt];
@@ -1475,9 +1476,7 @@ impl Engine {
             }
         }
 
-        if !song.master_fx.is_empty() {
-            fx::run_chain(&mut song.master_fx, ml, mr, ctx.sr);
-        }
+        fx::run_chain(&mut song.master_fx, ml, mr, ctx.sr, status.fx_meters(MAX_TRACKS));
         let (cl, cr) = self.cue.range_mut(offset, n);
         for i in 0..n {
             let g = self.master_gain.next();
@@ -1584,6 +1583,13 @@ impl EngineHandle {
 
     pub fn config(&self) -> EngineConfig {
         self.config
+    }
+
+    /// Device-view meters of a chain (`rt` slot or [`MASTER_FX`]): chain input,
+    /// then after each device; `[peak L, peak R, mean square L, mean square R]`
+    /// since the last call.
+    pub fn fx_meters(&self, rt: u16) -> [[f32; 4]; FX_METERS] {
+        self.status.take_fx_meters(if rt == MASTER_FX { MAX_TRACKS } else { rt as usize })
     }
 
     /// Peak per device input channel since the last call (input meters).

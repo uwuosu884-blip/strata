@@ -290,6 +290,10 @@ pub struct DawApp {
     /// Selected device (device view) and focused parameter `(device id, param)`.
     pub dev_sel: Option<u64>,
     pub dev_focus: Option<(u64, u8)>,
+    /// Device-view meters of the shown chain (chain input, then per device).
+    pub dev_meters: DevMeters,
+    /// A character typed on the focused value box: opens its editor.
+    pub dev_typing: Option<String>,
     /// Where Space starts playback (set by clicking the timeline).
     pub play_start: f64,
     pub renaming: Option<Rename>,
@@ -334,6 +338,50 @@ pub struct DawApp {
 }
 
 const METER_FALL_DB_PER_SEC: f32 = 24.0;
+
+/// One device-view meter (stereo): falling peak, RMS (≈300 ms) and a held peak.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DevMeter {
+    pub peak: [f32; 2],
+    pub rms: [f32; 2],
+    pub hold: [f32; 2],
+    hold_age: [f32; 2],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DevMeters {
+    chain: Option<crate::fx_ops::ChainRef>,
+    pub pts: Vec<DevMeter>,
+}
+
+impl DevMeters {
+    /// Fold one frame of engine readings (`[peak L, peak R, ms L, ms R]`) in.
+    pub fn update(&mut self, chain: crate::fx_ops::ChainRef, raw: &[[f32; 4]], dt: f32) {
+        if self.chain != Some(chain) {
+            // Fresh chain: the first reading holds stale maxima; start silent.
+            self.chain = Some(chain);
+            self.pts = vec![DevMeter::default(); raw.len()];
+            return;
+        }
+        self.pts.resize(raw.len(), DevMeter::default());
+        let fall = 10f32.powf(-METER_FALL_DB_PER_SEC * dt / 20.0);
+        let k = 1.0 - (-dt / 0.3).exp();
+        for (m, r) in self.pts.iter_mut().zip(raw) {
+            for c in 0..2 {
+                let pk = if r[c].is_finite() { r[c].min(4.0) } else { 0.0 };
+                m.peak[c] = pk.max(m.peak[c] * fall);
+                let ms = if r[2 + c].is_finite() { r[2 + c].min(16.0) } else { 0.0 };
+                let cur = m.rms[c] * m.rms[c];
+                m.rms[c] = (cur + (ms - cur) * k).max(0.0).sqrt();
+                m.hold_age[c] += dt;
+                if m.peak[c] >= m.hold[c] || m.hold_age[c] > 1.5 {
+                    m.hold[c] = m.peak[c];
+                    m.hold_age[c] = 0.0;
+                }
+            }
+        }
+    }
+}
 
 impl DawApp {
     pub fn new(
@@ -448,6 +496,8 @@ impl DawApp {
             focus_detail: false,
             dev_sel: None,
             dev_focus: None,
+            dev_meters: DevMeters::default(),
+            dev_typing: None,
             play_start: 0.0,
             renaming: None,
             touched_track: None,
@@ -629,6 +679,14 @@ impl DawApp {
         self.cpu_display += (self.status.cpu_load - self.cpu_display) * (dt * 4.0).min(1.0);
         // Current: instantaneous load with a short (≈0.3 s) release.
         self.cpu_current = self.status.cpu_load.max(self.cpu_current - dt * 3.0).max(0.0);
+        let chain = self.current_chain();
+        let raw = match chain {
+            crate::fx_ops::ChainRef::Main => Some(self.engine.fx_meters(daw_engine::MASTER_FX)),
+            crate::fx_ops::ChainRef::Track(id) => self.slots.get(id).map(|rt| self.engine.fx_meters(rt)),
+        };
+        if let Some(raw) = raw {
+            self.dev_meters.update(chain, &raw, dt);
+        }
         for (i, p) in self.engine.input_peaks().iter().enumerate() {
             self.input_meters[i] = p.max(self.input_meters[i] * fall);
             self.input_clip[i] |= *p >= 1.0;
@@ -1729,6 +1787,30 @@ pub fn loop_guess(buf: &SampleBuffer, tempo: f64) -> (f64, Option<f64>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dev_meters_hold_and_fall() {
+        use crate::fx_ops::ChainRef;
+        let mut m = super::DevMeters::default();
+        let loud = [[1.0, 0.5, 0.5, 0.125]; 2];
+        m.update(ChainRef::Main, &loud, 0.016); // first reading after a chain switch is dropped
+        assert_eq!(m.pts.len(), 2);
+        assert_eq!(m.pts[0].peak, [0.0; 2]);
+        m.update(ChainRef::Main, &loud, 0.016);
+        assert_eq!(m.pts[0].peak, [1.0, 0.5]);
+        assert!(m.pts[0].rms[0] > 0.0 && m.pts[0].rms[0] < 0.71);
+        for _ in 0..30 {
+            m.update(ChainRef::Main, &[[0.0; 4]; 2], 0.016);
+        }
+        assert!(m.pts[0].peak[0] < 1.0, "falls");
+        assert_eq!(m.pts[0].hold[0], 1.0, "held for 1.5 s");
+        for _ in 0..100 {
+            m.update(ChainRef::Main, &[[0.0; 4]; 2], 0.016);
+        }
+        assert!(m.pts[0].hold[0] < 1.0, "hold released");
+        m.update(ChainRef::Track(5), &loud, 0.016);
+        assert_eq!(m.pts[0].peak, [0.0; 2], "new chain starts silent");
+    }
+
     use super::*;
 
     #[test]

@@ -10,6 +10,37 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.1] - 2026-11-01
+
+### Added
+- Device View meters work: the meter at the chain start shows the chain
+  input, the one right of each device shows the level after it (peak, RMS
+  and a held peak on Live's meter scale; red above the 0 dB notch). MIDI
+  tracks show Live's dotted MIDI column at the chain start.
+- Selected device: light blue title bar with dark name (Live). Clicking
+  empty chain space deselects.
+- Deactivated devices look like Live's: dark activator, greyed toggle
+  labels, knobs and link icon, value boxes / choosers without their dark
+  fill, Align Delay read-out without orange.
+- MIDI track with effects but no instrument: a "Drop Instrument Here" box
+  at the chain start.
+- Align Delay value boxes: type a number while one is focused to edit it.
+
+### Changed
+- Device View background: #2A only between devices; the empty area right
+  of the chain is a rounded #36 drop panel again.
+- Double-click on any device knob or value box returns it to its default
+  (typing replaces Align Delay's double-click-to-edit).
+- Device knobs and value boxes drag like the track header knobs: cursor
+  hidden and parked, up / right raises (Shift = fine).
+- Utility: the headphone (audition) button works without Bass Mono too and
+  plays the stereo lows; with Bass Mono it plays the mono lows.
+- Waveform vertical zoom: 0.05x–1000x on a logarithmic scale (drag ≈ 100 px
+  per ×10, wheel ±1 dB, Shift = fine, double-click = 1.00x).
+
+### Fixed
+- The meters' 0 dB notch is #36 (was the chain background).
+
 ## [0.8.0] - 2026-11-01
 
 ### Added

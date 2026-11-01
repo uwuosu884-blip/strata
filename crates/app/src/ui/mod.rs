@@ -7,7 +7,7 @@ pub mod cursors;
 mod cview;
 mod detail;
 mod devices;
-pub use devices::{reset as devices_reset, step as devices_step};
+pub use devices::{reset as devices_reset, step as devices_step, typable as devices_typable};
 pub mod invert;
 mod io;
 mod menu;

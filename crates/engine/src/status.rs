@@ -14,6 +14,49 @@ pub(crate) struct TrackStatus {
     arrangement_off: AtomicBool,
 }
 
+/// Device-view meters per chain: chain input, then after each device.
+pub const FX_METERS: usize = 33;
+
+/// One stereo meter point: peak and block mean square per channel (max since
+/// the last read).
+#[derive(Default)]
+pub(crate) struct FxMeter {
+    v: [AtomicU32; 4],
+}
+
+impl FxMeter {
+    /// Audio thread: fold one block in.
+    #[inline]
+    pub fn add(&self, l: &[f32], r: &[f32]) {
+        let n = l.len().min(r.len());
+        if n == 0 {
+            return;
+        }
+        let (mut pl, mut pr, mut sl, mut sr) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for (a, b) in l[..n].iter().zip(&r[..n]) {
+            pl = pl.max(a.abs());
+            pr = pr.max(b.abs());
+            sl += a * a;
+            sr += b * b;
+        }
+        let k = 1.0 / n as f32;
+        for (a, x) in self.v.iter().zip([pl, pr, sl * k, sr * k]) {
+            if x > 0.0 {
+                a.fetch_max(clean(x), Relaxed);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn peek(&self) -> [f32; 4] {
+        std::array::from_fn(|i| f32::from_bits(self.v[i].load(Relaxed)))
+    }
+
+    fn take(&self) -> [f32; 4] {
+        std::array::from_fn(|i| f32::from_bits(self.v[i].swap(0, Relaxed)))
+    }
+}
+
 /// Engine → GUI state through plain atomics (wait-free both sides).
 /// Non-negative floats are stored as bits; their bit order matches value order,
 /// so `fetch_max` works as "peak since last read".
@@ -28,6 +71,8 @@ pub(crate) struct SharedStatus {
     record_state: AtomicU8,
     input_peaks: [AtomicU32; MAX_IO_CHANNELS],
     tracks: Box<[TrackStatus; MAX_TRACKS]>,
+    /// Device-chain meters per track slot; the Main chain at `MAX_TRACKS`.
+    fx_meters: Box<[[FxMeter; FX_METERS]; MAX_TRACKS + 1]>,
 }
 
 impl Default for SharedStatus {
@@ -43,6 +88,7 @@ impl Default for SharedStatus {
             record_state: AtomicU8::new(0),
             input_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
             tracks: Box::new(std::array::from_fn(|_| TrackStatus::default())),
+            fx_meters: Box::new(std::array::from_fn(|_| std::array::from_fn(|_| FxMeter::default()))),
         };
         for t in s.tracks.iter() {
             t.playing.store(-1, Relaxed);
@@ -85,6 +131,17 @@ impl SharedStatus {
                 a.fetch_max(clean(*p), Relaxed);
             }
         }
+    }
+
+    /// Meter points of a chain (`slot` = track slot, `MAX_TRACKS` = Main).
+    pub fn fx_meters(&self, slot: usize) -> &[FxMeter; FX_METERS] {
+        &self.fx_meters[slot.min(MAX_TRACKS)]
+    }
+
+    /// Peak / mean square of every meter point since the last read (resets them).
+    pub fn take_fx_meters(&self, slot: usize) -> [[f32; 4]; FX_METERS] {
+        let m = self.fx_meters(slot);
+        std::array::from_fn(|i| m[i].take())
     }
 
     /// Input peaks since the last read (resets them).

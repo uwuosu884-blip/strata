@@ -111,6 +111,22 @@ impl DawApp {
         if let Some((id, k)) = self.dev_focus
             && let Some(d) = chain(&self.project, c).iter().find(|d| d.id == id).copied()
         {
+            // Digits / sign / point on a value box start typing a value.
+            let typed = match key {
+                Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9 => {
+                    Some(key.symbol_or_name().to_string())
+                }
+                Key::Minus => Some("-".to_string()),
+                Key::Period => Some(".".to_string()),
+                _ => None,
+            };
+            if let Some(t) = typed {
+                if crate::ui::devices_typable(&d.params, k) {
+                    self.dev_typing = Some(t);
+                    return true;
+                }
+                return false;
+            }
             let mut p = d.params;
             match key {
                 Key::ArrowUp | Key::ArrowRight => crate::ui::devices_step(&mut p, k, 1.0),

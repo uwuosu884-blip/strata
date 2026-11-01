@@ -123,7 +123,8 @@ pub struct Locator {
     pub name: String,
 }
 
-pub const WAVE_ZOOM_MAX: f32 = 10.0;
+pub const WAVE_ZOOM_MIN: f32 = 0.05;
+pub const WAVE_ZOOM_MAX: f32 = 1000.0;
 
 impl Default for Project {
     fn default() -> Self {
@@ -750,9 +751,9 @@ impl Project {
         }
     }
 
-    /// Waveform vertical zoom, clamped (old files: 1).
+    /// Waveform vertical zoom, clamped (old files / invalid: 1).
     pub fn wave_zoom(&self) -> f32 {
-        if self.wave_zoom.is_finite() { self.wave_zoom.clamp(1.0, WAVE_ZOOM_MAX) } else { 1.0 }
+        if self.wave_zoom.is_finite() && self.wave_zoom > 0.0 { self.wave_zoom.clamp(WAVE_ZOOM_MIN, WAVE_ZOOM_MAX) } else { 1.0 }
     }
 
     pub fn add_scene(&mut self) -> usize {
@@ -1415,6 +1416,8 @@ mod tests {
         assert_eq!(r.song_start, None);
         assert!(r.next_id > a.max(b));
         assert_eq!(Project { wave_zoom: 0.0, ..Default::default() }.wave_zoom(), 1.0);
+        assert_eq!(Project { wave_zoom: 0.01, ..Default::default() }.wave_zoom(), WAVE_ZOOM_MIN);
+        assert_eq!(Project { wave_zoom: 5000.0, ..Default::default() }.wave_zoom(), WAVE_ZOOM_MAX);
     }
 
     #[test]

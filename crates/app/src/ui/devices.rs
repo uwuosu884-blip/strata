@@ -17,6 +17,13 @@ const TITLE_H: f32 = 17.0;
 pub const CHAIN_BG: u8 = 0x2a;
 pub const GAP: f32 = 9.0;
 const TEAL: Color32 = Color32::from_rgb(3, 195, 213);
+/// Selected device title bar and its text.
+const SEL_TITLE: Color32 = Color32::from_rgb(0xb0, 0xdd, 0xeb);
+const SEL_TEXT: Color32 = Color32::from_rgb(0x07, 0x07, 0x07);
+/// Value boxes / choosers of a deactivated device lose their dark fill.
+fn box_fill(on: bool) -> Color32 {
+    if on { gray(0x24) } else { panel() }
+}
 const BOX_TEAL: Color32 = VOL_TEAL;
 /// Knob drag: pixels for the full range.
 const DRAG_PX: f32 = 200.0;
@@ -326,9 +333,11 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
 }
 
-/// Live text toggle (13 px tall): #1e off, orange on, greyed when disabled.
-fn toggle_look(p: &Painter, r: Rect, label: &str, on: bool, enabled: bool) {
+/// Live text toggle (13 px tall): #1e off, orange on, greyed when disabled;
+/// a deactivated device keeps the fill and greys the label.
+fn toggle_look(p: &Painter, r: Rect, label: &str, on: bool, enabled: bool, dev_on: bool) {
     let (fill, col) = match (on, enabled) {
+        _ if !dev_on => (if on { mix(ORANGE, gray(0x36), 0.5) } else { gray(0x1e) }, gray(0x69)),
         (false, true) => (gray(0x1e), text()),
         (true, true) => (ORANGE, Color32::from_rgb(0x20, 0x20, 0x20)),
         (false, false) => (gray(0x20), gray(0x69)),
@@ -399,15 +408,51 @@ fn brackets(p: &Painter, r: Rect) {
     px(rr, b - 3.0, 1.0, 4.0);
 }
 
-/// Grip between devices (and after the last one), like the chain start grip.
-pub fn grip(p: &Painter, x: f32, top: f32, bottom: f32) {
+/// Device meter fill colours (Live 12): RMS, peak, held peak, over 0 dB.
+const M_RMS: Color32 = Color32::from_rgb(0x00, 0xf7, 0x58);
+const M_PEAK: Color32 = Color32::from_rgb(0x08, 0xab, 0x42);
+const M_HOLD: Color32 = Color32::from_rgb(0x04, 0xf8, 0x00);
+const M_OVER: Color32 = Color32::from_rgb(0xff, 0x4a, 0x3a);
+
+/// Stereo level meter between devices (and at the chain start): two 2 px
+/// bars 1 px apart, inset 40 px, the 0 dB notch 11 px below the top. Peak
+/// (dim), RMS (bright) and a 1 px held peak on Live's meter scale.
+pub fn meter(p: &Painter, x: f32, top: f32, bottom: f32, m: Option<&crate::app::DevMeter>) {
     let (gy0, gy1) = (top + 40.0, bottom - 40.0);
     if gy1 <= gy0 + 12.0 {
         return;
     }
-    for dx in [0.0, 3.0] {
-        p.rect_filled(Rect::from_min_max(pos2(x + dx, gy0), pos2(x + dx + 2.0, gy1)), 0.0, gray(0x18));
-        p.rect_filled(Rect::from_min_max(pos2(x + dx, gy0 + 11.0), pos2(x + dx + 2.0, gy0 + 12.0)), 0.0, gray(CHAIN_BG));
+    let h = gy1 - gy0;
+    let y_of = |a: f32| -> Option<f32> { (a > 1e-4).then(|| gy0 + super::widgets::meter_frac(20.0 * a.log10()) * h) };
+    let notch = gy0 + 11.0;
+    for (c, dx) in [0.0f32, 3.0].into_iter().enumerate() {
+        let col = |y0: f32, y1: f32| Rect::from_min_max(pos2(x + dx, y0), pos2(x + dx + 2.0, y1));
+        p.rect_filled(col(gy0, gy1), 0.0, gray(0x18));
+        if let Some(m) = m {
+            // Sub-pixel edges like Live's (anti-aliased by the mesh).
+            for (a, fill) in [(m.peak[c], M_PEAK), (m.rms[c], M_RMS)] {
+                if let Some(y) = y_of(a) {
+                    quad(p, col(y, gy1), fill);
+                    if y < notch {
+                        quad(p, col(y, notch), M_OVER);
+                    }
+                }
+            }
+            if let Some(y) = y_of(m.hold[c]).filter(|_| m.hold[c] > m.rms[c]) {
+                quad(p, col(y - 0.5, y + 0.5), if y < notch { M_OVER } else { M_HOLD });
+            }
+        }
+        p.rect_filled(col(notch, notch + 1.0), 0.0, gray(0x36));
+    }
+}
+
+/// MIDI track chain start: a dotted 3 px column (Live's MIDI meter, unlit).
+pub fn midi_dots(p: &Painter, x: f32, top: f32, bottom: f32) {
+    // 3×3 dots every 5 px (Live's are soft-edged: #18 core, ~#1C average).
+    let mut y = top + 45.0;
+    while y + 3.0 <= bottom - 40.0 {
+        p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(3.0, 3.0)), 0.0, gray(0x1c));
+        y += 5.0;
     }
 }
 
@@ -469,18 +514,23 @@ impl<'a> Ctx<'a> {
         false
     }
 
-    /// Vertical drag on a continuous parameter; returns the response.
+    /// Drag on a continuous parameter like the track header knobs (cursor
+    /// hidden and parked, up / right raises); double-click = default.
     fn drag(&mut self, ui: &egui::Ui, r: Rect, k: u8, enabled: bool) -> Response {
         let resp = self.sense(ui, r, k, Sense::click_and_drag());
         if resp.drag_started() || resp.clicked() {
             self.focus(k);
         }
-        if enabled && resp.dragged() {
-            let dy = resp.drag_delta().y;
-            if dy != 0.0 {
+        let d = if enabled { super::widgets::endless_drag(ui, &resp) } else { egui::Vec2::ZERO };
+        if enabled && resp.double_clicked() {
+            self.undo_step();
+            reset(&mut self.params, k);
+        } else if d != egui::Vec2::ZERO {
+            let dv = d.y - d.x;
+            if dv != 0.0 {
                 self.undo_step();
                 let fine = ui.input(|i| i.modifiers.shift);
-                let v = norm(&self.params, k).unwrap_or(0.0) - dy / if fine { DRAG_PX * 10.0 } else { DRAG_PX };
+                let v = norm(&self.params, k).unwrap_or(0.0) - dv / if fine { DRAG_PX * 10.0 } else { DRAG_PX };
                 set_norm(&mut self.params, k, v);
             }
         }
@@ -543,7 +593,9 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let (l, t) = (r.left(), r.top());
     p.rect_filled(r, CornerRadius::same(3), panel());
     let title = Rect::from_min_size(r.min, vec2(r.width(), TITLE_H));
-    p.rect_filled(title, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, gray(0x46));
+    // Selected device: light blue title bar with dark name (Live).
+    let selected = app.dev_sel == Some(dev.id);
+    p.rect_filled(title, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, if selected { SEL_TITLE } else { gray(0x46) });
     let mut cx = Ctx { app, chain: c, dev, params: dev.params, on: dev.on, gesture: false };
 
     // Title strip: select / drag / context menu.
@@ -581,7 +633,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     // Activator.
     let ac = pos2(l + 9.5, t + 8.5);
     p.circle_filled(ac, 6.5, gray(0x11));
-    p.circle_filled(ac, 5.5, if cx.on { ORANGE } else { gray(0x46) });
+    p.circle_filled(ac, 5.5, if cx.on { ORANGE } else { gray(0x1e) });
     let ar = ui.interact(Rect::from_center_size(ac, vec2(13.0, 13.0)), egui::Id::unique(("dev_on", dev.id)), Sense::click());
     if ar.clicked() {
         cx.undo_step();
@@ -634,7 +686,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     }
     let nf = bold(FS);
     let name = fit(&p, dev.params.name(), &nf, name_right - (l + 20.0));
-    text_at(&p, l + 20.0, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if cx.on { text() } else { dim() });
+    text_at(&p, l + 20.0, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
 
     match dev.params {
         FxParams::Utility(_) => utility(&mut cx, ui, &p, l, t),
@@ -669,8 +721,8 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     // Phase.
     let rl = Rect::from_min_size(pos2(l + 6.0, t + 38.0), vec2(27.0, 13.0));
     let rr = Rect::from_min_size(pos2(l + 36.0, t + 38.0), vec2(27.0, 13.0));
-    toggle_look(p, rl, "Ø L", u0.phase_l, true);
-    toggle_look(p, rr, "Ø R", u0.phase_r, true);
+    toggle_look(p, rl, "Ø L", u0.phase_l, true, cx.on);
+    toggle_look(p, rr, "Ø R", u0.phase_r, true, cx.on);
     if cx.toggle(ui, rl, up::PHASE_L, true)
         && let FxParams::Utility(u) = &mut cx.params
     {
@@ -707,14 +759,14 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
 
     // Mono, Bass Mono (disabled by Mono), frequency, audition.
     let mono = Rect::from_min_size(pos2(l + 6.0, t + 131.0), vec2(57.0, 13.0));
-    toggle_look(p, mono, "Mono", u0.mono, true);
+    toggle_look(p, mono, "Mono", u0.mono, true, cx.on);
     if cx.toggle(ui, mono, up::MONO, true)
         && let FxParams::Utility(u) = &mut cx.params
     {
         u.mono = !u.mono;
     }
     let bass = Rect::from_min_size(pos2(l + 6.0, t + 153.0), vec2(57.0, 13.0));
-    toggle_look(p, bass, "Bass Mono", u0.bass_mono, !u0.mono);
+    toggle_look(p, bass, "Bass Mono", u0.bass_mono, !u0.mono, cx.on);
     if cx.toggle(ui, bass, up::BASS, !u0.mono)
         && let FxParams::Utility(u) = &mut cx.params
     {
@@ -728,8 +780,22 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     let aud = u0.bass_audition;
     // #111 rim, #1E (or orange) face, headphone glyph.
     p.circle_filled(hc, 6.0, gray(0x11));
-    p.circle_filled(hc, 5.0, if aud { ORANGE } else { gray(0x1e) });
-    let gcol = if aud { Color32::from_rgb(0x20, 0x20, 0x20) } else { gray(0xaa) };
+    p.circle_filled(
+        hc,
+        5.0,
+        if aud && cx.on {
+            ORANGE
+        } else if aud {
+            mix(ORANGE, gray(0x36), 0.5)
+        } else {
+            gray(0x1e)
+        },
+    );
+    let gcol = match (cx.on, aud) {
+        (false, _) => gray(0x69),
+        (true, true) => Color32::from_rgb(0x20, 0x20, 0x20),
+        (true, false) => gray(0xaa),
+    };
     arc(p, hc, 3.55, -PI / 2.0 - 0.28, PI / 2.0 + 0.28, Stroke::new(1.2, gcol));
     for dx in [-3.05, 1.05] {
         quad(p, Rect::from_min_size(hc + vec2(dx, 1.85), vec2(2.0, 2.0)), gcol);
@@ -751,8 +817,8 @@ fn utility(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     knob_param(cx, ui, p, co, t + 115.0, up::BALANCE, "Balance", &bal, 0.5, true);
     let mr = Rect::from_min_size(pos2(l + 78.0, t + 168.0), vec2(31.0, 13.0));
     let dr = Rect::from_min_size(pos2(l + 112.0, t + 168.0), vec2(19.0, 13.0));
-    toggle_look(p, mr, "Mute", u0.mute, true);
-    toggle_look(p, dr, "DC", u0.dc, true);
+    toggle_look(p, mr, "Mute", u0.mute, true, cx.on);
+    toggle_look(p, dr, "DC", u0.dc, true, cx.on);
     if cx.toggle(ui, mr, up::MUTE, true)
         && let FxParams::Utility(u) = &mut cx.params
     {
@@ -773,7 +839,7 @@ fn knob_param(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k
     cx.drag(ui, area, k, enabled);
     let v = norm(&cx.params, k).unwrap_or(def);
     text_at(p, x, base, Align2::CENTER_BOTTOM, label, font(FS), text());
-    knob_look(p, pos2(x, base + 21.5), v, def, enabled);
+    knob_look(p, pos2(x, base + 21.5), v, def, enabled && cx.on);
     text_at(p, x, base + 42.0, Align2::CENTER_BOTTOM, value, font(FS), text());
     if cx.focused(k) {
         brackets(p, area);
@@ -783,7 +849,7 @@ fn knob_param(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k
 /// Live chooser (#242424, ▼ on the right); returns the picked index.
 #[allow(clippy::too_many_arguments)]
 fn chooser(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, cur: &str, items: &[&str], enabled: bool) -> Option<usize> {
-    boxed(p, r, gray(0x24));
+    boxed(p, r, box_fill(cx.on));
     let col = if enabled { text() } else { dim() };
     text_at(p, r.left() + 2.0, r.top() + 10.0, Align2::LEFT_BOTTOM, cur, font(FS), col);
     let tr = r.right();
@@ -829,7 +895,7 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     for (i, (name, ms)) in [("Left", dl), ("Right", dr)].into_iter().enumerate() {
         let base = t + 44.0 + 22.0 * i as f32;
         text_at(p, disp.left() + 6.0, base, Align2::LEFT_BOTTOM, name, font(FS), dimc);
-        let col = if ms > 0.0 { ORANGE } else { dimc };
+        let col = if ms > 0.0 && cx.on { ORANGE } else { dimc };
         // Max letter-spaces the unit by 1 px.
         let m = text_at(p, disp.right() - 18.0, base, Align2::LEFT_BOTTOM, "m", font(FS), col);
         text_at(p, m.right() + 1.0, base, Align2::LEFT_BOTTOM, "s", font(FS), col);
@@ -851,7 +917,11 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     text_at(p, l + 7.0, t + 157.0, Align2::LEFT_BOTTOM, "R", font(FS), text());
     let lk = Rect::from_min_size(pos2(l + 16.0, t + 140.0), vec2(19.0, 13.0));
     boxed(p, lk, gray(0x1e));
-    let gc = if a0.link { ORANGE } else { text() };
+    let gc = match (cx.on, a0.link) {
+        (false, _) => gray(0x69),
+        (true, true) => ORANGE,
+        (true, false) => text(),
+    };
     let s = Stroke::new(1.0, gc);
     let (x, y) = (lk.left() + 1.0, lk.top());
     p.rect_stroke(Rect::from_min_max(pos2(x + 5.5, y + 4.5), pos2(x + 11.5, y + 8.5)), CornerRadius::ZERO, s, egui::StrokeKind::Middle);
@@ -885,7 +955,7 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     }
     if dist {
         let ub = Rect::from_min_size(pos2(l + 89.0, t + 138.0), vec2(19.0, 13.0));
-        toggle_look(p, ub, if a0.feet { "ft" } else { "m" }, false, true);
+        toggle_look(p, ub, if a0.feet { "ft" } else { "m" }, false, true, cx.on);
         if cx.toggle(ui, ub, ap::FEET, true)
             && let FxParams::AlignDelay(a) = &mut cx.params
         {
@@ -895,7 +965,7 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
         let temp = if a0.fahrenheit { a0.temp * 9.0 / 5.0 + 32.0 } else { a0.temp };
         value_box(cx, ui, p, tb, ap::TEMP, &format!("{temp:.2}"), true);
         let cb = Rect::from_min_size(pos2(l + 89.0, t + 168.0), vec2(19.0, 13.0));
-        toggle_look(p, cb, if a0.fahrenheit { "°F" } else { "°C" }, false, true);
+        toggle_look(p, cb, if a0.fahrenheit { "°F" } else { "°C" }, false, true, cx.on);
         if cx.toggle(ui, cb, ap::FAHRENHEIT, true)
             && let FxParams::AlignDelay(a) = &mut cx.params
         {
@@ -909,19 +979,31 @@ fn align_delay(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
 fn value_box(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, shown: &str, enabled: bool) {
     let eid = egui::Id::unique(("devp_edit", cx.dev.id, k));
     let editing = ui.data(|d| d.get_temp::<String>(eid));
-    boxed(p, r, gray(0x24));
+    boxed(p, r, box_fill(cx.on));
     let inner = r.shrink(1.0);
     if let Some(v) = norm(&cx.params, k) {
         let w = (v.clamp(0.0, 1.0) * inner.width()).round();
         if w > 0.0 {
-            let fill = if enabled { BOX_TEAL } else { mix(BOX_TEAL, gray(0x24), 0.6) };
+            let fill = if !cx.on {
+                gray(0x55)
+            } else if enabled {
+                BOX_TEAL
+            } else {
+                mix(BOX_TEAL, gray(0x24), 0.6)
+            };
             p.rect_filled(Rect::from_min_size(inner.min, vec2(w, inner.height())), CornerRadius::ZERO, fill);
         }
     }
     if cx.focused(k) {
         p.rect_stroke(r.expand(1.0), CornerRadius::ZERO, Stroke::new(1.0, gray(0x91)), egui::StrokeKind::Inside);
     }
-    let resp = cx.drag(ui, r, k, enabled);
+    cx.drag(ui, r, k, enabled);
+    // Typing on the focused box opens the editor with that character (Live);
+    // double-click resets like the knobs.
+    let editing = match (editing, cx.focused(k) && enabled) {
+        (None, true) => cx.app.dev_typing.take(),
+        (e, _) => e,
+    };
     if let Some(mut s) = editing {
         let te = egui::TextEdit::singleline(&mut s)
             .font(font(FS))
@@ -930,7 +1012,15 @@ fn value_box(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, shown
             .margin(egui::Margin::ZERO)
             .text_color(text());
         let out = ui.put(inner, te);
-        out.request_focus();
+        if !out.has_focus() {
+            out.request_focus();
+            // Caret after the typed character, not selecting it.
+            if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), out.id) {
+                let end = egui::text::CCursor::new(s.chars().count());
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                st.store(ui.ctx(), out.id);
+            }
+        }
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if enter || esc || out.lost_focus() {
@@ -946,8 +1036,13 @@ fn value_box(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, shown
     }
     let col = if enabled { text() } else { dim() };
     text_at(p, r.center().x, r.top() + 10.0, Align2::CENTER_BOTTOM, shown, font(FS), col);
-    if enabled && resp.double_clicked() {
-        ui.data_mut(|d| d.insert_temp(eid, shown.to_string()));
+}
+
+/// Parameters edited in a number box (typing opens its editor).
+pub fn typable(p: &FxParams, k: u8) -> bool {
+    match p {
+        FxParams::AlignDelay(a) => k == ap::LEFT || (k == ap::RIGHT && !a.link) || (k == ap::TEMP && a.mode == DelayMode::Distance),
+        FxParams::Utility(_) => false,
     }
 }
 

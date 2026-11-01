@@ -2751,34 +2751,35 @@ fn time_ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, lanes: Rect, head: R
     }
 }
 
-/// Waveform Vertical Zoom Level (Live): 1.00x–10.00x for every arrangement
-/// audio clip incl. recordings; display only. Drag up / right like the BPM
-/// box (Shift = fine), wheel ±0.1 (Shift ±0.01), double-click = 1.00x.
+/// Waveform Vertical Zoom Level: 0.05x–1000x for every arrangement audio clip
+/// incl. recordings; display only. Logarithmic: drag up / right (Shift =
+/// fine) ≈ 100 px per ×10, wheel ±1 dB (Shift ±0.1 dB), double-click = 1.00x.
 fn wave_zoom_box(app: &mut DawApp, ui: &mut egui::Ui, b: Rect) {
     let id = ui.scope_id().with("wave_zoom");
     let resp = ui.interact(b, id, Sense::click_and_drag());
     let delta = super::widgets::endless_drag(ui, &resp);
     let shift = ui.input(|i| i.modifiers.shift);
     let acc_id = id.with("acc");
-    let max = daw_project::WAVE_ZOOM_MAX;
+    let (lo, hi) = (daw_project::WAVE_ZOOM_MIN.log10(), daw_project::WAVE_ZOOM_MAX.log10());
     let cur = app.project.wave_zoom();
     let mut target = None;
     if resp.drag_started() {
         app.begin_gesture();
-        ui.data_mut(|d| d.insert_temp(acc_id, cur));
+        ui.data_mut(|d| d.insert_temp(acc_id, cur.log10()));
     }
     if delta != Vec2::ZERO {
+        // Decades per pixel.
         let k = if shift { 0.001 } else { 0.01 };
-        let acc: f32 = (ui.data(|d| d.get_temp(acc_id)).unwrap_or(cur) + (delta.x - delta.y) * k).clamp(1.0, max);
+        let acc: f32 = (ui.data(|d| d.get_temp(acc_id)).unwrap_or(cur.log10()) + (delta.x - delta.y) * k).clamp(lo, hi);
         ui.data_mut(|d| d.insert_temp(acc_id, acc));
-        target = Some(acc);
+        target = Some(10f32.powf(acc));
     }
     if resp.hovered() {
         let notch = super::wheel_notch(ui);
         if notch != 0.0 {
             ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
             app.begin_gesture();
-            target = Some(cur + notch * if shift { 0.01 } else { 0.1 });
+            target = Some(cur * 10f32.powf(notch * if shift { 0.005 } else { 0.05 }));
         }
     }
     if resp.double_clicked() {
@@ -2786,7 +2787,7 @@ fn wave_zoom_box(app: &mut DawApp, ui: &mut egui::Ui, b: Rect) {
         target = Some(1.0);
     }
     if let Some(t) = target {
-        let t = (t.clamp(1.0, max) * 100.0).round() / 100.0;
+        let t = round_zoom(t.clamp(daw_project::WAVE_ZOOM_MIN, daw_project::WAVE_ZOOM_MAX));
         if t != app.project.wave_zoom {
             app.project.wave_zoom = t;
             app.dirty = true;
@@ -2796,8 +2797,30 @@ fn wave_zoom_box(app: &mut DawApp, ui: &mut egui::Ui, b: Rect) {
     let active = resp.hovered() || resp.dragged();
     p.rect_filled(b, CornerRadius::ZERO, if active { gray(0x40) } else { gray(0x26) });
     p.rect_stroke(b, CornerRadius::ZERO, Stroke::new(1.0, outline()), egui::StrokeKind::Inside);
-    p.text(b.center(), Align2::CENTER_CENTER, format!("{:.2}x", app.project.wave_zoom()), font(FS), text());
+    p.text(b.center(), Align2::CENTER_CENTER, fmt_zoom(app.project.wave_zoom()), font(FS), text());
     resp.on_hover_text("Waveform Vertical Zoom Level");
+}
+
+/// Three significant digits (what the box shows).
+fn round_zoom(z: f32) -> f32 {
+    let step = if z < 10.0 {
+        0.01
+    } else if z < 100.0 {
+        0.1
+    } else {
+        1.0
+    };
+    ((z / step).round() * step).max(daw_project::WAVE_ZOOM_MIN)
+}
+
+fn fmt_zoom(z: f32) -> String {
+    if z < 10.0 {
+        format!("{z:.2}x")
+    } else if z < 100.0 {
+        format!("{z:.1}x")
+    } else {
+        format!("{z:.0}x")
+    }
 }
 
 /// m:ss, or m:ss.mmm with trailing zeros trimmed (Live's time ruler).
@@ -2893,6 +2916,14 @@ pub fn dot_meter(p: &egui::Painter, r: Rect, level: f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wave_zoom_display() {
+        assert_eq!(super::fmt_zoom(super::round_zoom(0.0512)), "0.05x");
+        assert_eq!(super::fmt_zoom(super::round_zoom(8.914)), "8.91x");
+        assert_eq!(super::fmt_zoom(super::round_zoom(42.37)), "42.4x");
+        assert_eq!(super::fmt_zoom(super::round_zoom(999.6)), "1000x");
+    }
+
     #[test]
     fn time_labels_trim_zeros() {
         assert_eq!(super::time_label(0.0), "0:00");

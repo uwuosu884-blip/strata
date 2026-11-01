@@ -1038,54 +1038,77 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
 fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
     ui.allocate_rect(rect, Sense::hover());
-    // The device chain sits on #2A; devices are #36.
+    // Gaps between devices are #2A; devices and the drop panels are #36.
     ui.painter().rect_filled(rect, CornerRadius::ZERO, gray(super::devices::CHAIN_BG));
-    // Grip: two 2 px bars at panel.left-7 / -4, inset 40 px, notch 11 px below the top.
-    let gp = ui.painter().with_clip_rect(rect.expand2(vec2(9.0, 0.0)));
-    let (gy0, gy1) = (rect.top() + 40.0, rect.bottom() - 40.0);
-    for dx in [-7.0, -4.0] {
-        let x = rect.left() + dx;
-        gp.rect_filled(Rect::from_min_max(pos2(x, gy0), pos2(x + 2.0, gy1)), 0.0, gray(0x18));
-        gp.rect_filled(Rect::from_min_max(pos2(x, gy0 + 11.0), pos2(x + 2.0, gy0 + 12.0)), 0.0, gray(super::devices::CHAIN_BG));
-    }
     let t = app.selected_track;
     let midi =
         !app.master_selected && app.selected_return.is_none() && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
-    let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::hover());
+    let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::click());
+    if zone.clicked() || zone.secondary_clicked() {
+        // Click on empty chain space: nothing selected.
+        app.dev_sel = None;
+        app.dev_focus = None;
+        app.focus_detail = true;
+    }
     let chain = app.current_chain();
+    // Meter points: [0] = chain input, [i + 1] = after device i.
+    let meters = app.dev_meters.pts.clone();
+    let mp = |i: usize| meters.get(i);
+    // Chain start (left of the panel): MIDI dots on MIDI tracks, else the input level.
+    let gp = ui.painter().with_clip_rect(rect.expand2(vec2(9.0, 0.0)));
+    if midi {
+        super::devices::midi_dots(&gp, rect.left() - 6.0, rect.top(), rect.bottom());
+    } else {
+        super::devices::meter(&gp, rect.left() - 7.0, rect.top(), rect.bottom(), mp(0));
+    }
     let mut x = rect.left();
     let mut inst_drop_ok = false;
     let mut empty_msg = "Drop Audio Effects Here";
+    let n = crate::fx_ops::chain(&app.project, chain).len();
     if midi {
         inst_drop_ok = true;
         match app.project.tracks[t].instrument {
+            // Effects but no instrument: a 100 px instrument drop box first.
+            InstrumentDef::None if n > 0 => {
+                let b = Rect::from_min_size(rect.min, vec2(100.0, rect.height()));
+                ui.painter().rect_filled(b, CornerRadius::same(3), panel());
+                let bp = ui.painter().with_clip_rect(b);
+                for (dy, line) in [(-6.5, "Drop Instrument"), (6.5, "Here")] {
+                    bp.text(b.center() + vec2(0.0, dy), Align2::CENTER_CENTER, line, font(FS), text());
+                }
+                super::devices::meter(ui.painter(), b.right() + 2.0, rect.top(), rect.bottom(), mp(0));
+                x = b.right() + super::devices::GAP;
+            }
             InstrumentDef::None => empty_msg = "Drop an Instrument or Sample Here",
             _ => {
                 let used = instrument_device(app, ui, rect);
-                super::devices::grip(ui.painter(), used.right() + 3.0, rect.top(), rect.bottom());
+                super::devices::meter(ui.painter(), used.right() + 3.0, rect.top(), rect.bottom(), mp(0));
                 x = used.right() + 1.0 + super::devices::GAP;
             }
         }
     }
     // Effect chain, left to right; `slots` = (left, right) of each device.
-    let n = crate::fx_ops::chain(&app.project, chain).len();
     let mut slots = Vec::with_capacity(n);
     for i in 0..n {
         let Some(d) = crate::fx_ops::chain(&app.project, chain).get(i).copied() else { break };
         let w = super::devices::width(&d);
         let r = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height()));
         super::devices::device(app, ui, r, chain, i);
-        super::devices::grip(ui.painter(), r.right() + 2.0, rect.top(), rect.bottom());
+        super::devices::meter(ui.painter(), r.right() + 2.0, rect.top(), rect.bottom(), mp(i + 1));
         slots.push((r.left(), r.right()));
         x = r.right() + super::devices::GAP;
     }
-    let fx = Rect::from_min_max(pos2(x, rect.top()), rect.max);
-    if fx.width() > 20.0 {
-        // An empty MIDI track: the whole view takes an instrument.
-        let whole = slots.is_empty() && empty_msg != "Drop Audio Effects Here";
+    // The rest of the view: a rounded #36 drop panel (past the right edge so
+    // only its left corners show).
+    let fx = Rect::from_min_max(pos2(x, rect.top()), pos2(rect.right() + 4.0, rect.bottom()));
+    if fx.width() > 6.0 {
+        let cp = ui.painter().with_clip_rect(rect);
+        cp.rect_filled(fx, CornerRadius::same(3), panel());
         let msg = if slots.is_empty() { empty_msg } else { "Drop Audio Effects Here" };
-        let c = if whole { rect.center() } else { fx.center() };
-        ui.painter().with_clip_rect(rect).text(c, Align2::CENTER_CENTER, msg, font(FS), text());
+        let vis = Rect::from_min_max(fx.min, pos2(rect.right(), fx.max.y));
+        if vis.width() > 20.0 {
+            cp.text(vis.center(), Align2::CENTER_CENTER, msg, font(FS), text());
+        }
     }
     // Drag & drop: effects / devices insert at the pointer; instruments and
     // samples replace a MIDI track's instrument.

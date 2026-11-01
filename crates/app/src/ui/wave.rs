@@ -127,7 +127,8 @@ pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &d
     if src.len == 0 || !finite(visible) || !finite(body) || visible.width() <= 0.0 || visible.width() > 16384.0 || body.height() < 1.0 {
         return;
     }
-    let gain = if gain.is_finite() { gain.clamp(0.0, 64.0) } else { 1.0 };
+    // Clip gain (≤ +24 dB) × vertical zoom (≤ 1000x).
+    let gain = if gain.is_finite() { gain.clamp(0.0, 20_000.0) } else { 1.0 };
     // Column spans; frames per pixel from the neighbour (kept across loop wraps).
     let x0 = visible.min.x.floor();
     let mut cols: Vec<Option<(f64, f64)>> = Vec::with_capacity(visible.width() as usize + 2);
@@ -164,7 +165,8 @@ pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &d
             continue;
         }
         let peaks: Vec<Option<Peak>> = cols.iter().map(|c| c.and_then(|(a, b)| summary(src, chs, a, b))).collect();
-        let y = |v: f32, db: bool| mid - shape_val(v * gain, db) * half;
+        // Clamped just past the lane: huge zoom values stay sane (cut anyway).
+        let y = |v: f32, db: bool| mid - (shape_val(v * gain, db) * half).clamp(-half - 2.0, half + 2.0);
         match st {
             WaveStyle::MinMaxLines => {
                 for (i, pk) in peaks.iter().enumerate() {
@@ -291,7 +293,7 @@ fn sample_line(p: &Painter, src: &Source, ch: usize, cols: &[Option<(f64, f64)>]
         while (f as f64) < b && f < ch.len() {
             if last != Some(f) {
                 let x = x0 + i as f32 + ((f as f64 - a) / (b - a)) as f32;
-                pts.push(pos2(x, mid - ch[f] * gain * half));
+                pts.push(pos2(x, mid - (ch[f] * gain * half).clamp(-half - 2.0, half + 2.0)));
                 last = Some(f);
             }
             f += 1;

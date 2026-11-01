@@ -367,9 +367,15 @@ impl TrackRt {
 
     /// Run the track's effect chain over the pre-fader signal. Runs on silence
     /// too (delay tails, filters); the track stays silent if the output is.
-    pub fn run_fx(&mut self, chain: &mut [crate::fx::FxSlot], n: usize, sr: f32) {
+    pub fn run_fx(&mut self, chain: &mut [crate::fx::FxSlot], n: usize, sr: f32, meters: &[crate::status::FxMeter]) {
         self.has_fx = !chain.is_empty();
         if chain.is_empty() {
+            // The device view still meters the (empty) chain's input.
+            if !self.silent
+                && let Some(m) = meters.first()
+            {
+                m.add(&self.l[..n], &self.r[..n]);
+            }
             return;
         }
         if self.silent {
@@ -378,7 +384,7 @@ impl TrackRt {
         }
         self.pre_l[..n].copy_from_slice(&self.l[..n]);
         self.pre_r[..n].copy_from_slice(&self.r[..n]);
-        let pk = crate::fx::run_chain(chain, &mut self.l[..n], &mut self.r[..n], sr);
+        let pk = crate::fx::run_chain(chain, &mut self.l[..n], &mut self.r[..n], sr, meters);
         self.silent = pk == 0.0;
     }
 

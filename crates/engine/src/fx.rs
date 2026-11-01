@@ -290,10 +290,19 @@ impl FxState {
 }
 
 /// Process a chain in place. Returns the output peak (0 = silent).
-pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: f32) -> f32 {
-    for s in chain.iter_mut() {
+/// Runs the chain in place; `meters[0]` takes the chain input and
+/// `meters[i + 1]` the signal after device `i` (empty slice = no metering).
+/// Returns the output peak.
+pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: f32, meters: &[crate::status::FxMeter]) -> f32 {
+    if let Some(m) = meters.first() {
+        m.add(l, r);
+    }
+    for (i, s) in chain.iter_mut().enumerate() {
         if !s.on {
             s.state.was_on = false;
+            if let Some(m) = meters.get(i + 1) {
+                m.add(l, r);
+            }
             continue;
         }
         if !s.state.was_on {
@@ -304,6 +313,9 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Utility(p), StateKind::Utility(st)) => st.process(p, l, r, sr),
             (FxParams::AlignDelay(p), StateKind::Align(st)) => st.process(p, l, r, sr),
             _ => {}
+        }
+        if let Some(m) = meters.get(i + 1) {
+            m.add(l, r);
         }
     }
     let mut pk = 0.0f32;
@@ -398,6 +410,8 @@ impl Ramp {
 #[derive(Debug, Clone, Default)]
 struct UtilityState {
     lp_m: Lr4,
+    /// Side low band (audition without Bass Mono keeps the lows stereo).
+    lp_s: Lr4,
     hp_m: Lr4,
     hp_s: Lr4,
     coef: (f32, f32),
@@ -412,6 +426,7 @@ struct UtilityState {
 impl UtilityState {
     fn reset(&mut self) {
         self.lp_m.clear();
+        self.lp_s.clear();
         self.hp_m.clear();
         self.hp_s.clear();
         self.dc = [(0.0, 0.0); 2];
@@ -431,11 +446,15 @@ impl UtilityState {
         let (l0, ld) = self.gl.block(g * bl, n);
         let (r0, rd) = self.gr.block(g * br, n);
         let bass = p.bass_mono && !p.mono;
-        if bass {
+        // Audition plays the band below the frequency: mono when Bass Mono is
+        // on, otherwise the stereo lows.
+        let audition = p.bass_audition;
+        if bass || audition {
             let f = p.bass_freq.clamp(BASS_MONO_MIN_HZ, BASS_MONO_MAX_HZ);
             if self.coef != (f, sr) {
                 self.coef = (f, sr);
                 self.lp_m.set(f, sr, false);
+                self.lp_s.set(f, sr, false);
                 self.hp_m.set(f, sr, true);
                 self.hp_s.set(f, sr, true);
             }
@@ -454,15 +473,19 @@ impl UtilityState {
             let k = (i + 1) as f32;
             let m = 0.5 * (a + b) * (m0 + md * k);
             let s = 0.5 * (a - b) * (s0 + sd * k);
-            let (mut x, mut y) = if bass {
+            let (mut x, mut y) = if audition {
                 let low = self.lp_m.tick(m);
-                if p.bass_audition {
+                if bass {
                     (low, low)
                 } else {
-                    let hm = self.hp_m.tick(m);
-                    let hs = self.hp_s.tick(s);
-                    (low + hm + hs, low + hm - hs)
+                    let ls = self.lp_s.tick(s);
+                    (low + ls, low - ls)
                 }
+            } else if bass {
+                let low = self.lp_m.tick(m);
+                let hm = self.hp_m.tick(m);
+                let hs = self.hp_s.tick(s);
+                (low + hm + hs, low + hm - hs)
             } else {
                 (m + s, m - s)
             };
@@ -525,7 +548,7 @@ mod tests {
 
     fn run(p: FxParams, l: &mut [f32], r: &mut [f32]) {
         let mut chain = vec![FxSlot::new(1, true, p)];
-        run_chain(&mut chain, l, r, 48_000.0);
+        run_chain(&mut chain, l, r, 48_000.0, &[]);
     }
 
     #[test]
@@ -582,6 +605,26 @@ mod tests {
     }
 
     #[test]
+    fn audition_plays_lows_mono_or_stereo() {
+        let sr = 48_000.0;
+        let n = 48_000;
+        let rms = |v: &[f32]| (v[n / 2..].iter().map(|x| x * x).sum::<f32>() / (n / 2) as f32).sqrt();
+        // (Bass Mono, frequency, audible)
+        for (bass, hz, loud) in [(false, 40.0f32, true), (false, 4000.0, false), (true, 40.0, false)] {
+            let p = UtilityParams { bass_mono: bass, bass_audition: true, bass_freq: 120.0, ..Default::default() };
+            let mut l: Vec<f32> = (0..n).map(|i| (2.0 * PI * hz * i as f32 / sr).sin()).collect();
+            let mut r: Vec<f32> = l.iter().map(|x| -x).collect();
+            run(FxParams::Utility(p), &mut l, &mut r);
+            // Out-of-phase lows: kept (stereo) without Bass Mono, cancelled with it.
+            if loud {
+                assert!(rms(&l) > 0.6 && rms(&r) > 0.6, "{hz} {}", rms(&l))
+            } else {
+                assert!(rms(&l) < 0.05, "{hz} {bass} {}", rms(&l))
+            }
+        }
+    }
+
+    #[test]
     fn align_delay_modes() {
         let p = AlignDelayParams { time_l: 1.0, time_r: 0.0, ..Default::default() };
         assert_eq!(p.delays_samples(48_000.0), (48, 0));
@@ -603,15 +646,29 @@ mod tests {
     }
 
     #[test]
+    fn meters_tap_input_and_each_device() {
+        let m: Vec<crate::status::FxMeter> = (0..3).map(|_| Default::default()).collect();
+        let mute = FxParams::Utility(UtilityParams { mute: true, ..Default::default() });
+        let mut chain = vec![FxSlot::new(1, true, FxParams::Utility(UtilityParams::default())), FxSlot::new(2, true, mute)];
+        let (mut l, mut r) = (vec![0.5f32; 64], vec![-0.25f32; 64]);
+        run_chain(&mut chain, &mut l, &mut r, 48_000.0, &m);
+        let read = |i: usize| m[i].peek();
+        assert_eq!(read(0)[..2], [0.5, 0.25]);
+        assert!((read(0)[2] - 0.25).abs() < 1e-6 && (read(0)[3] - 0.0625).abs() < 1e-6, "mean squares");
+        assert!(read(1)[0] > 0.49, "unity Utility passes");
+        assert_eq!(read(2), [0.0; 4], "muted");
+    }
+
+    #[test]
     fn state_survives_song_swaps() {
         let p = FxParams::AlignDelay(AlignDelayParams { mode: DelayMode::Samples, samples_l: 4.0, samples_r: 4.0, ..Default::default() });
         let mut old = vec![FxSlot::new(9, true, p)];
         let (mut l, mut r) = (vec![1.0, 0.0], vec![1.0, 0.0]);
-        run_chain(&mut old, &mut l, &mut r, 48_000.0);
+        run_chain(&mut old, &mut l, &mut r, 48_000.0, &[]);
         let mut new = vec![FxSlot::new(9, true, p)];
         carry_states(&mut new, &mut old);
         let (mut l, mut r) = (vec![0.0; 4], vec![0.0; 4]);
-        run_chain(&mut new, &mut l, &mut r, 48_000.0);
+        run_chain(&mut new, &mut l, &mut r, 48_000.0, &[]);
         assert_eq!(l, [0.0, 0.0, 1.0, 0.0]);
     }
 }
