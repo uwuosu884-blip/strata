@@ -792,6 +792,7 @@ fn lane_row(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
             // The part inside the time selection is drawn selected (Live).
             let pc = p.with_clip_rect(Rect::from_x_y_ranges(sx1..=sx2, r.y_range()).intersect(p.clip_rect()));
             draw_clip(&pc, r, &a.clip, true, app.cache.peek(sample_key(&a.clip)).map(|b| &**b), g.zoom, app.project.tempo_bpm, collapsed);
+            clip_grid(&pc, g, r, lane, collapsed);
         }
         if moving.contains(&id) && !ui.input(|i| i.modifiers.command) {
             p.rect_filled(r, CornerRadius::ZERO, Color32::from_black_alpha(110));
@@ -2420,7 +2421,7 @@ fn draw_clip_fill(
             // Unwarped = raw playback (markers ignored), like the engine.
             let map = match warp_bpm {
                 Some(b) => daw_core::compile::warp_map(clip, *offset_frames, Some(*b), sr),
-                None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / tempo.max(1.0)),
+                None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / tempo.max(1.0) * clip.raw_rate()),
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
             // Waveform Vertical Zoom Level: display only (the clip gain is untouched).
@@ -2466,7 +2467,9 @@ pub fn draw_clip_overview(app: &DawApp, p: &egui::Painter, r: Rect, clip: &Clip,
             let sr = buf.sample_rate as f64;
             let map = match warp_bpm {
                 Some(b) => daw_core::compile::warp_map(clip, *offset_frames, Some(*b), sr),
-                None => daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / app.project.tempo_bpm.max(1.0)),
+                None => {
+                    daw_engine::WarpMap::from_markers(&[], *offset_frames, sr * 60.0 / app.project.tempo_bpm.max(1.0) * clip.raw_rate())
+                }
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
             draw_wave(p, r, r, buf, zoom, &frame_of, *gain_db, ink);

@@ -11,10 +11,14 @@
 
 mod buffer;
 mod command;
+pub mod devtap;
+pub mod dynfx;
 pub mod eq8;
 pub mod fx;
 pub mod instruments;
+pub mod lfo;
 mod metronome;
+pub mod params;
 pub mod pv;
 pub mod rack;
 mod sample;
@@ -27,12 +31,15 @@ pub mod warp;
 
 pub use buffer::StereoBuffer;
 pub use command::{Command, MASTER_FX, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
+pub use devtap::{DevTap, dev_tap};
+pub use dynfx::{GateParams, GlueParams, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
 pub use eq8::{EqBand, EqEightParams, EqFilter, EqMode, SpecTap, spectrum_tap};
 pub use fx::{AlignDelayParams, ChannelMode, DelayMode, FxParams, FxSlot, UtilityParams};
 pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
+pub use lfo::{LfoMap, LfoParams, LfoWave};
 pub use rack::{ChainMix, RackParams, Zone};
 pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
 pub use song::{
@@ -670,6 +677,7 @@ impl Engine {
                 Command::SetTempoFollow(on) => self.follow_tempo = on,
                 Command::Nudge(k) => self.transport.nudge = if k.is_finite() { k.clamp(0.5, 2.0) } else { 1.0 },
                 Command::SetFx { track, slot, on, params } => {
+                    self.song.lfo |= matches!(params, FxParams::Lfo(_));
                     let chain = if track == MASTER_FX {
                         Some(&mut self.song.master_fx)
                     } else {
@@ -680,15 +688,16 @@ impl Engine {
                         && std::mem::discriminant(&s.params) == std::mem::discriminant(&params)
                     {
                         s.on = on;
-                        s.params = params;
+                        s.set_params(params);
                     }
                 }
                 Command::SetFxById { track, id, on, params } => {
+                    self.song.lfo |= matches!(params, FxParams::Lfo(_));
                     if let Some(s) = self.fx_chain(track).and_then(|c| fx::find_slot(c, id))
                         && std::mem::discriminant(&s.params) == std::mem::discriminant(&params)
                     {
                         s.on = on;
-                        s.params = params;
+                        s.set_params(params);
                     }
                 }
                 Command::SetRackChain { track, id, mix } => {
@@ -1296,6 +1305,9 @@ impl Engine {
             }
         }
 
+        // LFOs write their modulation into the target devices.
+        fx::modulate(song, n, ctx.sr, ctx.tempo, ctx.playing.then_some(ctx.beat0));
+
         // Solo through the routing graph: a track is audible if nothing is
         // soloed, it is soloed, it feeds a soloed track (upstream) or a
         // soloed track feeds it (downstream). `order` is topological.
@@ -1435,6 +1447,10 @@ impl Engine {
                 }
             }
             tracks[rt].add_bus(n);
+            {
+                let tr: &[TrackRt] = tracks;
+                fx::fill_sidechains(&mut song.tracks[i as usize].fx, n, &|src, tap| sc_source(tr, src, tap));
+            }
             tracks[rt].run_fx(&mut song.tracks[i as usize].fx, n, ctx.sr, status.fx_meters(rt));
             let st = &song.tracks[i as usize];
 
@@ -1503,6 +1519,10 @@ impl Engine {
             }
         }
 
+        {
+            let tr: &[TrackRt] = tracks;
+            fx::fill_sidechains(&mut song.master_fx, n, &|src, tap| sc_source(tr, src, tap));
+        }
         fx::run_chain(&mut song.master_fx, ml, mr, ctx.sr, status.fx_meters(MAX_TRACKS));
         let (cl, cr) = self.cue.range_mut(offset, n);
         for i in 0..n {
@@ -1538,6 +1558,16 @@ impl Engine {
 
 fn clamp_gain(g: f32) -> f32 {
     if g.is_finite() { g.clamp(0.0, 4.0) } else { 0.0 }
+}
+
+/// Sidechain source block of engine track `src`.
+fn sc_source(tracks: &[TrackRt], src: u16, tap: Tap) -> Option<(&[f32], &[f32])> {
+    let s = tracks.get(src as usize)?;
+    Some(match tap {
+        Tap::PreFx if s.has_fx => (&s.pre_l, &s.pre_r),
+        Tap::PostMixer => (&s.post_l, &s.post_r),
+        _ => (&s.l, &s.r),
+    })
 }
 
 /// Consumer ends of the recording queues (for the recorder thread).

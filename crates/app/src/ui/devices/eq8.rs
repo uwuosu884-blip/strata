@@ -6,90 +6,9 @@ use super::*;
 
 pub const WIDTH: f32 = 482.0;
 
-// Parameter ids: bands are `ch * 40 + band * 5 + field`.
-pub const FREQ: u8 = 0;
-pub const GAIN: u8 = 1;
-pub const QF: u8 = 2;
-pub const ON: u8 = 3;
-pub const TYPE: u8 = 4;
-pub const MODE: u8 = 100;
-pub const EDIT: u8 = 101;
-pub const ADAPT: u8 = 102;
-pub const SCALE: u8 = 103;
-pub const OUTPUT: u8 = 104;
-pub const AUDITION: u8 = 105;
-pub const ANALYZE: u8 = 106;
-pub const BLOCK: u8 = 107;
-pub const REFRESH: u8 = 108;
-pub const AVG: u8 = 109;
-/// The display's band dots (arrow keys move the selected dots).
-pub const DOTS: u8 = 110;
-
-pub fn band_id(ch: usize, b: usize, field: u8) -> u8 {
-    (ch * 40 + b * 5) as u8 + field
-}
-
-fn split(k: u8) -> Option<(usize, usize, u8)> {
-    (k < 80).then_some(((k / 40) as usize, ((k % 40) / 5) as usize, k % 5))
-}
-
-const LN_RANGE: f32 = 7.696_213; // ln(22000 / 10)
-
-fn freq_norm(f: f32) -> f32 {
-    (f.clamp(EQ_FREQ_MIN, EQ_FREQ_MAX) / EQ_FREQ_MIN).ln() / LN_RANGE
-}
-
-fn norm_freq(v: f32) -> f32 {
-    (EQ_FREQ_MIN * (v.clamp(0.0, 1.0) * LN_RANGE).exp()).clamp(EQ_FREQ_MIN, EQ_FREQ_MAX)
-}
-
-fn q_norm(q: f32) -> f32 {
-    (q.clamp(EQ_Q_MIN, EQ_Q_MAX) / EQ_Q_MIN).ln() / (EQ_Q_MAX / EQ_Q_MIN).ln()
-}
-
-fn norm_q(v: f32) -> f32 {
-    EQ_Q_MIN * (v.clamp(0.0, 1.0) * (EQ_Q_MAX / EQ_Q_MIN).ln()).exp()
-}
-
-pub fn norm(e: &EqEightParams, k: u8) -> Option<f32> {
-    if let Some((ch, b, f)) = split(k) {
-        let band = &e.bands[ch][b];
-        return match f {
-            FREQ => Some(freq_norm(band.freq)),
-            GAIN => Some((band.gain + EQ_GAIN_MAX) / (2.0 * EQ_GAIN_MAX)),
-            QF => Some(q_norm(band.q)),
-            _ => None,
-        };
-    }
-    Some(match k {
-        SCALE => (e.scale + EQ_SCALE_MAX) / (2.0 * EQ_SCALE_MAX),
-        OUTPUT => (e.output + EQ_OUT_MAX) / (2.0 * EQ_OUT_MAX),
-        REFRESH => (e.refresh - EQ_REFRESH_MIN) / (EQ_REFRESH_MAX - EQ_REFRESH_MIN),
-        AVG => (e.avg - 1.0) / (EQ_AVG_MAX - 1.0),
-        _ => return None,
-    })
-}
-
-pub fn set_norm(e: &mut EqEightParams, k: u8, v: f32) {
-    let v = v.clamp(0.0, 1.0);
-    if let Some((ch, b, f)) = split(k) {
-        let band = &mut e.bands[ch][b];
-        match f {
-            FREQ => band.freq = norm_freq(v),
-            GAIN => band.gain = v * 2.0 * EQ_GAIN_MAX - EQ_GAIN_MAX,
-            QF => band.q = norm_q(v),
-            _ => {}
-        }
-        return;
-    }
-    match k {
-        SCALE => e.scale = v * 2.0 * EQ_SCALE_MAX - EQ_SCALE_MAX,
-        OUTPUT => e.output = v * 2.0 * EQ_OUT_MAX - EQ_OUT_MAX,
-        REFRESH => e.refresh = EQ_REFRESH_MIN + v * (EQ_REFRESH_MAX - EQ_REFRESH_MIN),
-        AVG => e.avg = 1.0 + v * (EQ_AVG_MAX - 1.0),
-        _ => {}
-    }
-}
+pub use daw_project::devices::params::eqp::*;
+#[allow(unused_imports)]
+use daw_project::devices::params::eqp::{norm, set_norm};
 
 pub fn reset(e: &mut EqEightParams, k: u8) {
     let d = EqEightParams::default();
@@ -141,7 +60,7 @@ pub fn step(e: &mut EqEightParams, k: u8, dir: f32) {
             QF => band.q = norm_q(q_norm(band.q) + dir * 0.005),
             TYPE => {
                 let i = EqFilter::ALL.iter().position(|&x| x == band.kind).unwrap_or(3) as i32 - dir as i32;
-                band.kind = EqFilter::ALL[i.clamp(0, 7) as usize];
+                band.kind = EqFilter::ALL[i.clamp(0, EqFilter::ALL.len() as i32 - 1) as usize];
             }
             _ => {}
         }
@@ -566,6 +485,9 @@ pub fn icon(p: &Painter, o: Pos2, f: EqFilter, col: Color32) {
     match f {
         EqFilter::LowCut12 => line(vec![pt(0.5, 9.0), pt(0.5, 3.5), pt(1.2, 1.7), pt(3.0, 0.5), pt(11.0, 0.5)]),
         EqFilter::LowCut48 => line(vec![pt(1.5, 9.0), pt(1.5, 0.5), pt(11.0, 0.5)]),
+        // Between the 12 and 48 dB glyphs.
+        EqFilter::LowCut24 => line(vec![pt(1.0, 9.0), pt(1.0, 3.0), pt(1.6, 1.3), pt(2.6, 0.5), pt(11.0, 0.5)]),
+        EqFilter::HighCut24 => line(vec![pt(0.0, 0.5), pt(8.4, 0.5), pt(9.4, 1.3), pt(10.0, 3.0), pt(10.0, 9.0)]),
         EqFilter::HighCut12 => line(vec![pt(0.0, 0.5), pt(8.0, 0.5), pt(9.8, 1.7), pt(10.5, 3.5), pt(10.5, 9.0)]),
         EqFilter::HighCut48 => line(vec![pt(0.0, 0.5), pt(9.5, 0.5), pt(9.5, 9.0)]),
         EqFilter::LowShelf => {
@@ -635,8 +557,19 @@ struct DotDrag {
     origin: Pos2,
 }
 
+/// Cut filters: the dot height shows the resonance, 0 dB at Q 0.71.
+fn q_db(q: f32) -> f32 {
+    20.0 * (q.max(EQ_Q_MIN) / std::f32::consts::FRAC_1_SQRT_2).log10()
+}
+
 fn dot_pos(ax: &Axis, b: &EqBand) -> Pos2 {
-    let y = if b.kind.has_gain() { ax.y(b.gain) } else { ax.y(0.0) };
+    let y = if b.kind.has_gain() {
+        ax.y(b.gain)
+    } else if b.kind.is_cut() {
+        ax.y(q_db(b.q).clamp(-EQ_GAIN_MAX, EQ_GAIN_MAX))
+    } else {
+        ax.y(0.0)
+    };
     pos2(ax.dx(b.freq), y)
 }
 
@@ -818,7 +751,12 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
                 for &(b, f0, g0, q0) in &dd.start {
                     let band = &mut e.bands[ch][b];
                     band.freq = (f0 * (delta.x * fine / w * LN_RANGE).exp()).clamp(EQ_FREQ_MIN, EQ_FREQ_MAX);
-                    if alt || !band.kind.has_gain() {
+                    if band.kind.is_cut() {
+                        // The dot follows the pointer: Q from its resonance height.
+                        let db = q_db(q0) - delta.y * fine / ppdb;
+                        band.q = (std::f32::consts::FRAC_1_SQRT_2 * 10f32.powf(db / 20.0)).clamp(EQ_Q_MIN, EQ_Q_MAX);
+                        band.gain = g0;
+                    } else if alt || !band.kind.has_gain() {
                         band.q = (q0 * 2f32.powf(-delta.y * fine / 40.0)).clamp(EQ_Q_MIN, EQ_Q_MAX);
                         band.gain = g0;
                     } else {

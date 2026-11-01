@@ -468,6 +468,8 @@ pub struct Song {
     pub order: Vec<u16>,
     /// Main track effect chain (before the Main volume / pan).
     pub master_fx: Vec<crate::fx::FxSlot>,
+    /// Some chain holds an LFO (filled by `prepare`, set by SetFx).
+    pub lfo: bool,
 }
 
 impl Default for Song {
@@ -478,7 +480,15 @@ impl Default for Song {
 
 impl Song {
     pub fn new(tracks: Vec<SongTrack>) -> Self {
-        Self { tracks, master_out: (0, true), tempo_map: Vec::new(), base_tempo: 120.0, order: Vec::new(), master_fx: Vec::new() }
+        Self {
+            tracks,
+            master_out: (0, true),
+            tempo_map: Vec::new(),
+            base_tempo: 120.0,
+            order: Vec::new(),
+            master_fx: Vec::new(),
+            lfo: false,
+        }
     }
 
     /// Normalise before sending to the audio thread: sort notes and
@@ -529,6 +539,21 @@ impl Song {
                 *channel = (*channel).clamp(1, 16);
             }
         }
+        // External sidechains: a source must exist and not be the track itself.
+        for t in &mut self.tracks {
+            let me = t.rt;
+            for s in &mut t.fx {
+                s.visit(&mut |s| {
+                    if s.sc_src.is_some_and(|(src, _)| src == me || (src as usize) >= MAX_TRACKS || !seen[src as usize]) {
+                        s.sc_src = None;
+                    }
+                });
+            }
+        }
+        for s in &mut self.master_fx {
+            s.visit(&mut |s| s.sc_src = s.sc_src.filter(|&(src, _)| (src as usize) < MAX_TRACKS && seen[src as usize]));
+        }
+        self.lfo = self.tracks.iter().any(|t| crate::fx::has_lfo(&t.fx)) || crate::fx::has_lfo(&self.master_fx);
         self.sort_topologically();
         let mut index = [usize::MAX; MAX_TRACKS];
         for (i, t) in self.tracks.iter().enumerate() {
@@ -560,14 +585,23 @@ impl Song {
         }
         let mut done = vec![false; n];
         self.order.clear();
-        // Track `j` must wait for `i` when it reads from `i`.
-        let deps = |tracks: &[SongTrack], j: usize, done: &[bool]| -> bool {
+        let sc_of = |t: &SongTrack| {
+            let mut v: Vec<u16> = Vec::new();
+            for s in &t.fx {
+                s.visit_ref(&mut |s| v.extend(s.sc_src.map(|x| x.0)));
+            }
+            v
+        };
+        let mut sc: Vec<Vec<u16>> = self.tracks.iter().map(sc_of).collect();
+        // Track `j` must wait for `i` when it reads from `i` (input, sidechain).
+        let deps = |tracks: &[SongTrack], sc: &[Vec<u16>], j: usize, done: &[bool]| -> bool {
             let me = tracks[j].rt;
             tracks[j].input.source().is_some_and(|s| !done[index[s as usize]])
+                || sc[j].iter().any(|&s| index[s as usize] != usize::MAX && !done[index[s as usize]])
                 || tracks.iter().enumerate().any(|(i, t)| !done[i] && (t.output.dest() == Some(me) || t.sends.iter().any(|s| s.0 == me)))
         };
         while self.order.len() < n {
-            if let Some(j) = (0..n).find(|&j| !done[j] && !deps(&self.tracks, j, &done)) {
+            if let Some(j) = (0..n).find(|&j| !done[j] && !deps(&self.tracks, &sc, j, &done)) {
                 done[j] = true;
                 self.order.push(j as u16);
                 continue;
@@ -577,6 +611,16 @@ impl Song {
             let me = self.tracks[j].rt;
             if self.tracks[j].input.source().is_some_and(|s| !done[index[s as usize]]) {
                 self.tracks[j].input = TrackInput::None;
+            }
+            if !sc[j].is_empty() {
+                for s in &mut self.tracks[j].fx {
+                    s.visit(&mut |s| {
+                        if s.sc_src.is_some_and(|(src, _)| index[src as usize] != usize::MAX && !done[index[src as usize]]) {
+                            s.sc_src = None;
+                        }
+                    });
+                }
+                sc[j].clear();
             }
             for (t, _) in self.tracks.iter_mut().zip(&done).filter(|(_, d)| !**d) {
                 if t.output.dest() == Some(me) {

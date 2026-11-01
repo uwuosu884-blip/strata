@@ -311,6 +311,9 @@ pub struct DawApp {
     pub spectra: crate::spectrum::Spectra,
     /// Something on screen animates this frame (repaint at display rate).
     pub animating: bool,
+    /// LFO Map button armed: (LFO device id, map slot); the next clicked
+    /// device parameter gets mapped.
+    pub lfo_arm: Option<(u64, u8)>,
     /// Height of the unfolded EQ Eight display.
     pub eq_big_h: f32,
     /// Where Space starts playback (set by clicking the timeline).
@@ -535,6 +538,7 @@ impl DawApp {
             dev_typing: None,
             spectra: Default::default(),
             animating: false,
+            lfo_arm: None,
             eq_big_h: 207.0,
             play_start: 0.0,
             renaming: None,

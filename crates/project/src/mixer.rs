@@ -127,7 +127,8 @@ pub fn stretch_clip(orig: &ArrangementClip, new_len: f64, left: bool) -> Option<
     let mut a = orig.clone();
     let c = &mut a.clip;
     if let ClipContent::Audio { warp_bpm, .. } = &mut c.content {
-        *warp_bpm = Some(bpm / k);
+        // k× longer: each sample second covers k× more beats.
+        *warp_bpm = Some(bpm * k);
     }
     c.length = new_len;
     c.start *= k;
@@ -213,7 +214,7 @@ mod tests {
         let a = &p.tracks[t].arrangement[0];
         let r = stretch_clip(a, 8.0, false).unwrap();
         assert_eq!((r.start, r.clip.length, r.clip.audio.markers[1].beat), (8.0, 8.0, 8.0));
-        assert!(matches!(r.clip.content, ClipContent::Audio { warp_bpm: Some(b), .. } if (b - 60.0).abs() < 1e-9));
+        assert!(matches!(r.clip.content, ClipContent::Audio { warp_bpm: Some(b), .. } if (b - 240.0).abs() < 1e-9));
         let l = stretch_clip(a, 2.0, true).unwrap();
         assert_eq!((l.start, l.clip.length), (10.0, 2.0));
         let mut un = a.clone();

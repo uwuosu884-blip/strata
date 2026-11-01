@@ -406,6 +406,15 @@ impl Default for Clip {
 }
 
 impl Clip {
+    /// Unwarped audio plays transposed by changing its speed (Live): source
+    /// frames advance this many times faster. 1 for warped / MIDI clips.
+    pub fn raw_rate(&self) -> f64 {
+        match self.content {
+            ClipContent::Audio { warp_bpm: None, .. } => ((self.audio.transpose as f64 + self.audio.detune as f64 / 100.0) / 12.0).exp2(),
+            _ => 1.0,
+        }
+    }
+
     /// Unset loop brace → the whole clip (also migrates v4 files, whose
     /// clips looped over `[0, length)`).
     pub fn normalize_markers(&mut self) {

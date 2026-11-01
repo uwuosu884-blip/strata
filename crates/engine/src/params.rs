@@ -1,0 +1,615 @@
+//! Normalised (0..1) parameter access for every device: knobs, the LFO's
+//! modulation (engine) and macro mappings (app) share these mappings.
+//! Parameter ids are per device type (`up`, `ap`, `eqp`, `gp`, `cp`, `lp`,
+//! `fp`; the sidechain ids `sc` are shared by Gate and Glue Compressor).
+
+use crate::dynfx::*;
+use crate::fx::*;
+use crate::lfo::*;
+
+/// Rack: macros are 0..16, the chain selector 16.
+pub const RACK_SELECTOR: u8 = 16;
+
+pub const P18: f32 = 0.5 - 18.0 / 70.0;
+
+/// Utility Gain knob: 0 dB at the top, 70 dB per knob turn above −18 dB,
+/// a quadratic amplitude taper down to −inf below.
+pub fn gain_to_norm(db: f32) -> f32 {
+    if db <= UTIL_GAIN_MIN_DB {
+        0.0
+    } else if db >= -18.0 {
+        (0.5 + db / 70.0).min(1.0)
+    } else {
+        P18 * 10f32.powf((db + 18.0) / 40.0)
+    }
+}
+
+pub fn norm_to_gain(p: f32) -> f32 {
+    let p = p.clamp(0.0, 1.0);
+    let db = if p >= P18 {
+        70.0 * (p - 0.5)
+    } else if p <= 0.0 {
+        UTIL_GAIN_MIN_DB
+    } else {
+        -18.0 + 40.0 * (p / P18).log10()
+    };
+    if db <= UTIL_GAIN_MIN_DB + 0.05 { UTIL_GAIN_MIN_DB } else { db.min(UTIL_GAIN_MAX_DB) }
+}
+
+/// Utility parameter ids.
+pub mod up {
+    pub const PHASE_L: u8 = 0;
+    pub const PHASE_R: u8 = 1;
+    pub const CHANNEL: u8 = 2;
+    pub const WIDTH: u8 = 3;
+    pub const MONO: u8 = 4;
+    pub const BASS: u8 = 5;
+    pub const FREQ: u8 = 6;
+    pub const AUDITION: u8 = 7;
+    pub const GAIN: u8 = 8;
+    pub const BALANCE: u8 = 9;
+    pub const MUTE: u8 = 10;
+    pub const DC: u8 = 11;
+}
+
+/// Align Delay parameter ids.
+pub mod ap {
+    pub const MODE: u8 = 0;
+    pub const LINK: u8 = 1;
+    pub const LEFT: u8 = 2;
+    pub const RIGHT: u8 = 3;
+    pub const FEET: u8 = 4;
+    pub const TEMP: u8 = 5;
+    pub const FAHRENHEIT: u8 = 6;
+}
+
+/// Continuous parameters: normalised value (None for switches).
+pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
+    match p {
+        FxParams::Utility(u) => Some(match k {
+            up::WIDTH if u.ms_mode => (u.mid_side + 1.0) / 2.0,
+            up::WIDTH if u.width <= 1.0 => u.width / 2.0,
+            up::WIDTH => 0.5 + (u.width - 1.0) / 6.0,
+            up::FREQ => (u.bass_freq / BASS_MONO_MIN_HZ).ln() / 10f32.ln(),
+            up::GAIN => gain_to_norm(u.gain_db),
+            up::BALANCE => (u.balance + 1.0) / 2.0,
+            _ => return None,
+        }),
+        FxParams::AlignDelay(a) => Some(match k {
+            ap::LEFT | ap::RIGHT => (align_value(a, k == ap::RIGHT) / align_max(a)).max(0.0).sqrt(),
+            ap::TEMP => (a.temp - ALIGN_TEMP_MIN_C) / (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
+            _ => return None,
+        }),
+        FxParams::EqEight(e) => eqp::norm(e, k),
+        FxParams::Gate(g) => gate_norm(g, k),
+        FxParams::Glue(g) => glue_norm(g, k),
+        FxParams::Limiter(l) => lim_norm(l, k),
+        FxParams::Lfo(l) => lfo_norm(l, k),
+        FxParams::Rack(r) => match k {
+            0..16 => Some(r.macros[k as usize] / 127.0),
+            RACK_SELECTOR => Some(r.selector / 127.0),
+            _ => None,
+        },
+    }
+}
+
+pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    match p {
+        FxParams::Utility(u) => match k {
+            up::WIDTH if u.ms_mode => u.mid_side = v * 2.0 - 1.0,
+            up::WIDTH => u.width = if v <= 0.5 { v * 2.0 } else { 1.0 + (v - 0.5) * 6.0 },
+            up::FREQ => u.bass_freq = BASS_MONO_MIN_HZ * 10f32.powf(v),
+            up::GAIN => u.gain_db = norm_to_gain(v),
+            up::BALANCE => u.balance = v * 2.0 - 1.0,
+            _ => {}
+        },
+        FxParams::AlignDelay(a) => match k {
+            ap::LEFT | ap::RIGHT => {
+                let x = v * v * align_max(a);
+                set_align_value(a, k == ap::RIGHT, x);
+            }
+            ap::TEMP => a.temp = ALIGN_TEMP_MIN_C + v * (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
+            _ => {}
+        },
+        FxParams::EqEight(e) => eqp::set_norm(e, k, v),
+        FxParams::Gate(g) => gate_set(g, k, v),
+        FxParams::Glue(g) => glue_set(g, k, v),
+        FxParams::Limiter(l) => lim_set(l, k, v),
+        FxParams::Lfo(l) => lfo_set(l, k, v),
+        FxParams::Rack(r) => match k {
+            0..16 => r.macros[k as usize] = (v * 127.0).round(),
+            RACK_SELECTOR => r.selector = (v * 127.0).round(),
+            _ => {}
+        },
+    }
+}
+
+pub fn align_max(a: &AlignDelayParams) -> f32 {
+    match a.mode {
+        DelayMode::Time => ALIGN_TIME_MAX_MS,
+        DelayMode::Samples => ALIGN_SAMPLES_MAX,
+        DelayMode::Distance => ALIGN_DIST_MAX_M,
+    }
+}
+
+/// Current L/R value in the mode's unit (metres for Distance).
+pub fn align_value(a: &AlignDelayParams, right: bool) -> f32 {
+    let right = right && !a.link;
+    match (a.mode, right) {
+        (DelayMode::Time, false) => a.time_l,
+        (DelayMode::Time, true) => a.time_r,
+        (DelayMode::Samples, false) => a.samples_l,
+        (DelayMode::Samples, true) => a.samples_r,
+        (DelayMode::Distance, false) => a.dist_l,
+        (DelayMode::Distance, true) => a.dist_r,
+    }
+}
+
+pub fn set_align_value(a: &mut AlignDelayParams, right: bool, x: f32) {
+    let x = x.clamp(0.0, align_max(a));
+    match (a.mode, right) {
+        (DelayMode::Time, false) => a.time_l = x,
+        (DelayMode::Time, true) => a.time_r = x,
+        (DelayMode::Samples, false) => a.samples_l = x.round(),
+        (DelayMode::Samples, true) => a.samples_r = x.round(),
+        (DelayMode::Distance, false) => a.dist_l = x,
+        (DelayMode::Distance, true) => a.dist_r = x,
+    }
+}
+
+/// EQ Eight parameter ids and mappings.
+pub mod eqp {
+    use crate::eq8::*;
+
+    // Parameter ids: bands are `ch * 40 + band * 5 + field`.
+    pub const FREQ: u8 = 0;
+    pub const GAIN: u8 = 1;
+    pub const QF: u8 = 2;
+    pub const ON: u8 = 3;
+    pub const TYPE: u8 = 4;
+    pub const MODE: u8 = 100;
+    pub const EDIT: u8 = 101;
+    pub const ADAPT: u8 = 102;
+    pub const SCALE: u8 = 103;
+    pub const OUTPUT: u8 = 104;
+    pub const AUDITION: u8 = 105;
+    pub const ANALYZE: u8 = 106;
+    pub const BLOCK: u8 = 107;
+    pub const REFRESH: u8 = 108;
+    pub const AVG: u8 = 109;
+    /// The display's band dots (arrow keys move the selected dots).
+    pub const DOTS: u8 = 110;
+
+    pub fn band_id(ch: usize, b: usize, field: u8) -> u8 {
+        (ch * 40 + b * 5) as u8 + field
+    }
+
+    pub fn split(k: u8) -> Option<(usize, usize, u8)> {
+        (k < 80).then_some(((k / 40) as usize, ((k % 40) / 5) as usize, k % 5))
+    }
+
+    pub const LN_RANGE: f32 = 7.696_213; // ln(22000 / 10)
+
+    pub fn freq_norm(f: f32) -> f32 {
+        (f.clamp(EQ_FREQ_MIN, EQ_FREQ_MAX) / EQ_FREQ_MIN).ln() / LN_RANGE
+    }
+
+    pub fn norm_freq(v: f32) -> f32 {
+        (EQ_FREQ_MIN * (v.clamp(0.0, 1.0) * LN_RANGE).exp()).clamp(EQ_FREQ_MIN, EQ_FREQ_MAX)
+    }
+
+    pub fn q_norm(q: f32) -> f32 {
+        (q.clamp(EQ_Q_MIN, EQ_Q_MAX) / EQ_Q_MIN).ln() / (EQ_Q_MAX / EQ_Q_MIN).ln()
+    }
+
+    pub fn norm_q(v: f32) -> f32 {
+        EQ_Q_MIN * (v.clamp(0.0, 1.0) * (EQ_Q_MAX / EQ_Q_MIN).ln()).exp()
+    }
+
+    pub fn norm(e: &EqEightParams, k: u8) -> Option<f32> {
+        if let Some((ch, b, f)) = split(k) {
+            let band = &e.bands[ch][b];
+            return match f {
+                FREQ => Some(freq_norm(band.freq)),
+                GAIN => Some((band.gain + EQ_GAIN_MAX) / (2.0 * EQ_GAIN_MAX)),
+                QF => Some(q_norm(band.q)),
+                _ => None,
+            };
+        }
+        Some(match k {
+            SCALE => (e.scale + EQ_SCALE_MAX) / (2.0 * EQ_SCALE_MAX),
+            OUTPUT => (e.output + EQ_OUT_MAX) / (2.0 * EQ_OUT_MAX),
+            REFRESH => (e.refresh - EQ_REFRESH_MIN) / (EQ_REFRESH_MAX - EQ_REFRESH_MIN),
+            AVG => (e.avg - 1.0) / (EQ_AVG_MAX - 1.0),
+            _ => return None,
+        })
+    }
+
+    pub fn set_norm(e: &mut EqEightParams, k: u8, v: f32) {
+        let v = v.clamp(0.0, 1.0);
+        if let Some((ch, b, f)) = split(k) {
+            let band = &mut e.bands[ch][b];
+            match f {
+                FREQ => band.freq = norm_freq(v),
+                GAIN => band.gain = v * 2.0 * EQ_GAIN_MAX - EQ_GAIN_MAX,
+                QF => band.q = norm_q(v),
+                _ => {}
+            }
+            return;
+        }
+        match k {
+            SCALE => e.scale = v * 2.0 * EQ_SCALE_MAX - EQ_SCALE_MAX,
+            OUTPUT => e.output = v * 2.0 * EQ_OUT_MAX - EQ_OUT_MAX,
+            REFRESH => e.refresh = EQ_REFRESH_MIN + v * (EQ_REFRESH_MAX - EQ_REFRESH_MIN),
+            AVG => e.avg = 1.0 + v * (EQ_AVG_MAX - 1.0),
+            _ => {}
+        }
+    }
+}
+
+/// `n` (0..1) → `lo..hi` with power taper `k` (k > 1: finer at the bottom).
+pub fn pow_val(n: f32, lo: f32, hi: f32, k: f32) -> f32 {
+    lo + (hi - lo) * n.clamp(0.0, 1.0).powf(k)
+}
+
+pub fn pow_norm(v: f32, lo: f32, hi: f32, k: f32) -> f32 {
+    ((v - lo) / (hi - lo)).clamp(0.0, 1.0).powf(1.0 / k)
+}
+
+pub fn log_val(n: f32, lo: f32, hi: f32) -> f32 {
+    lo * (hi / lo).powf(n.clamp(0.0, 1.0))
+}
+
+pub fn log_norm(v: f32, lo: f32, hi: f32) -> f32 {
+    ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0)
+}
+
+fn lin_val(n: f32, lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * n.clamp(0.0, 1.0)
+}
+
+fn lin_norm(v: f32, lo: f32, hi: f32) -> f32 {
+    ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+}
+
+fn idx_norm(i: u8, n: usize) -> f32 {
+    (i as f32 / (n - 1) as f32).clamp(0.0, 1.0)
+}
+
+fn norm_idx(v: f32, n: usize) -> u8 {
+    (v.clamp(0.0, 1.0) * (n - 1) as f32).round() as u8
+}
+
+/// Gate threshold knob and display share one scale (Live's labels: +6, 0,
+/// −6, −12, −18, −36, −70 dB at these heights).
+pub const GATE_SCALE: [(f32, f32); 7] =
+    [(-70.0, 0.0), (-36.0, 18.0 / 98.0), (-18.0, 39.0 / 98.0), (-12.0, 53.0 / 98.0), (-6.0, 68.0 / 98.0), (0.0, 82.0 / 98.0), (6.0, 1.0)];
+
+/// Monotone cubic (Fritsch–Carlson) through `pts` (x ascending).
+pub fn mono_cubic(pts: &[(f32, f32)], x: f32) -> f32 {
+    let n = pts.len();
+    let x = x.clamp(pts[0].0, pts[n - 1].0);
+    let i = pts.windows(2).position(|w| x <= w[1].0).unwrap_or(n - 2);
+    let d = |k: usize| (pts[k + 1].1 - pts[k].1) / (pts[k + 1].0 - pts[k].0);
+    let m = |k: usize| {
+        if k == 0 {
+            d(0)
+        } else if k == n - 1 {
+            d(n - 2)
+        } else {
+            let (a, b) = (d(k - 1), d(k));
+            if a * b <= 0.0 { 0.0 } else { 2.0 / (1.0 / a + 1.0 / b) }
+        }
+    };
+    let (x0, y0, x1, y1) = (pts[i].0, pts[i].1, pts[i + 1].0, pts[i + 1].1);
+    let h = x1 - x0;
+    let t = (x - x0) / h;
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * y0 + (t3 - 2.0 * t2 + t) * h * m(i) + (-2.0 * t3 + 3.0 * t2) * y1 + (t3 - t2) * h * m(i + 1)
+}
+
+/// Inverse of [`mono_cubic`] (monotone rising) by bisection.
+pub fn mono_cubic_inv(pts: &[(f32, f32)], y: f32) -> f32 {
+    let (mut lo, mut hi) = (pts[0].0, pts[pts.len() - 1].0);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if mono_cubic(pts, mid) < y {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+pub fn gate_db_norm(db: f32) -> f32 {
+    mono_cubic(&GATE_SCALE, db)
+}
+
+pub fn gate_norm_db(n: f32) -> f32 {
+    mono_cubic_inv(&GATE_SCALE, n.clamp(0.0, 1.0))
+}
+
+/// Sidechain ids (Gate and Glue Compressor).
+pub mod sc {
+    pub const SHOWN: u8 = 40;
+    pub const ON: u8 = 41;
+    pub const SOURCE: u8 = 42;
+    pub const TAP: u8 = 43;
+    pub const GAIN: u8 = 44;
+    pub const MIX: u8 = 45;
+    pub const EQ_ON: u8 = 46;
+    pub const EQ: u8 = 47;
+    pub const FREQ: u8 = 48;
+    pub const Q: u8 = 49;
+    pub const EQ_GAIN: u8 = 50;
+    pub const LISTEN: u8 = 51;
+}
+
+fn sc_norm(s: &Sidechain, k: u8) -> Option<f32> {
+    Some(match k {
+        sc::GAIN => lin_norm(s.gain, SC_GAIN_MIN, SC_GAIN_MAX),
+        sc::MIX => s.mix,
+        sc::FREQ => log_norm(s.freq, SC_FREQ_MIN, SC_FREQ_MAX),
+        sc::Q => log_norm(s.q, SC_Q_MIN, SC_Q_MAX),
+        sc::EQ_GAIN => lin_norm(s.eq_gain, -SC_EQ_GAIN_MAX, SC_EQ_GAIN_MAX),
+        _ => return None,
+    })
+}
+
+fn sc_set(s: &mut Sidechain, k: u8, v: f32) {
+    match k {
+        sc::GAIN => s.gain = lin_val(v, SC_GAIN_MIN, SC_GAIN_MAX),
+        sc::MIX => s.mix = v,
+        sc::FREQ => s.freq = log_val(v, SC_FREQ_MIN, SC_FREQ_MAX),
+        sc::Q => s.q = log_val(v, SC_Q_MIN, SC_Q_MAX),
+        sc::EQ_GAIN => s.eq_gain = lin_val(v, -SC_EQ_GAIN_MAX, SC_EQ_GAIN_MAX),
+        _ => {}
+    }
+}
+
+/// Gate ids.
+pub mod gp {
+    pub const THRESHOLD: u8 = 0;
+    pub const RETURN: u8 = 1;
+    pub const FLIP: u8 = 2;
+    pub const LOOKAHEAD: u8 = 3;
+    pub const ATTACK: u8 = 4;
+    pub const HOLD: u8 = 5;
+    pub const RELEASE: u8 = 6;
+    pub const FLOOR: u8 = 7;
+}
+
+/// Gate tapers (fitted to Live's knob positions: Hold 10 ms and Release
+/// 15 ms sit at ~0.3 and ~0.5 of the turn).
+pub const GATE_HOLD_K: f32 = 3.0;
+pub const GATE_RELEASE_K: f32 = 6.0;
+
+fn gate_norm(g: &GateParams, k: u8) -> Option<f32> {
+    Some(match k {
+        gp::THRESHOLD => gate_db_norm(g.threshold),
+        gp::RETURN => lin_norm(g.ret, 0.0, GATE_RETURN_MAX),
+        gp::ATTACK => lin_norm(g.attack, GATE_ATTACK.0, GATE_ATTACK.1),
+        gp::HOLD => pow_norm(g.hold, GATE_HOLD.0, GATE_HOLD.1, GATE_HOLD_K),
+        gp::RELEASE => pow_norm(g.release, GATE_RELEASE.0, GATE_RELEASE.1, GATE_RELEASE_K),
+        gp::FLOOR => lin_norm(g.floor, GATE_FLOOR_MIN, 0.0),
+        _ => return sc_norm(&g.sc, k),
+    })
+}
+
+fn gate_set(g: &mut GateParams, k: u8, v: f32) {
+    match k {
+        gp::THRESHOLD => g.threshold = gate_norm_db(v),
+        gp::RETURN => g.ret = lin_val(v, 0.0, GATE_RETURN_MAX),
+        gp::ATTACK => g.attack = lin_val(v, GATE_ATTACK.0, GATE_ATTACK.1),
+        gp::HOLD => g.hold = pow_val(v, GATE_HOLD.0, GATE_HOLD.1, GATE_HOLD_K),
+        gp::RELEASE => g.release = pow_val(v, GATE_RELEASE.0, GATE_RELEASE.1, GATE_RELEASE_K),
+        gp::FLOOR => g.floor = lin_val(v, GATE_FLOOR_MIN, 0.0),
+        _ => sc_set(&mut g.sc, k, v),
+    }
+}
+
+/// Glue Compressor ids.
+pub mod cp {
+    pub const THRESHOLD: u8 = 0;
+    pub const RATIO: u8 = 1;
+    pub const ATTACK: u8 = 2;
+    pub const RELEASE: u8 = 3;
+    pub const MAKEUP: u8 = 4;
+    pub const RANGE: u8 = 5;
+    pub const DRY_WET: u8 = 6;
+    pub const SOFT: u8 = 7;
+    pub const OVERSAMPLE: u8 = 8;
+}
+
+fn glue_norm(g: &GlueParams, k: u8) -> Option<f32> {
+    Some(match k {
+        cp::THRESHOLD => lin_norm(g.threshold, GLUE_THRESH_MIN, 0.0),
+        cp::RATIO => idx_norm(g.ratio, GLUE_RATIOS.len()),
+        cp::ATTACK => idx_norm(g.attack, GLUE_ATTACKS.len()),
+        cp::RELEASE => idx_norm(g.release, GLUE_RELEASES.len()),
+        cp::MAKEUP => lin_norm(g.makeup, 0.0, GLUE_MAKEUP_MAX),
+        cp::RANGE => lin_norm(g.range, 0.0, GLUE_RANGE_MAX),
+        cp::DRY_WET => g.dry_wet,
+        _ => return sc_norm(&g.sc, k),
+    })
+}
+
+fn glue_set(g: &mut GlueParams, k: u8, v: f32) {
+    match k {
+        cp::THRESHOLD => g.threshold = lin_val(v, GLUE_THRESH_MIN, 0.0),
+        cp::RATIO => g.ratio = norm_idx(v, GLUE_RATIOS.len()),
+        cp::ATTACK => g.attack = norm_idx(v, GLUE_ATTACKS.len()),
+        cp::RELEASE => g.release = norm_idx(v, GLUE_RELEASES.len()),
+        cp::MAKEUP => g.makeup = lin_val(v, 0.0, GLUE_MAKEUP_MAX),
+        cp::RANGE => g.range = lin_val(v, 0.0, GLUE_RANGE_MAX),
+        cp::DRY_WET => g.dry_wet = v,
+        _ => sc_set(&mut g.sc, k, v),
+    }
+}
+
+/// Limiter ids (Input/Output and Ceiling/Threshold swap with Maximize).
+pub mod lp {
+    pub const INPUT: u8 = 0;
+    pub const MAXIMIZE: u8 = 1;
+    pub const CEILING: u8 = 2;
+    pub const RELEASE: u8 = 3;
+    pub const AUTO: u8 = 4;
+    pub const LOOKAHEAD: u8 = 5;
+    pub const MODE: u8 = 6;
+    pub const ROUTING: u8 = 7;
+    pub const LINK: u8 = 8;
+    pub const OUTPUT: u8 = 9;
+    pub const THRESHOLD: u8 = 10;
+    /// The GR display (click resets the held maximum).
+    pub const GR: u8 = 11;
+}
+
+fn lim_norm(l: &LimiterParams, k: u8) -> Option<f32> {
+    Some(match k {
+        lp::INPUT => lin_norm(l.input, LIM_GAIN.0, LIM_GAIN.1),
+        lp::OUTPUT => lin_norm(l.output, LIM_CEIL_MIN, 0.0),
+        lp::CEILING => lin_norm(l.ceiling, LIM_CEIL_MIN, 0.0),
+        lp::THRESHOLD => lin_norm(l.threshold, LIM_CEIL_MIN, 0.0),
+        lp::RELEASE => log_norm(l.release, LIM_RELEASE.0, LIM_RELEASE.1),
+        lp::LOOKAHEAD => idx_norm(l.lookahead, LIM_LOOKAHEAD.len()),
+        lp::LINK => l.link,
+        _ => return None,
+    })
+}
+
+fn lim_set(l: &mut LimiterParams, k: u8, v: f32) {
+    match k {
+        lp::INPUT => l.input = lin_val(v, LIM_GAIN.0, LIM_GAIN.1),
+        lp::OUTPUT => l.output = lin_val(v, LIM_CEIL_MIN, 0.0),
+        lp::CEILING => l.ceiling = lin_val(v, LIM_CEIL_MIN, 0.0),
+        lp::THRESHOLD => l.threshold = lin_val(v, LIM_CEIL_MIN, 0.0),
+        lp::RELEASE => l.release = log_val(v, LIM_RELEASE.0, LIM_RELEASE.1),
+        lp::LOOKAHEAD => l.lookahead = norm_idx(v, LIM_LOOKAHEAD.len()),
+        lp::LINK => l.link = v,
+        _ => {}
+    }
+}
+
+/// LFO ids; map `m` fields are `MAP + m * 8 + field`.
+pub mod fp {
+    pub const WAVE: u8 = 0;
+    pub const SHAPE: u8 = 1;
+    pub const STEPS: u8 = 2;
+    pub const JITTER: u8 = 3;
+    pub const SMOOTH: u8 = 4;
+    pub const RATE: u8 = 5;
+    pub const SYNC_RATE: u8 = 6;
+    pub const SYNC: u8 = 7;
+    pub const X10: u8 = 8;
+    pub const DEPTH: u8 = 9;
+    pub const OFFSET: u8 = 10;
+    pub const PHASE: u8 = 11;
+    pub const HOLD: u8 = 12;
+    pub const RETRIG: u8 = 13;
+    pub const MULTIMAP: u8 = 14;
+    pub const MAP: u8 = 20;
+    pub const M_AMOUNT: u8 = 0;
+    pub const M_MIN: u8 = 1;
+    pub const M_MAX: u8 = 2;
+    pub const M_REMOTE: u8 = 3;
+    pub const M_POLARITY: u8 = 4;
+    pub const M_MAP: u8 = 5;
+    pub const M_UNMAP: u8 = 6;
+    pub fn map(m: usize, field: u8) -> u8 {
+        MAP + (m * 8) as u8 + field
+    }
+    pub fn split(k: u8) -> Option<(usize, u8)> {
+        (MAP..MAP + 64).contains(&k).then(|| (((k - MAP) / 8) as usize, (k - MAP) % 8))
+    }
+}
+
+/// LFO rate taper (1 Hz at ~0.16 of the turn, as in Live).
+pub const LFO_RATE_K: f32 = 2.0;
+
+fn lfo_norm(l: &LfoParams, k: u8) -> Option<f32> {
+    if let Some((m, f)) = fp::split(k) {
+        let m = &l.maps[m];
+        return match f {
+            fp::M_AMOUNT => Some(m.amount),
+            fp::M_MIN => Some(m.min),
+            fp::M_MAX => Some(m.max),
+            _ => None,
+        };
+    }
+    Some(match k {
+        fp::SHAPE => (l.shape + 1.0) / 2.0,
+        fp::STEPS => l.steps as f32 / LFO_STEPS_MAX as f32,
+        fp::JITTER => l.jitter,
+        fp::SMOOTH => l.smooth,
+        fp::RATE => pow_norm(l.rate, LFO_RATE.0, LFO_RATE.1, LFO_RATE_K),
+        fp::SYNC_RATE => idx_norm(l.sync_rate, LFO_SYNC.len()),
+        fp::DEPTH => l.depth,
+        fp::OFFSET => (l.offset + 1.0) / 2.0,
+        fp::PHASE => l.phase,
+        _ => return None,
+    })
+}
+
+fn lfo_set(l: &mut LfoParams, k: u8, v: f32) {
+    if let Some((m, f)) = fp::split(k) {
+        let m = &mut l.maps[m];
+        match f {
+            fp::M_AMOUNT => m.amount = v,
+            fp::M_MIN => m.min = v,
+            fp::M_MAX => m.max = v,
+            _ => {}
+        }
+        return;
+    }
+    match k {
+        fp::SHAPE => l.shape = v * 2.0 - 1.0,
+        // 1 step is meaningless: Off below 2.
+        fp::STEPS => {
+            let s = (v * LFO_STEPS_MAX as f32).round() as u8;
+            l.steps = if s < 2 { 0 } else { s };
+        }
+        fp::JITTER => l.jitter = v,
+        fp::SMOOTH => l.smooth = v,
+        fp::RATE => l.rate = pow_val(v, LFO_RATE.0, LFO_RATE.1, LFO_RATE_K),
+        fp::SYNC_RATE => l.sync_rate = norm_idx(v, LFO_SYNC.len()),
+        fp::DEPTH => l.depth = v,
+        fp::OFFSET => l.offset = v * 2.0 - 1.0,
+        fp::PHASE => l.phase = v,
+        _ => {}
+    }
+}
+
+/// Whether an LFO may map this parameter (continuous device parameters,
+/// not rack macros/selector and not other LFOs).
+pub fn mappable(p: &FxParams, k: u8) -> bool {
+    !matches!(p, FxParams::Rack(_) | FxParams::Lfo(_)) && norm(p, k).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips() {
+        let all = [
+            FxParams::Gate(GateParams::default()),
+            FxParams::Glue(GlueParams::default()),
+            FxParams::Limiter(LimiterParams::default()),
+            FxParams::Lfo(LfoParams::default()),
+        ];
+        for p in all {
+            for k in 0..=120u8 {
+                if let Some(n) = norm(&p, k) {
+                    let mut q = p;
+                    set_norm(&mut q, k, n);
+                    let n2 = norm(&q, k).unwrap();
+                    assert!((n - n2).abs() < 1e-3, "{} {k}: {n} vs {n2}", p.name());
+                }
+            }
+        }
+        assert!((gate_db_norm(-12.0) - 53.0 / 98.0).abs() < 1e-6);
+        assert!((gate_norm_db(gate_db_norm(-18.1)) + 18.1).abs() < 1e-4);
+    }
+}

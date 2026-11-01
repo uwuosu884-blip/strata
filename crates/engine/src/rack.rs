@@ -53,7 +53,7 @@ impl Default for RackParams {
             macros: [0.0; MACROS],
             visible: 8,
             selector: 0.0,
-            show_macros: true,
+            show_macros: false,
             show_variations: false,
             show_chains: false,
             show_devices: true,

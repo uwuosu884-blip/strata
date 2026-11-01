@@ -504,7 +504,8 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
             let tr = w.transpose
                 + if w.transpose_env.is_empty() { 0.0 } else { NoteMpe::eval(&w.transpose_env, clip.wrap(clip.start + local0), 0.0) };
             let rate = (tr as f64 / 12.0).exp2();
-            // Unwarped, or no map (legacy / tests): straight read at the clip's BPM.
+            // Unwarped, or no map (legacy / tests): straight read at the clip's BPM;
+            // transposing changes the speed (repitch).
             let raw = a.warp_bpm.is_none() || w.map.knots.is_empty();
             let mode = if raw { StretchMode::RePitch } else { w.mode };
             let fpb_raw = 60.0 / a.warp_bpm.unwrap_or(ctx.tempo) * sr_s;
@@ -540,7 +541,7 @@ fn play_clip(clip: &Clip, origin: f64, span: f64, ctx: &SegCtx, out: &mut ClipOu
                         let u = clip.start + local.max(0.0);
                         let c = clip.wrap(u);
                         let (x, y) = match mode {
-                            _ if raw => a.sample.read(a.offset_frames + c * fpb_raw),
+                            _ if raw => a.sample.read(a.offset_frames + c * fpb_raw * rate),
                             StretchMode::RePitch => sc.repitch(c),
                             StretchMode::Beats => sc.beats(c),
                             _ => sc.granular(u, |x| clip.wrap(x)),

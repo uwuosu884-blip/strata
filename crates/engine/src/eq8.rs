@@ -27,6 +27,7 @@ pub const EQ_AVG_MAX: f32 = 100.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EqFilter {
     LowCut48,
+    LowCut24,
     LowCut12,
     LowShelf,
     #[default]
@@ -34,31 +35,36 @@ pub enum EqFilter {
     Notch,
     HighShelf,
     HighCut12,
+    HighCut24,
     HighCut48,
 }
 
 impl EqFilter {
     /// Live's chooser order (top to bottom).
-    pub const ALL: [EqFilter; 8] = [
+    pub const ALL: [EqFilter; 10] = [
         EqFilter::LowCut48,
+        EqFilter::LowCut24,
         EqFilter::LowCut12,
         EqFilter::LowShelf,
         EqFilter::Bell,
         EqFilter::Notch,
         EqFilter::HighShelf,
         EqFilter::HighCut12,
+        EqFilter::HighCut24,
         EqFilter::HighCut48,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             EqFilter::LowCut48 => "Low Cut 48 dB/oct",
+            EqFilter::LowCut24 => "Low Cut 24 dB/oct",
             EqFilter::LowCut12 => "Low Cut 12 dB/oct",
             EqFilter::LowShelf => "Low Shelf",
             EqFilter::Bell => "Bell",
             EqFilter::Notch => "Notch",
             EqFilter::HighShelf => "High Shelf",
             EqFilter::HighCut12 => "High Cut 12 dB/oct",
+            EqFilter::HighCut24 => "High Cut 24 dB/oct",
             EqFilter::HighCut48 => "High Cut 48 dB/oct",
         }
     }
@@ -66,6 +72,23 @@ impl EqFilter {
     /// Bell and shelves have a Gain (and follow Scale / Adaptive Q).
     pub fn has_gain(self) -> bool {
         matches!(self, EqFilter::LowShelf | EqFilter::Bell | EqFilter::HighShelf)
+    }
+
+    /// Low / high cut (vertical drag = Q; the dot shows the resonance).
+    pub fn is_cut(self) -> bool {
+        matches!(
+            self,
+            EqFilter::LowCut48 | EqFilter::LowCut24 | EqFilter::LowCut12 | EqFilter::HighCut12 | EqFilter::HighCut24 | EqFilter::HighCut48
+        )
+    }
+
+    /// Biquad sections the band runs.
+    pub fn sections(self) -> usize {
+        match self {
+            EqFilter::LowCut48 | EqFilter::HighCut48 => 4,
+            EqFilter::LowCut24 | EqFilter::HighCut24 => 2,
+            _ => 1,
+        }
     }
 }
 
@@ -207,7 +230,7 @@ impl Coefs {
 }
 
 #[derive(Clone, Copy)]
-enum Rbj {
+pub(crate) enum Rbj {
     Lp,
     Hp,
     Bp,
@@ -217,7 +240,7 @@ enum Rbj {
     HighShelf,
 }
 
-fn rbj(kind: Rbj, f: f64, sr: f64, q: f64, db: f64) -> Coefs {
+pub(crate) fn rbj(kind: Rbj, f: f64, sr: f64, q: f64, db: f64) -> Coefs {
     let w = 2.0 * PI * (f / sr).clamp(1e-6, 0.4999);
     let (s, c) = w.sin_cos();
     let alpha = s / (2.0 * q.max(1e-3));
@@ -255,6 +278,8 @@ fn rbj(kind: Rbj, f: f64, sr: f64, q: f64, db: f64) -> Coefs {
 
 /// Butterworth 8th-order section Qs (θ = (2k−1)π/16).
 const BW8_Q: [f64; 4] = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_4];
+/// 4th-order Butterworth section Qs.
+const BW4_Q: [f64; 2] = [0.541_196_1, 1.306_563];
 
 /// Up to four cascaded sections.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -295,23 +320,26 @@ impl EqEightParams {
     pub fn sections(&self, b: &EqBand, sr: f32) -> Sections {
         let (g, q) = self.effective(b);
         let (f, sr, q, g) = (b.freq.clamp(EQ_FREQ_MIN, EQ_FREQ_MAX) as f64, sr as f64, q as f64, g as f64);
-        let cut48 = |k: Rbj| {
-            let mut s = Sections { n: 4, ..Default::default() };
-            for (i, bq) in BW8_Q.iter().enumerate() {
+        let cut = |k: Rbj, qs: &[f64]| {
+            let mut s = Sections { n: qs.len(), ..Default::default() };
+            for (i, bq) in qs.iter().enumerate() {
                 // Q above 0.71 raises the resonance of the sharpest section.
-                let qq = if i == 3 { bq * q / std::f64::consts::FRAC_1_SQRT_2 } else { *bq };
+                let qq = if i == qs.len() - 1 { bq * q / std::f64::consts::FRAC_1_SQRT_2 } else { *bq };
                 s.c[i] = rbj(k, f, sr, qq, 0.0);
             }
             s
         };
+        let cut48 = |k: Rbj| cut(k, &BW8_Q);
         match b.kind {
             EqFilter::LowCut48 => cut48(Rbj::Hp),
+            EqFilter::LowCut24 => cut(Rbj::Hp, &BW4_Q),
             EqFilter::LowCut12 => Sections::one(rbj(Rbj::Hp, f, sr, q, 0.0)),
             EqFilter::LowShelf => Sections::one(rbj(Rbj::LowShelf, f, sr, q, g)),
             EqFilter::Bell => Sections::one(rbj(Rbj::Peak, f, sr, q, g)),
             EqFilter::Notch => Sections::one(rbj(Rbj::Notch, f, sr, q, 0.0)),
             EqFilter::HighShelf => Sections::one(rbj(Rbj::HighShelf, f, sr, q, g)),
             EqFilter::HighCut12 => Sections::one(rbj(Rbj::Lp, f, sr, q, 0.0)),
+            EqFilter::HighCut24 => cut(Rbj::Lp, &BW4_Q),
             EqFilter::HighCut48 => cut48(Rbj::Lp),
         }
     }
@@ -399,13 +427,13 @@ pub fn spectrum_tap(id: u64) -> Arc<SpecTap> {
 
 /// Transposed direct form II section (f64 state: stable at 10 Hz).
 #[derive(Debug, Clone, Copy, Default)]
-struct Tdf2 {
+pub(crate) struct Tdf2 {
     s: [f64; 2],
 }
 
 impl Tdf2 {
     #[inline]
-    fn tick(&mut self, c: &Coefs, x: f64) -> f64 {
+    pub(crate) fn tick(&mut self, c: &Coefs, x: f64) -> f64 {
         let y = c.b[0] * x + self.s[0];
         self.s[0] = c.b[1] * x - c.a[0] * y + self.s[1];
         self.s[1] = c.b[2] * x - c.a[1] * y;
@@ -424,10 +452,10 @@ struct BandDsp {
 }
 
 /// 2x halfband FIR (windowed sinc) for oversampling.
-const OS_TAPS: usize = 47;
+pub(crate) const OS_TAPS: usize = 47;
 
 #[derive(Debug, Clone)]
-struct Fir {
+pub(crate) struct Fir {
     hist: [f64; 64],
     pos: usize,
 }
@@ -440,12 +468,12 @@ impl Default for Fir {
 
 impl Fir {
     #[inline]
-    fn push(&mut self, x: f64) {
+    pub(crate) fn push(&mut self, x: f64) {
         self.pos = (self.pos + 1) & 63;
         self.hist[self.pos] = x;
     }
     #[inline]
-    fn out(&self, h: &[f64; OS_TAPS]) -> f64 {
+    pub(crate) fn out(&self, h: &[f64; OS_TAPS]) -> f64 {
         let mut acc = 0.0;
         for (k, hk) in h.iter().enumerate() {
             acc += hk * self.hist[(self.pos.wrapping_sub(k)) & 63];
@@ -454,7 +482,7 @@ impl Fir {
     }
 }
 
-fn halfband() -> [f64; OS_TAPS] {
+pub(crate) fn halfband() -> [f64; OS_TAPS] {
     let m = (OS_TAPS - 1) as f64 / 2.0;
     let mut h = [0.0; OS_TAPS];
     for (i, v) in h.iter_mut().enumerate() {
@@ -509,9 +537,7 @@ impl EqState {
     fn update_band(d: &mut BandDsp, p: &EqEightParams, b: &EqBand, sr: f32, k: f32, solo: bool) {
         let target = [b.freq.clamp(EQ_FREQ_MIN, EQ_FREQ_MAX).log2(), b.gain, b.q.clamp(EQ_Q_MIN, EQ_Q_MAX).log2()];
         if d.kind != Some(b.kind) || !d.on {
-            if d.kind.is_some_and(|k0| {
-                (k0 == EqFilter::LowCut48 || k0 == EqFilter::HighCut48) != (b.kind == EqFilter::LowCut48 || b.kind == EqFilter::HighCut48)
-            }) {
+            if d.kind.is_some_and(|k0| k0.sections() != b.kind.sections()) {
                 d.st = Default::default();
             }
             d.kind = Some(b.kind);

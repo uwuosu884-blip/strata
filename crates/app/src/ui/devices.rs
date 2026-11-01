@@ -11,7 +11,9 @@ use daw_project::devices::*;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, pos2, vec2};
 use std::f32::consts::PI;
 
+mod dynamics;
 mod eq8;
+mod lfo;
 mod rack;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
@@ -38,6 +40,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::AlignDelay(_) => 112.0,
         FxParams::EqEight(_) => eq8::WIDTH,
         FxParams::Rack(_) => rack::width(d),
+        FxParams::Gate(g) => dynamics::gate_width(&g),
+        FxParams::Glue(g) => dynamics::glue_width(&g),
+        FxParams::Limiter(_) => dynamics::LIMITER_W,
+        FxParams::Lfo(_) => lfo::WIDTH,
     }
 }
 
@@ -45,31 +51,8 @@ pub fn width(d: &Device) -> f32 {
 // Parameters: normalised values, defaults, display, steps.
 // ----------------------------------------------------------------------------
 
-const P18: f32 = 0.5 - 18.0 / 70.0;
-
-/// Utility Gain knob: 0 dB at the top, 70 dB per knob turn above −18 dB,
-/// a quadratic amplitude taper down to −inf below.
-pub fn gain_to_norm(db: f32) -> f32 {
-    if db <= UTIL_GAIN_MIN_DB {
-        0.0
-    } else if db >= -18.0 {
-        (0.5 + db / 70.0).min(1.0)
-    } else {
-        P18 * 10f32.powf((db + 18.0) / 40.0)
-    }
-}
-
-pub fn norm_to_gain(p: f32) -> f32 {
-    let p = p.clamp(0.0, 1.0);
-    let db = if p >= P18 {
-        70.0 * (p - 0.5)
-    } else if p <= 0.0 {
-        UTIL_GAIN_MIN_DB
-    } else {
-        -18.0 + 40.0 * (p / P18).log10()
-    };
-    if db <= UTIL_GAIN_MIN_DB + 0.05 { UTIL_GAIN_MIN_DB } else { db.min(UTIL_GAIN_MAX_DB) }
-}
+use daw_project::devices::params::fp;
+pub use daw_project::devices::params::{P18, align_value, ap, gain_to_norm, mappable, norm, norm_to_gain, set_align_value, set_norm, up};
 
 fn fmt_db(db: f32) -> String {
     if db <= UTIL_GAIN_MIN_DB {
@@ -78,120 +61,6 @@ fn fmt_db(db: f32) -> String {
         format!("{db:.2} dB")
     } else {
         format!("{db:.1} dB")
-    }
-}
-
-/// Utility parameter ids.
-pub mod up {
-    pub const PHASE_L: u8 = 0;
-    pub const PHASE_R: u8 = 1;
-    pub const CHANNEL: u8 = 2;
-    pub const WIDTH: u8 = 3;
-    pub const MONO: u8 = 4;
-    pub const BASS: u8 = 5;
-    pub const FREQ: u8 = 6;
-    pub const AUDITION: u8 = 7;
-    pub const GAIN: u8 = 8;
-    pub const BALANCE: u8 = 9;
-    pub const MUTE: u8 = 10;
-    pub const DC: u8 = 11;
-}
-
-/// Align Delay parameter ids.
-pub mod ap {
-    pub const MODE: u8 = 0;
-    pub const LINK: u8 = 1;
-    pub const LEFT: u8 = 2;
-    pub const RIGHT: u8 = 3;
-    pub const FEET: u8 = 4;
-    pub const TEMP: u8 = 5;
-    pub const FAHRENHEIT: u8 = 6;
-}
-
-/// Continuous parameters: normalised value (None for switches).
-pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
-    match p {
-        FxParams::Utility(u) => Some(match k {
-            up::WIDTH if u.ms_mode => (u.mid_side + 1.0) / 2.0,
-            up::WIDTH if u.width <= 1.0 => u.width / 2.0,
-            up::WIDTH => 0.5 + (u.width - 1.0) / 6.0,
-            up::FREQ => (u.bass_freq / BASS_MONO_MIN_HZ).ln() / 10f32.ln(),
-            up::GAIN => gain_to_norm(u.gain_db),
-            up::BALANCE => (u.balance + 1.0) / 2.0,
-            _ => return None,
-        }),
-        FxParams::AlignDelay(a) => Some(match k {
-            ap::LEFT | ap::RIGHT => (align_value(a, k == ap::RIGHT) / align_max(a)).max(0.0).sqrt(),
-            ap::TEMP => (a.temp - ALIGN_TEMP_MIN_C) / (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
-            _ => return None,
-        }),
-        FxParams::EqEight(e) => eq8::norm(e, k),
-        FxParams::Rack(r) => match k {
-            0..16 => Some(r.macros[k as usize] / 127.0),
-            rack::SELECTOR => Some(r.selector / 127.0),
-            _ => None,
-        },
-    }
-}
-
-pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
-    let v = v.clamp(0.0, 1.0);
-    match p {
-        FxParams::Utility(u) => match k {
-            up::WIDTH if u.ms_mode => u.mid_side = v * 2.0 - 1.0,
-            up::WIDTH => u.width = if v <= 0.5 { v * 2.0 } else { 1.0 + (v - 0.5) * 6.0 },
-            up::FREQ => u.bass_freq = BASS_MONO_MIN_HZ * 10f32.powf(v),
-            up::GAIN => u.gain_db = norm_to_gain(v),
-            up::BALANCE => u.balance = v * 2.0 - 1.0,
-            _ => {}
-        },
-        FxParams::AlignDelay(a) => match k {
-            ap::LEFT | ap::RIGHT => {
-                let x = v * v * align_max(a);
-                set_align_value(a, k == ap::RIGHT, x);
-            }
-            ap::TEMP => a.temp = ALIGN_TEMP_MIN_C + v * (ALIGN_TEMP_MAX_C - ALIGN_TEMP_MIN_C),
-            _ => {}
-        },
-        FxParams::EqEight(e) => eq8::set_norm(e, k, v),
-        FxParams::Rack(r) => match k {
-            0..16 => r.macros[k as usize] = (v * 127.0).round(),
-            rack::SELECTOR => r.selector = (v * 127.0).round(),
-            _ => {}
-        },
-    }
-}
-
-fn align_max(a: &AlignDelayParams) -> f32 {
-    match a.mode {
-        DelayMode::Time => ALIGN_TIME_MAX_MS,
-        DelayMode::Samples => ALIGN_SAMPLES_MAX,
-        DelayMode::Distance => ALIGN_DIST_MAX_M,
-    }
-}
-
-/// Current L/R value in the mode's unit (metres for Distance).
-fn align_value(a: &AlignDelayParams, right: bool) -> f32 {
-    let right = right && !a.link;
-    match (a.mode, right) {
-        (DelayMode::Time, false) => a.time_l,
-        (DelayMode::Time, true) => a.time_r,
-        (DelayMode::Samples, false) => a.samples_l,
-        (DelayMode::Samples, true) => a.samples_r,
-        (DelayMode::Distance, false) => a.dist_l,
-        (DelayMode::Distance, true) => a.dist_r,
-    }
-}
-
-fn set_align_value(a: &mut AlignDelayParams, right: bool, x: f32) {
-    let x = x.clamp(0.0, align_max(a));
-    match (a.mode, right) {
-        (DelayMode::Time, false) => a.time_l = x,
-        (DelayMode::Time, true) => a.time_r = x,
-        (DelayMode::Samples, false) => a.samples_l = x.round(),
-        (DelayMode::Samples, true) => a.samples_r = x.round(),
-        (DelayMode::Distance, false) => a.dist_l = x,
-        (DelayMode::Distance, true) => a.dist_r = x,
     }
 }
 
@@ -233,6 +102,8 @@ pub fn reset(p: &mut FxParams, k: u8) {
             rack::SELECTOR => r.selector = 0.0,
             _ => {}
         },
+        FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::reset(p, k),
+        FxParams::Lfo(_) => lfo::reset(p, k),
     }
 }
 
@@ -283,6 +154,8 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
             rack::SELECTOR => r.selector = (r.selector.round() + dir).clamp(0.0, 127.0),
             _ => {}
         },
+        FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::step(p, k, dir),
+        FxParams::Lfo(_) => lfo::step(p, k, dir),
     }
 }
 
@@ -320,6 +193,8 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         },
         FxParams::EqEight(_) => eq8::name(k),
         FxParams::Rack(_) => MACRO_NAMES.get(k as usize).copied().unwrap_or("Chain Selector"),
+        FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::name(p, k),
+        FxParams::Lfo(_) => lfo::name(k),
     }
 }
 
@@ -520,6 +395,10 @@ struct Ctx<'a> {
     map: Option<(ChainRef, u64, Option<u8>)>,
     /// Parameters driven by a macro (shown, not editable).
     mapped: Vec<u8>,
+    /// LFO modulation now: (param, modulated value 0..1, Remote mode).
+    mods: Vec<(u8, f32, bool)>,
+    /// Extra widget-id salt for several widgets on one parameter.
+    salt: u32,
 }
 
 impl<'a> Ctx<'a> {
@@ -530,7 +409,28 @@ impl<'a> Ctx<'a> {
         } else {
             Vec::new()
         };
-        Self { app, chain, params: dev.params, on: dev.on, dev, gesture: false, map, mapped }
+        let mut mods: Vec<(u8, f32, bool)> = Vec::new();
+        for (k, m, out) in app.lfo_maps_on(dev.id) {
+            if !mappable(&dev.params, k) {
+                continue;
+            }
+            let base = mods.iter().rev().find(|x| x.0 == k).map(|x| x.1).or_else(|| norm(&dev.params, k)).unwrap_or(0.0);
+            mods.push((k, m.apply(base, out), m.remote));
+        }
+        if !mods.is_empty() {
+            app.animating = true;
+        }
+        Self { app, chain, params: dev.params, on: dev.on, dev, gesture: false, map, mapped, mods, salt: 0 }
+    }
+
+    /// Modulated value of `k` (and whether an LFO drives it in Remote mode).
+    fn modv(&self, k: u8) -> Option<(f32, bool)> {
+        let last = self.mods.iter().rev().find(|m| m.0 == k)?;
+        Some((last.1, self.remote(k)))
+    }
+
+    fn remote(&self, k: u8) -> bool {
+        self.mods.iter().any(|m| m.0 == k && m.2)
     }
 
     fn is_mapped(&self, k: u8) -> bool {
@@ -563,7 +463,19 @@ impl<'a> Ctx<'a> {
     }
 
     fn sense(&self, ui: &egui::Ui, r: Rect, k: u8, s: Sense) -> Response {
-        let id = egui::Id::unique(("devp", self.dev.id, k));
+        let id = egui::Id::unique(("devp", self.dev.id, k, self.salt));
+        // LFO Map armed: a click on a parameter of another device maps it.
+        if let Some((lfo, slot)) = self.app.lfo_arm
+            && lfo != self.dev.id
+            && mappable(&self.params, k)
+        {
+            ui.painter().rect_filled(r, CornerRadius::ZERO, rack::MAP_FILL);
+            let resp = ui.interact(r, id.with("lfomap"), Sense::click());
+            if resp.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(lfo_req_id(), (lfo, slot, self.dev.id, k)));
+            }
+            return ui.interact(r, id, Sense::hover());
+        }
         // Map mode: mappable parameters get an overlay; a click maps the
         // parameter to the armed macro instead of editing it.
         if let Some((_, rack, armed)) = self.map
@@ -584,7 +496,7 @@ impl<'a> Ctx<'a> {
 
     /// Click toggle: focus + flip.
     fn toggle(&mut self, ui: &egui::Ui, r: Rect, k: u8, enabled: bool) -> bool {
-        let enabled = enabled && !self.is_mapped(k);
+        let enabled = enabled && !self.is_mapped(k) && !self.remote(k);
         let resp = self.sense(ui, r, k, Sense::click());
         self.param_menu(&resp, k);
         if resp.clicked() {
@@ -600,7 +512,7 @@ impl<'a> Ctx<'a> {
     /// Drag on a continuous parameter like the track header knobs (cursor
     /// hidden and parked, up / right raises); double-click = default.
     fn drag(&mut self, ui: &egui::Ui, r: Rect, k: u8, enabled: bool) -> Response {
-        let enabled = enabled && !self.is_mapped(k);
+        let enabled = enabled && !self.is_mapped(k) && !self.remote(k);
         let resp = self.sense(ui, r, k, Sense::click_and_drag());
         if resp.drag_started() || resp.clicked() {
             self.focus(k);
@@ -713,6 +625,18 @@ impl<'a> Ctx<'a> {
 /// Body / title clicks on device `id`: plain click selects it alone, Ctrl
 /// toggles, Shift selects a range; a drag or right-click on an unselected
 /// device selects it alone (a selected one keeps the selection).
+fn lfo_req_id() -> egui::Id {
+    egui::Id::unique("lfo_map_request")
+}
+
+/// Apply a pending LFO map click (made on any device this frame or last).
+fn take_lfo_request(app: &mut DawApp, ctx: &egui::Context) {
+    if let Some((lfo, slot, dev, k)) = ctx.data_mut(|d| d.remove_temp::<(u64, u8, u64, u8)>(lfo_req_id())) {
+        app.lfo_set_map(lfo, slot, dev, k);
+        app.lfo_arm = None;
+    }
+}
+
 pub(super) fn select_clicks(app: &mut DawApp, ui: &egui::Ui, c: ChainRef, id: u64, body: &egui::Response, title: &egui::Response) {
     let mods = ui.input(|i| i.modifiers);
     if body.clicked() || title.clicked() {
@@ -727,6 +651,7 @@ pub(super) fn select_clicks(app: &mut DawApp, ui: &egui::Ui, c: ChainRef, id: u6
 }
 
 pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usize) {
+    take_lfo_request(app, ui.ctx());
     let Some(dev) = chain(&app.project, c).get(idx).cloned() else { return };
     if matches!(dev.params, FxParams::Rack(_)) {
         return rack::rack(app, ui, r, c, idx);
@@ -759,6 +684,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let mut group = false;
     let eq_os = match dev.params {
         FxParams::EqEight(e) => Some(e.oversample),
+        FxParams::Glue(g) => Some(g.oversample),
         _ => None,
     };
     menu::context(&tr, 223.0, |ui| {
@@ -800,7 +726,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         rack::header_button(&p, pos2(right - dx, t + 8.5), i);
     }
     let mut name_right = right - 49.0 - 2.0;
-    if matches!(dev.params, FxParams::AlignDelay(_)) {
+    if matches!(dev.params, FxParams::Glue(_)) {
+        dynamics::cytomic(&p, right, t);
+    }
+    if matches!(dev.params, FxParams::AlignDelay(_) | FxParams::Lfo(_)) {
         // Max for Live edit icon (greyed).
         let ir = Rect::from_min_size(pos2(right - 60.0, t + 4.0), vec2(9.0, 9.0));
         let s = Stroke::new(1.0, glyph);
@@ -822,6 +751,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         eq8::header_button(&mut cx, ui, &p, l, t);
         name_x = l + 36.0;
     }
+    if dev.params.sidechain().is_some_and(|s| s.shown) {
+        dynamics::title_fold(&mut cx, ui, &p, l, t);
+        name_x = l + 38.0;
+    }
     let nf = bold(FS);
     let name = fit(&p, dev.params.name(), &nf, name_right - name_x);
     text_at(&p, name_x, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
@@ -830,10 +763,18 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Utility(_) => utility(&mut cx, ui, &p, l, t),
         FxParams::AlignDelay(_) => align_delay(&mut cx, ui, &p, l, t),
         FxParams::EqEight(_) => eq8::eq_eight(&mut cx, ui, &p, r),
+        FxParams::Gate(_) => dynamics::gate(&mut cx, ui, &p, l, t),
+        FxParams::Glue(_) => dynamics::glue(&mut cx, ui, &p, l, t),
+        FxParams::Limiter(_) => dynamics::limiter(&mut cx, ui, &p, l, t),
+        FxParams::Lfo(_) => lfo::lfo(&mut cx, ui, &p, l, t),
         FxParams::Rack(_) => {}
     }
-    if oversample && let FxParams::EqEight(e) = &mut cx.params {
-        e.oversample = !e.oversample;
+    if oversample {
+        match &mut cx.params {
+            FxParams::EqEight(e) => e.oversample = !e.oversample,
+            FxParams::Glue(g) => g.oversample = !g.oversample,
+            _ => {}
+        }
         cx.undo_step();
     }
     let app = cx.commit();
@@ -999,7 +940,11 @@ fn knob_param(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k
     cx.drag(ui, area, k, enabled);
     let v = norm(&cx.params, k).unwrap_or(def);
     text_at(p, x, base, Align2::CENTER_BOTTOM, label, font(FS), text());
-    knob_look(p, pos2(x, base + 21.5), v, def, enabled && cx.on);
+    knob_look(p, pos2(x, base + 21.5), v, def, enabled && cx.on && !cx.remote(k));
+    if let Some((m, _)) = cx.modv(k) {
+        let a = angle(m);
+        p.circle_filled(pos2(x, base + 21.5) + vec2(a.sin(), -a.cos()) * 11.9, 1.9, gray(0xe0));
+    }
     text_at(p, x, base + 42.0, Align2::CENTER_BOTTOM, value, font(FS), text());
     if cx.focused(k) {
         brackets(p, area);
@@ -1213,6 +1158,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Utility(_) => false,
         FxParams::EqEight(_) => eq8::typable(k),
         FxParams::Rack(_) => false,
+        FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) | FxParams::Lfo(_) => false,
     }
 }
 

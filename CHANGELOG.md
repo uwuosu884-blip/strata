@@ -10,6 +10,41 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.4] - 2026-11-01
+
+### Added
+- Gate (Live 12): threshold / return (hysteresis) with draggable lines in
+  the display, Flip, Lookahead 0 / 1.5 / 10 ms, Attack / Hold / Release,
+  Floor; input / output history and attenuation meter.
+- Glue Compressor: stepped Attack / Release (A = auto) / Ratio knobs,
+  Threshold, Makeup, Range, Dry/Wet, Soft clip with its Clip LED, GR needle,
+  Oversampling in the device menu.
+- Limiter: Input / Maximize (Ceiling → Threshold, Input → Output), Release
+  with Auto, Lookahead 1.5 / 3 / 6 ms, Standard / Soft Clip / True Peak,
+  L/R or M/S with Link; input and gain-reduction meters with held max GR
+  (click to reset).
+- Sidechain for Gate and Glue Compressor: Audio From (any other track,
+  Pre FX / Post FX / Post Mixer), Gain, Mix, sidechain EQ (6 filter types,
+  Freq, Q / Gain) and Listen. Unfold with the strip's ▼ button.
+- LFO (Max for Live): 9 waveforms, Shape, Steps, Jitter, Smooth, Rate in Hz
+  (×10) or synced, Depth, Offset, Phase, Hold, Retrigger. Map (and
+  Multimap, up to 8 targets) any device parameter, also inside racks; Mod
+  (bipolar / unipolar amount) or Remote (Min / Max) mode. Modulated knobs
+  show the moving value; Remote-driven ones are greyed.
+- EQ Eight: 24 dB low / high cut filters.
+
+### Changed
+- Effect Rack macros are hidden on new racks.
+- Taller default track height (the whole I/O section fits).
+- EQ Eight spectrum is a little less smooth.
+
+### Fixed
+- Shift-dragging a warped clip edge stretched the audio the wrong way.
+- Clips selected through a time selection showed no grid.
+- Unwarped clips now speed up / slow down with their transposition.
+- Track header In / Auto / Out: "Auto" didn't fit its button.
+- EQ Eight: moving a cut filter's Q now moves its dot.
+
 ## [0.8.3] - 2026-11-01
 
 ### Added

@@ -370,7 +370,7 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
                     .map(|a| e::ArrangementClip { start: a.start, clip: clip(&a.clip, cache, &cx) })
                     .collect(),
                 sends: sends(t),
-                fx: fx(&t.devices),
+                fx: fx(&t.devices, slots),
                 ..Default::default()
             })
         })
@@ -386,27 +386,36 @@ pub fn compile_io(project: &Project, cache: &mut SampleCache, slots: &mut RtSlot
                     p::AudioOut::Ext { ch, stereo } => e::TrackOutput::Ext { ch, stereo },
                     _ => e::TrackOutput::Master,
                 },
-                fx: fx(&r.devices),
+                fx: fx(&r.devices, slots),
                 ..Default::default()
             })
         }))
         .collect::<Vec<_>>();
     let mut song = e::Song::new(tracks);
     song.master_out = (project.master_out_ch, project.master_out_stereo);
-    song.master_fx = fx(&project.master_devices);
+    song.master_fx = fx(&project.master_devices, slots);
     song.base_tempo = project.tempo_bpm;
     song.tempo_map = leader_tempo(project, cache);
     song
 }
 
 /// Device chain → engine slots (allocates the DSP state).
-fn fx(devices: &[p::Device]) -> Vec<e::FxSlot> {
+fn fx(devices: &[p::Device], slots: &RtSlots) -> Vec<e::FxSlot> {
     devices
         .iter()
         .map(|d| {
             let mut s = e::FxSlot::new(d.id, d.on, d.params);
+            // External sidechain: project track id → engine track.
+            if let Some(sc) = d.params.sidechain().filter(|sc| sc.on && sc.source != 0) {
+                let tap = match sc.tap {
+                    e::ScTap::PreFx => e::Tap::PreFx,
+                    e::ScTap::PostFx => e::Tap::PostFx,
+                    e::ScTap::PostMixer => e::Tap::PostMixer,
+                };
+                s.sc_src = slots.get(sc.source).map(|rt| (rt, tap));
+            }
             if let Some(r) = d.rack.as_deref() {
-                let chains = r.chains.iter().map(|c| e::rack::ChainDsp::new(c.id, c.mix, fx(&c.devices))).collect();
+                let chains = r.chains.iter().map(|c| e::rack::ChainDsp::new(c.id, c.mix, fx(&c.devices, slots))).collect();
                 s.rack = Some(Box::new(e::rack::RackDsp::new(chains)));
             }
             s

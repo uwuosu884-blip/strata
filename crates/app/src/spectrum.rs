@@ -50,7 +50,7 @@ impl Spectra {
     }
 
     /// Analyse the newest block (at most every 4 ms) and return the smoothed
-    /// power spectrum. Rises follow in Refresh / 2, falls in Refresh × Avg.
+    /// power spectrum. Rises follow in Refresh × 0.35, falls in Refresh × Avg.
     pub fn update(&mut self, id: u64, block: u32, refresh_ms: f32, avg: f32) -> &EqSpec {
         let e = self.entry(id);
         let n = (block as usize).clamp(256, daw_engine::eq8::TAP_LEN).next_power_of_two();
@@ -83,7 +83,7 @@ impl Spectra {
             // Full-scale sine = 0 dB: amplitude 2|X| / Σw, Σw = n / 2.
             let k = 4.0 / n as f32;
             let tau = (refresh_ms.clamp(1.0, 2000.0) / 1000.0).max(0.001);
-            let up = 1.0 - (-dt / (0.5 * tau)).exp();
+            let up = 1.0 - (-dt / (0.35 * tau)).exp();
             let down = 1.0 - (-dt / (tau * avg.max(1.0))).exp();
             for (b, p) in e.pow.iter_mut().enumerate() {
                 let m = (e.re[b] * e.re[b] + e.im[b] * e.im[b]) * k * k;
@@ -139,7 +139,7 @@ impl EqSpec {
 /// The analyzer curve for `xs.len()` pixel columns: `freq(x)` maps a column
 /// edge to Hz. Each column takes the loudest bin it covers (interpolated
 /// where bins are wider than a column), then neighbouring columns are mixed
-/// (≈ 1/60 octave): a smooth curve on the log axis.
+/// (≈ 1/90 octave): a smooth curve on the log axis.
 pub fn curve_db(spec: &EqSpec, sr: f32, cols: usize, freq: impl Fn(f32) -> f32) -> Vec<f32> {
     let raw: Vec<f32> = (0..cols)
         .map(|i| {
@@ -149,7 +149,7 @@ pub fn curve_db(spec: &EqSpec, sr: f32, cols: usize, freq: impl Fn(f32) -> f32) 
         .collect();
     // Smoothing width in columns ∝ display width (a constant octave fraction).
     let per_oct = cols as f32 / (freq(cols as f32) / freq(0.0)).max(2.0).log2();
-    let sigma = (per_oct / 60.0).clamp(0.6, 4.0);
+    let sigma = (per_oct / 90.0).clamp(0.5, 3.0);
     let rad = (2.5 * sigma).ceil() as isize;
     let w: Vec<f32> = (-rad..=rad).map(|d| (-(d * d) as f32 / (2.0 * sigma * sigma)).exp()).collect();
     (0..cols as isize)

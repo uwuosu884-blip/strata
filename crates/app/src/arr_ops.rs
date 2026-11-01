@@ -121,7 +121,9 @@ impl DawApp {
             }
         }
         move |c: &Clip| match &c.content {
-            ClipContent::Audio { warp_bpm, sample, .. } => 60.0 / warp_bpm.unwrap_or(tempo) * rates.get(sample).copied().unwrap_or(sr),
+            ClipContent::Audio { warp_bpm, sample, .. } => {
+                60.0 / warp_bpm.unwrap_or(tempo) * rates.get(sample).copied().unwrap_or(sr) * c.raw_rate()
+            }
             ClipContent::Midi { .. } => 0.0,
         }
     }

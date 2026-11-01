@@ -5,8 +5,10 @@
 //! thread allocates; when a new song arrives, the audio thread moves the state
 //! of slots with the same id over, so edits never reset delay lines/filters.
 
+use crate::dynfx::{GateState, GlueState, LimiterState, ScState};
 pub use crate::eq8::EqEightParams;
 use crate::eq8::EqState;
+use crate::lfo::{LfoMap, LfoState};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -219,6 +221,10 @@ pub enum FxParams {
     AlignDelay(AlignDelayParams),
     EqEight(EqEightParams),
     Rack(crate::rack::RackParams),
+    Gate(crate::dynfx::GateParams),
+    Glue(crate::dynfx::GlueParams),
+    Limiter(crate::dynfx::LimiterParams),
+    Lfo(crate::lfo::LfoParams),
 }
 
 impl FxParams {
@@ -228,6 +234,19 @@ impl FxParams {
             FxParams::AlignDelay(_) => "Align Delay",
             FxParams::EqEight(_) => "EQ Eight",
             FxParams::Rack(_) => "Audio Effect Rack",
+            FxParams::Gate(_) => "Gate",
+            FxParams::Glue(_) => "Glue Compressor",
+            FxParams::Limiter(_) => "Limiter",
+            FxParams::Lfo(_) => "LFO",
+        }
+    }
+
+    /// Sidechain section (Gate, Glue Compressor).
+    pub fn sidechain(&self) -> Option<&crate::dynfx::Sidechain> {
+        match self {
+            FxParams::Gate(g) => Some(&g.sc),
+            FxParams::Glue(g) => Some(&g.sc),
+            _ => None,
         }
     }
 }
@@ -242,17 +261,146 @@ pub struct FxSlot {
     pub state: Box<FxState>,
     /// Audio Effect Rack chains (`FxParams::Rack`).
     pub rack: Option<Box<crate::rack::RackDsp>>,
+    /// Stored values while an LFO modulates `params`.
+    pub base: FxParams,
+    pub modded: bool,
+    /// External sidechain source (engine track, tap), resolved by compile.
+    pub sc_src: Option<(u16, crate::song::Tap)>,
 }
 
 impl FxSlot {
     /// Allocates the DSP state (control thread).
     pub fn new(id: u64, on: bool, params: FxParams) -> Self {
         let mut state = FxState::for_params(&params);
-        if let StateKind::Eq(e) = &mut state.kind {
-            **e = EqState::new(Some(crate::eq8::spectrum_tap(id)));
+        match &mut state.kind {
+            StateKind::Eq(e) => **e = EqState::new(Some(crate::eq8::spectrum_tap(id))),
+            StateKind::Gate(g) => **g = GateState::new(Some(id)),
+            StateKind::Glue(g) => **g = GlueState::new(Some(id)),
+            StateKind::Limiter(l) => **l = LimiterState::new(Some(id)),
+            StateKind::Lfo(l) => **l = LfoState::new(Some(id)),
+            _ => {}
         }
-        Self { id, on, params, state: Box::new(state), rack: None }
+        Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
     }
+
+    /// New stored values (SetFx); an active modulation is re-applied next block.
+    pub fn set_params(&mut self, p: FxParams) {
+        self.params = p;
+        self.base = p;
+    }
+
+    /// Calls `f` on this slot and every slot inside its racks.
+    pub fn visit(&mut self, f: &mut dyn FnMut(&mut FxSlot)) {
+        f(self);
+        if let Some(r) = self.rack.as_deref_mut() {
+            for c in r.chains.iter_mut() {
+                for s in c.devices.iter_mut() {
+                    s.visit(f);
+                }
+            }
+        }
+    }
+
+    pub fn visit_ref(&self, f: &mut dyn FnMut(&FxSlot)) {
+        f(self);
+        if let Some(r) = self.rack.as_deref() {
+            for c in r.chains.iter() {
+                for s in c.devices.iter() {
+                    s.visit_ref(f);
+                }
+            }
+        }
+    }
+
+    fn sc_state(&mut self) -> Option<&mut ScState> {
+        match &mut self.state.kind {
+            StateKind::Gate(g) => Some(&mut g.sc),
+            StateKind::Glue(g) => Some(&mut g.sc),
+            _ => None,
+        }
+    }
+}
+
+/// Copy the external sidechain sources into the Gate / Glue states of
+/// `chain` (before it runs). `src(rt, tap)` returns the source block.
+pub(crate) fn fill_sidechains<'a>(chain: &mut [FxSlot], n: usize, src: &dyn Fn(u16, crate::song::Tap) -> Option<(&'a [f32], &'a [f32])>) {
+    for s in chain.iter_mut() {
+        s.visit(&mut |s| {
+            let Some((rt, tap)) = s.sc_src else { return };
+            let on = s.params.sidechain().is_some_and(|c| c.on);
+            if let Some(st) = s.sc_state() {
+                st.len = 0;
+                if on && let Some((l, r)) = src(rt, tap) {
+                    let m = n.min(crate::dynfx::SC_MAX).min(l.len()).min(r.len());
+                    st.ext_l[..m].copy_from_slice(&l[..m]);
+                    st.ext_r[..m].copy_from_slice(&r[..m]);
+                    st.len = m;
+                }
+            }
+        });
+    }
+}
+
+/// Maximum simultaneous LFO mappings applied per block.
+const MAX_ROUTES: usize = 128;
+
+/// LFO pass (start of every block): restore modulated slots to their stored
+/// values, advance the LFOs and write their modulation into the targets.
+pub(crate) fn modulate(song: &mut crate::song::Song, n: usize, sr: f32, tempo: f64, beat: Option<f64>) {
+    if !song.lfo {
+        return;
+    }
+    let crate::song::Song { tracks, master_fx, .. } = song;
+    let mut each = |f: &mut dyn FnMut(&mut FxSlot)| {
+        for s in tracks.iter_mut().flat_map(|t| t.fx.iter_mut()).chain(master_fx.iter_mut()) {
+            s.visit(f);
+        }
+    };
+    each(&mut |s| {
+        if s.modded {
+            s.params = s.base;
+            s.modded = false;
+        }
+    });
+    let mut routes = [(LfoMap::default(), 0.0f32); MAX_ROUTES];
+    let mut nr = 0;
+    each(&mut |s| {
+        if let (FxParams::Lfo(p), StateKind::Lfo(st)) = (&s.params, &mut s.state.kind) {
+            if !s.on {
+                return;
+            }
+            let out = st.tick(p, n, sr, tempo, beat);
+            for m in p.maps.iter().filter(|m| m.device != 0 && m.device != s.id) {
+                if nr < MAX_ROUTES {
+                    routes[nr] = (*m, out);
+                    nr += 1;
+                }
+            }
+        }
+    });
+    if nr == 0 {
+        return;
+    }
+    each(&mut |t| {
+        for &(m, out) in &routes[..nr] {
+            if m.device == t.id && crate::params::mappable(&t.params, m.param) {
+                // Mod: relative to the (possibly already modulated) value;
+                // several LFOs on one parameter add up.
+                let cur = crate::params::norm(&t.params, m.param).unwrap_or(0.0);
+                crate::params::set_norm(&mut t.params, m.param, m.apply(cur, out));
+                t.modded = true;
+            }
+        }
+    });
+}
+
+/// Any LFO in these chains (the modulation pass is skipped without one).
+pub(crate) fn has_lfo(chain: &[FxSlot]) -> bool {
+    let mut any = false;
+    for s in chain {
+        s.visit_ref(&mut |s| any |= matches!(s.params, FxParams::Lfo(_)));
+    }
+    any
 }
 
 /// Move DSP states from `old` into `new` for slots with the same id, at any
@@ -307,6 +455,10 @@ enum StateKind {
     Align(AlignState),
     Eq(Box<EqState>),
     Rack,
+    Gate(Box<GateState>),
+    Glue(Box<GlueState>),
+    Limiter(Box<LimiterState>),
+    Lfo(Box<LfoState>),
 }
 
 impl PartialEq for StateKind {
@@ -322,6 +474,10 @@ impl FxState {
             FxParams::AlignDelay(_) => StateKind::Align(AlignState::new()),
             FxParams::EqEight(_) => StateKind::Eq(Box::new(EqState::new(None))),
             FxParams::Rack(_) => StateKind::Rack,
+            FxParams::Gate(_) => StateKind::Gate(Box::new(GateState::new(None))),
+            FxParams::Glue(_) => StateKind::Glue(Box::new(GlueState::new(None))),
+            FxParams::Limiter(_) => StateKind::Limiter(Box::new(LimiterState::new(None))),
+            FxParams::Lfo(_) => StateKind::Lfo(Box::new(LfoState::new(None))),
         };
         Self { kind, was_on: false }
     }
@@ -331,7 +487,10 @@ impl FxState {
             StateKind::Utility(u) => u.reset(),
             StateKind::Align(a) => a.reset(),
             StateKind::Eq(e) => e.reset(),
-            StateKind::Rack => {}
+            StateKind::Rack | StateKind::Lfo(_) => {}
+            StateKind::Gate(g) => g.reset(),
+            StateKind::Glue(g) => g.reset(),
+            StateKind::Limiter(l) => l.reset(),
         }
     }
 }
@@ -360,6 +519,9 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Utility(p), StateKind::Utility(st)) => st.process(p, l, r, sr),
             (FxParams::AlignDelay(p), StateKind::Align(st)) => st.process(p, l, r, sr),
             (FxParams::EqEight(p), StateKind::Eq(st)) => st.process(p, l, r, sr),
+            (FxParams::Gate(p), StateKind::Gate(st)) => st.process(p, l, r, sr),
+            (FxParams::Glue(p), StateKind::Glue(st)) => st.process(p, l, r, sr),
+            (FxParams::Limiter(p), StateKind::Limiter(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

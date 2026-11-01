@@ -239,7 +239,7 @@ pub(super) fn audio_map(app: &DawApp, c: &Clip) -> daw_engine::WarpMap {
     match &c.content {
         ClipContent::Audio { offset_frames, warp_bpm, .. } => {
             let sr = app.audio.info.sample_rate as f64;
-            daw_core::compile::warp_map(c, *offset_frames, Some(warp_bpm.unwrap_or(app.project.tempo_bpm)), sr)
+            daw_core::compile::warp_map(c, *offset_frames, Some(warp_bpm.unwrap_or(app.project.tempo_bpm / c.raw_rate())), sr)
         }
         _ => daw_engine::WarpMap::linear(0.0, 1.0),
     }

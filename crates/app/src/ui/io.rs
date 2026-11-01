@@ -145,7 +145,13 @@ pub fn io_compact(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect, cli
     let (kind, collapsed) = (track.kind, track.collapsed);
     // Rows that fit, by priority: from-type, to-type, monitor, from-channel,
     // to-channel (shown in Live order). Narrow column: smaller text.
-    let fit = (((rect.height() - 4.0) / 17.0).floor().max(0.0) as usize).min(if collapsed { 1 } else { 5 });
+    // n rows need 2 + 17·(n − 1) + 13 px (no spacing under the last one), so
+    // the default 88 px lane shows all five.
+    let fit = if rect.height() < if collapsed { 21.0 } else { 15.0 } {
+        0
+    } else {
+        (((rect.height() - 15.0) / 17.0).floor() as usize + 1).min(if collapsed { 1 } else { 5 })
+    };
     if fit == 0 || rect.width() < 24.0 {
         return;
     }
@@ -416,8 +422,10 @@ fn midi_from(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32, ch: bool) {
 fn monitor_radio(app: &mut DawApp, ui: &mut egui::Ui, t: usize, cw: f32) {
     let tr = &app.project.tracks[t];
     let (mode, keep, kind) = (tr.monitor_mode(), tr.keep_monitor_latency, tr.kind);
-    // Live: In 17 / Auto 27 / Off 20 px, 3 px apart; narrower columns split evenly.
-    let ws = if cw >= 73.0 { [17.0, 27.0, 20.0] } else { [(cw - 6.0) / 3.0; 3] };
+    // Live: In 17 / Auto 27 / Off 20 px, 3 px apart; narrower columns shrink
+    // them in proportion ("Auto" keeps the most room).
+    let k = ((cw - 6.0) / 64.0).min(1.0);
+    let ws = [(17.0 * k).floor(), (cw - 6.0).min(64.0) - (17.0 * k).floor() - (20.0 * k).floor(), (20.0 * k).floor()];
     let h = ui.spacing().interact_size.y.min(15.0);
     let mut set = None;
     let r = ui.horizontal(|ui| {

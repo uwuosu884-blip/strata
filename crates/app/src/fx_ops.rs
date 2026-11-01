@@ -118,6 +118,11 @@ impl DawApp {
         let old = std::mem::replace(&mut v[i].params, params);
         v[i].on = on;
         self.dirty = true;
+        // A new sidechain source / tap / switch changes the routing graph.
+        let route = |p: &FxParams| p.sidechain().map(|s| (s.on, s.source, s.tap));
+        if route(&old) != route(&params) {
+            self.needs_compile = true;
+        }
         if let Some(track) = self.chain_rt(c) {
             let cmd = match c {
                 ChainRef::Sub(_) => Command::SetFxById { track, id, on, params },
@@ -131,6 +136,53 @@ impl DawApp {
                 self.apply_macros(c, id, &changed);
             }
         }
+    }
+
+    /// Device `id` anywhere in the project: its chain and a copy.
+    pub fn locate_device(&self, id: u64) -> Option<(ChainRef, Device)> {
+        for (top, list) in tops(&self.project) {
+            if let Some(d) = find_device(list, id) {
+                return Some((chain_of(&self.project, top, id)?, d.clone()));
+            }
+        }
+        None
+    }
+
+    /// Map LFO `lfo`'s slot `slot` to parameter `k` of device `target`
+    /// (one undo step). Mod mode keeps the parameter's value as the base.
+    pub fn lfo_set_map(&mut self, lfo: u64, slot: u8, target: u64, k: u8) {
+        let Some((c, d)) = self.locate_device(lfo) else { return };
+        let FxParams::Lfo(mut l) = d.params else { return };
+        let Some(m) = l.maps.get_mut(slot as usize) else { return };
+        m.device = target;
+        m.param = k;
+        self.begin_gesture();
+        self.set_device(c, lfo, d.on, FxParams::Lfo(l));
+    }
+
+    /// All LFO mappings onto device `dev`: (param, map, LFO output now).
+    pub fn lfo_maps_on(&self, dev: u64) -> Vec<(u8, daw_project::devices::LfoMap, f32)> {
+        fn walk(list: &[Device], dev: u64, out: &mut Vec<(u8, daw_project::devices::LfoMap, f32)>) {
+            for d in list {
+                if let FxParams::Lfo(l) = &d.params
+                    && d.on
+                {
+                    for m in l.maps.iter().filter(|m| m.device == dev) {
+                        out.push((m.param, *m, daw_project::devices::dev_tap(d.id).get(0)));
+                    }
+                }
+                if let Some(r) = d.rack.as_deref() {
+                    for c in &r.chains {
+                        walk(&c.devices, dev, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (_, list) in tops(&self.project) {
+            walk(list, dev, &mut out);
+        }
+        out
     }
 
     /// Write macros `which` of rack `rack` (in chain `c`) to their targets.
@@ -617,6 +669,29 @@ mod tests {
             a.project.tracks[t].devices.push(Device::new(100 + k, FxParams::Utility(Default::default())));
         }
         (a, ChainRef::Track(tid))
+    }
+
+    #[test]
+    fn lfo_maps_parameters_anywhere() {
+        use daw_project::devices::{GateParams, LfoParams, RackChain, RackParams};
+        let (mut a, c) = app_with(0);
+        let mut rack = Device::new(10, FxParams::Rack(RackParams::default()));
+        rack.rack.as_deref_mut().unwrap().chains.push(RackChain {
+            id: 11,
+            devices: vec![Device::new(12, FxParams::Gate(GateParams::default()))],
+            ..Default::default()
+        });
+        let ChainRef::Track(tid) = c else { unreachable!() };
+        let t = a.project.tracks.iter().position(|x| x.id == tid).unwrap();
+        a.project.tracks[t].devices.push(rack);
+        a.project.tracks[t].devices.push(Device::new(20, FxParams::Lfo(LfoParams::default())));
+        assert_eq!(a.locate_device(12).map(|x| x.0), Some(ChainRef::Sub(11)));
+        a.lfo_set_map(20, 1, 12, daw_project::devices::params::gp::THRESHOLD);
+        let FxParams::Lfo(l) = a.locate_device(20).unwrap().1.params else { panic!() };
+        assert_eq!((l.maps[1].device, l.maps[1].param), (12, 0));
+        let on = a.lfo_maps_on(12);
+        assert_eq!(on.len(), 1);
+        assert_eq!(on[0].0, 0);
     }
 
     #[test]
