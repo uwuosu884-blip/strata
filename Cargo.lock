@@ -954,6 +954,7 @@ dependencies = [
  "daw-project",
  "eframe",
  "hound",
+ "log",
  "midir",
  "no_denormals",
  "raw-window-handle",

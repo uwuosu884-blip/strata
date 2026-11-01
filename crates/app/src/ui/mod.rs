@@ -37,6 +37,11 @@ type DialogAction = Box<dyn FnOnce(&mut DawApp)>;
 const DEVICE_VIEW_H: f32 = 199.0; // Live: 2 px focus line + 9 px gap + 188 px panel
 
 impl eframe::App for DawApp {
+    /// Clean exit (unsaved changes were saved or discarded): no recovery copy.
+    fn on_exit(&mut self) {
+        crate::recovery::clear(None);
+    }
+
     /// Take plain (unmodified) key presses before egui sees them, unless a text
     /// field is focused or a dialog is open: Space/Tab/Enter must drive the DAW,
     /// not egui's focus navigation, and piano keys must not trigger widgets.
@@ -75,6 +80,12 @@ impl eframe::App for DawApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(debug_assertions)]
+        crate::recovery::test_crash();
+        if crate::recovery::DEVICE_LOST.load(std::sync::atomic::Ordering::SeqCst) {
+            // Nothing may be painted on a lost device.
+            self.emergency_restart("a GPU device loss");
+        }
         let ctx = ui.ctx().clone();
         theme::update(&ctx, &self.settings.theme);
         wave::set_style(self.settings.theme.wave_style);

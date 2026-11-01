@@ -103,6 +103,79 @@ pub fn save_project(project: &mut Project, path: &Path, cache: &mut SampleCache)
     on_disk.save(path)
 }
 
+/// Crash-recovery copy of `project` at `path`. Unlike [`save_project`] it never
+/// changes `project` or `cache`; recordings are written once (files of an
+/// earlier recovery save are reused) and the project file is replaced atomically.
+pub fn save_recovery(project: &Project, path: &Path, cache: &SampleCache) -> Result<(), ProjectError> {
+    let rdir = samples_dir(path).join("Recorded");
+    let mut p = project.clone();
+    let mut err: Option<ProjectError> = None;
+    for_each_ref(&mut p, |s| {
+        if err.is_some() || !s.starts_with(RECORDING_PREFIX) {
+            return;
+        }
+        let Some(buf) = cache.peek(s) else { return };
+        let name = s.trim_start_matches(RECORDING_PREFIX).replace(['/', '\\', ':'], "_");
+        let file = rdir.join(format!("{name}.wav"));
+        if !file.exists() {
+            let (data, channels): (Vec<f32>, u16) = if buf.left == buf.right {
+                (buf.left.clone(), 1)
+            } else {
+                (buf.left.iter().zip(&buf.right).flat_map(|(l, r)| [*l, *r]).collect(), 2)
+            };
+            let tmp = file.with_extension("wav.part");
+            let r = std::fs::create_dir_all(&rdir)
+                .map_err(ProjectError::Io)
+                .and_then(|()| {
+                    write_wav_channels(&tmp, &data, buf.sample_rate, 32, channels).map_err(|e| ProjectError::Io(std::io::Error::other(e)))
+                })
+                .and_then(|()| std::fs::rename(&tmp, &file).map_err(ProjectError::Io));
+            if let Err(e) = r {
+                err = Some(e);
+                return;
+            }
+        }
+        *s = file.to_string_lossy().into_owned();
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d).map_err(ProjectError::Io)?;
+    }
+    let tmp = path.with_extension("part");
+    p.save(&tmp)?;
+    std::fs::rename(&tmp, path).map_err(ProjectError::Io)?;
+    Ok(())
+}
+
+/// Load a recovery copy written by [`save_recovery`]. Its recordings become
+/// in-memory recordings again, so the next real save copies them into that
+/// project's own folder (the recovery folder can then be deleted).
+pub fn load_recovery(path: &Path, cache: &mut SampleCache) -> Result<Project, ProjectError> {
+    let mut p = Project::load(path)?;
+    let rdir = samples_dir(path).join("Recorded");
+    let mut renames: Vec<(String, String)> = Vec::new();
+    for_each_ref(&mut p, |s| {
+        if let Some((_, to)) = renames.iter().find(|(from, _)| from == s) {
+            *s = to.clone();
+            return;
+        }
+        let f = Path::new(&*s);
+        if f.parent() != Some(rdir.as_path()) {
+            return;
+        }
+        let Some(stem) = f.file_stem().and_then(|x| x.to_str()).map(str::to_string) else { return };
+        if cache.load_blocking(s).is_ok() {
+            let key = format!("{RECORDING_PREFIX}{stem}");
+            cache.rename(s, &key);
+            renames.push((s.clone(), key.clone()));
+            *s = key;
+        }
+    });
+    Ok(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +238,34 @@ mod tests {
             _ => unreachable!(),
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recovery_round_trip_keeps_recordings_in_memory() {
+        let dir = std::env::temp_dir().join(format!("daw-recovery-{}", std::process::id()));
+        let path = dir.join("Recovery.dawproj");
+        let mut cache = SampleCache::new(48_000);
+        cache.insert("recording:take 1", SampleBuffer::new("take 1", 48_000, vec![0.25; 480], vec![-0.25; 480]));
+        let mut p = Project::new_default();
+        let audio = |s: &str| {
+            Some(Clip {
+                content: ClipContent::Audio { sample: s.into(), offset_frames: 0.0, warp_bpm: None, gain_db: 0.0 },
+                ..Default::default()
+            })
+        };
+        p.tracks[3].slots[0] = audio("recording:take 1");
+        p.tracks[3].slots[1] = audio("recording:take 1");
+        let before = p.clone();
+        save_recovery(&p, &path, &cache).unwrap();
+        save_recovery(&p, &path, &cache).unwrap(); // second save reuses the WAV
+        assert_eq!(p, before, "the open project is untouched");
+        assert!(cache.peek("recording:take 1").is_some());
+        let mut fresh = SampleCache::new(48_000);
+        let r = load_recovery(&path, &mut fresh).unwrap();
+        let refs = |p: &Project| -> Vec<ClipContent> { p.tracks[3].slots.iter().flatten().map(|c| c.content.clone()).collect() };
+        assert_eq!(refs(&r), refs(&before), "refs are recordings again");
+        let b = fresh.peek("recording:take 1").expect("recording back in memory");
+        assert_eq!((b.len(), b.left[0], b.right[0]), (480, 0.25, -0.25));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

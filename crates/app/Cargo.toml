@@ -29,6 +29,7 @@ cpal.workspace = true
 eframe.workspace = true
 assert_no_alloc.workspace = true
 no_denormals.workspace = true
+log.workspace = true
 
 # Touchpad pinch on Wayland (pointer-gestures protocol; same crates winit uses).
 [target.'cfg(target_os = "linux")'.dependencies]

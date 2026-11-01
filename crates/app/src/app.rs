@@ -239,6 +239,8 @@ pub struct DawApp {
     pub message: Option<(String, Instant)>,
     pub dropped_commands: u32,
     pub last_frame: Instant,
+    /// Last crash-recovery copy (see `recovery`).
+    pub autosave_at: Instant,
     /// Smoothed playhead position (see `playclock`).
     pub play_clock: crate::playclock::PlayClock,
     pub title: String,
@@ -383,6 +385,16 @@ impl DevMeters {
     }
 }
 
+impl Drop for DawApp {
+    /// Unwinding from a panic: write the recovery copy (`recovery::on_panic`
+    /// / `main` restart the app on it).
+    fn drop(&mut self) {
+        if std::thread::panicking() && self.dirty {
+            crate::recovery::save(&self.project, self.path.as_deref(), &self.cache);
+        }
+    }
+}
+
 impl DawApp {
     pub fn new(
         mut engine: EngineHandle,
@@ -460,6 +472,7 @@ impl DawApp {
             message: None,
             dropped_commands: 0,
             last_frame: Instant::now(),
+            autosave_at: Instant::now(),
             play_clock: crate::playclock::PlayClock::new(Instant::now()),
             title: String::new(),
             allow_close: false,
@@ -705,6 +718,10 @@ impl DawApp {
             self.live_rec.active = false;
         }
         self.engine.collect_garbage();
+        if self.dirty && now.duration_since(self.autosave_at) >= crate::recovery::INTERVAL {
+            self.autosave_at = now;
+            crate::recovery::save(&self.project, self.path.as_deref(), &self.cache);
+        }
         self.update_midi_target();
         if self.selected_track >= self.project.tracks.len() {
             self.selected_track = self.project.tracks.len().saturating_sub(1);
@@ -1666,6 +1683,7 @@ impl DawApp {
         self.send_now(Command::Rewind);
         self.project = p;
         self.adopt_project_rate();
+        crate::recovery::clear(path.as_deref());
         self.path = path;
         self.history.clear();
         self.dirty = false;
@@ -1677,6 +1695,33 @@ impl DawApp {
         self.clear_structure_selection();
         self.arr_sel.clear();
         self.sync_globals();
+    }
+
+    /// Reopen the crash-recovery copy (unsaved; Save goes to its original file).
+    pub fn recover(&mut self) {
+        let Some(f) = crate::recovery::file() else { return };
+        let origin = crate::recovery::origin();
+        match daw_core::load_recovery(&f, &mut self.cache) {
+            Ok(p) => {
+                self.replace_project(p, origin.clone());
+                // Keep the copy until the user saves (replace_project cleared it).
+                crate::recovery::save(&self.project, origin.as_deref(), &self.cache);
+                self.dirty = true;
+                let why = std::env::var("DAW_RESTART_REASON").unwrap_or_else(|_| "a crash".into());
+                self.toast(format!("Recovered unsaved work after {why} (details in crash.log)"));
+            }
+            Err(e) => self.toast(format!("Recovery copy could not be opened: {e}")),
+        }
+    }
+
+    /// The GPU device is gone (egui-wgpu would panic on the next frame and the
+    /// window would freeze): keep the work and restart on it.
+    pub fn emergency_restart(&mut self, why: &str) -> ! {
+        if self.dirty {
+            crate::recovery::save(&self.project, self.path.as_deref(), &self.cache);
+        }
+        crate::recovery::relaunch(why);
+        std::process::exit(1);
     }
 
     pub fn save(&mut self) -> bool {
@@ -1699,6 +1744,7 @@ impl DawApp {
         match daw_core::save_project(&mut self.project, &path, &mut self.cache) {
             Ok(()) => {
                 self.toast(format!("Saved {}", path.display()));
+                crate::recovery::clear(Some(&path));
                 self.path = Some(path);
                 self.dirty = false;
                 self.needs_compile = true; // recording refs were re-keyed

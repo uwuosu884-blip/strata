@@ -9,6 +9,7 @@ mod fx_ops;
 mod midi;
 mod pinch;
 mod playclock;
+mod recovery;
 mod settings;
 mod ui;
 
@@ -41,6 +42,8 @@ Device / buffer choices made in Settings (Ctrl+,) are saved; options here overri
     -h, --help            Show this help";
 
 struct Args {
+    /// Reopen the crash-recovery copy (set by the automatic restart).
+    recover: bool,
     audio: audio::AudioOptions,
     midi: bool,
     project: Option<std::path::PathBuf>,
@@ -48,7 +51,7 @@ struct Args {
 
 fn parse_args() -> Result<Option<Args>, String> {
     let mut opts = audio::AudioOptions::default();
-    let (mut midi, mut project) = (true, None);
+    let (mut midi, mut project, mut recover) = (true, None, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -74,6 +77,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--output-device" => opts.output_device = Some(args.next().ok_or("--output-device needs a name")?),
             "--input-device" => opts.input_device = Some(args.next().ok_or("--input-device needs a name")?),
             "--no-midi" => midi = false,
+            "--recover" => recover = true,
             "--list-devices" => {
                 audio::list_devices();
                 return Ok(None);
@@ -86,7 +90,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(Some(Args { audio: opts, midi, project }))
+    Ok(Some(Args { recover, audio: opts, midi, project }))
 }
 
 /// Panics (any thread) are appended to `crash.log` next to the settings
@@ -107,11 +111,40 @@ fn install_crash_log() {
             eprintln!("crash details written to {}", path.display());
         }
         default(info);
+        recovery::on_panic();
     }));
 }
 
+/// Warnings/errors from wgpu, egui and winit: printed, and errors also go to
+/// `crash.log` (a GPU error such as a lost device precedes renderer panics).
+struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.level() <= log::Level::Warn
+    }
+    fn log(&self, r: &log::Record) {
+        if !self.enabled(r.metadata()) {
+            return;
+        }
+        let line = format!("[{} {}] {}", r.level(), r.target(), r.args());
+        eprintln!("{line}");
+        if r.level() == log::Level::Error
+            && let Some(path) = settings::Settings::path().map(|p| p.with_file_name("crash.log"))
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() -> ExitCode {
+    recovery::start();
     install_crash_log();
+    let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Warn));
     let args = match parse_args() {
         Ok(Some(a)) => a,
         Ok(None) => return ExitCode::SUCCESS,
@@ -157,23 +190,39 @@ fn main() -> ExitCode {
         ..Default::default()
     };
 
-    let result = eframe::run_native(
-        "daw",
-        native_options,
-        Box::new(move |cc| {
-            cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
-            // Whole-pixel strokes at fractional interface scales.
-            cc.egui_ctx.add_plugin(ui::pixelsnap::PixelSnap);
-            // Black / white text colours (0.7.12).
-            cc.egui_ctx.add_plugin(ui::textcolor::TextColor);
-            pinch::start(cc);
-            // Playhead inversion pipeline (needs the surface format).
-            if let Some(rs) = &cc.wgpu_render_state {
-                ui::invert::init(rs);
-            }
-            Ok(Box::new(app::DawApp::new(engine, audio, project, path, args.midi, settings, base)))
-        }),
-    );
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "daw",
+            native_options,
+            Box::new(move |cc| {
+                cc.egui_ctx.set_theme(eframe::egui::Theme::Dark);
+                // Whole-pixel strokes at fractional interface scales.
+                cc.egui_ctx.add_plugin(ui::pixelsnap::PixelSnap);
+                // Black / white text colours (0.7.12).
+                cc.egui_ctx.add_plugin(ui::textcolor::TextColor);
+                pinch::start(cc);
+                // Playhead inversion pipeline (needs the surface format).
+                if let Some(rs) = &cc.wgpu_render_state {
+                    ui::invert::init(rs);
+                    recovery::watch_device(rs);
+                }
+                recovery::set_origin(path.as_deref());
+                // A copy left by a crashed session: restarted with --recover, or the
+                // app was killed with the machine (reopened when no other project is asked for).
+                let recover = recovery::exists() && (args.recover || args.project.is_none() || recovery::origin() == path);
+                let mut app = app::DawApp::new(engine, audio, project, path, args.midi, settings, base);
+                if recover {
+                    app.recover();
+                }
+                Ok(Box::new(app))
+            }),
+        )
+    }))
+    // A GUI panic: `DawApp` saved a recovery copy while unwinding; restart on it.
+    .unwrap_or_else(|_| {
+        recovery::relaunch("a crash");
+        std::process::exit(101)
+    });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
