@@ -1573,6 +1573,7 @@ impl EngineHandle {
     }
 
     /// Queue a command. Returns it back if the queue is full.
+    #[allow(clippy::result_large_err)]
     pub fn send(&mut self, cmd: Command) -> Result<(), Command> {
         self.commands.push(cmd).map_err(|rtrb::PushError::Full(c)| c)
     }

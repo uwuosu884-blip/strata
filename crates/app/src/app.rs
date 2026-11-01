@@ -47,6 +47,7 @@ pub enum ClipRef {
 
 /// Drag & drop payloads.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum DragItem {
     Sample {
         key: String,

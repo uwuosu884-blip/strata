@@ -82,6 +82,10 @@ pub fn map_value(m: &MacroMap, v: f32) -> f32 {
     (m.min + (m.max - m.min) * (v / 127.0)).clamp(0.0, 1.0)
 }
 
+/// What a new rack chain starts with: a moved / copied device (chain, id,
+/// copy) or a new device with these parameters.
+pub type ChainSource = (Option<(ChainRef, u64, bool)>, FxParams);
+
 impl DawApp {
     /// The chain shown in the device view.
     pub fn current_chain(&self) -> ChainRef {
@@ -405,7 +409,7 @@ impl DawApp {
 
     /// New chain at the end of rack `rack` (in `c`) holding `dev` (moved
     /// from `from` or a new device); selects the chain.
-    pub fn add_chain(&mut self, c: ChainRef, rack: u64, dev: Option<(Option<(ChainRef, u64, bool)>, FxParams)>) {
+    pub fn add_chain(&mut self, c: ChainRef, rack: u64, dev: Option<ChainSource>) {
         // A rack can't receive itself.
         if let Some((Some((_, id, _)), _)) = dev
             && (id == rack || racks_above(&self.project, c).contains(&id))

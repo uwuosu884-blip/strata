@@ -10,6 +10,43 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.2] - 2026-11-01
+
+### Added
+- Audio Effect Rack (Live 12 manual ch. 25): parallel chains that all get
+  the rack input and are summed; per chain activator, Solo, volume and pan;
+  Chain Select zones with fades and the Chain Selector (Chain / Hide zone
+  editor); Auto Select.
+  - View column: Macros (+/− for 1–16), Macro Variations, Devices, Chain
+    List. With Macros, Variations and Chain List hidden the title folds into
+    the view column; the selected chain's devices sit between the rack and
+    its end bracket. Selecting the rack selects its frame and nested titles.
+  - Macros: Map mode (overlays on mappable parameters, a Map button per
+    macro), "Map to Macro N", Delete Mapping and Invert Range in parameter
+    menus; mapped parameters follow the macro and can't be edited directly;
+    a macro with one mapping takes the parameter's name. Rand randomizes
+    mapped macros; "Exclude Macro from Randomization / From Variations".
+  - Macro Variations: New, Launch, Overwrite, Duplicate, Delete.
+  - Chains: drop effects on the chain list to add chains, on the devices
+    area to insert into the selected chain; Duplicate / Delete / Create
+    Chain; Up / Down walk the chain list. Racks nest.
+  - Ctrl+G groups the selected device into a rack, Ctrl+Shift+G ungroups.
+- EQ Eight (Live 12 manual 29.15): 8 bands with 8 filter types, Stereo /
+  L/R / M/S modes with Edit channel, Adaptive Q, Scale, Output, Audition
+  (hold a dot), 2x Oversampling (context menu), display with analyzer, band
+  dots (drag freq/gain, Alt = Q, rubber-band multi-select, arrow keys),
+  expanded view with every band's Freq / Gain / Q and Analyze Block /
+  Refresh / Avg, and the maximised display in the main window with a
+  frequency / note / dB read-out.
+- Device View insert line: clicking empty chain space shows a white line
+  right of the last device (none while a device is selected).
+- Crash recovery: 30 s autosave, `--recover`, GPU errors logged.
+
+### Fixed
+- Crash after a GPU device loss (wgpu validation error → egui-wgpu staging
+  buffer panic) while changing the wave zoom or warp modes froze the
+  window: the error is logged and the app restarts on its recovery copy.
+
 ## [0.8.1] - 2026-11-01
 
 ### Added

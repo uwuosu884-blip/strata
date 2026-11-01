@@ -411,7 +411,8 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
     let chains_x = x;
     // Chain list header toggles (rack params).
     if !fold && p0.show_chains {
-        let cr = chains_x + CHAIN_PANEL_W + if p0.zones { ZONE_W } else { 0.0 };
+        // Chain / Hide stay above the chain rows (the zone ruler is right of them).
+        let cr = chains_x + CHAIN_PANEL_W;
         let au = Rect::from_min_max(pos2(chains_x + 3.0, t + 27.0), pos2(chains_x + 20.0, t + 40.0));
         boxed(&p, au, if rpm.auto_select { TEAL } else { gray(0x1e) });
         let gc = au.center();
@@ -470,9 +471,9 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
                 let vals = dev.rack.as_ref().and_then(|r| r.variations.get(i)).map(|v| v.values);
                 if let Some(vals) = vals {
                     let mut q = cur;
-                    for k in 0..MACROS {
+                    for (k, v) in vals.iter().enumerate() {
                         if q.no_var & (1 << k) == 0 {
-                            q.macros[k] = vals[k];
+                            q.macros[k] = *v;
                         }
                     }
                     app.begin_gesture();
@@ -723,7 +724,7 @@ fn chain_list(
         let fx = |v: f32| zr.left() + 1.0 + (zr.width() - 2.0) * v / 127.0;
         let sx = fx(sel_v as f32);
         quad(p, Rect::from_min_max(pos2(sx - 1.0, zr.top() + 1.0), pos2(sx + 1.0, zr.bottom() - 1.0)), ORANGE);
-        p.text(pos2(zr.right() - 3.0, zr.center().y), Align2::RIGHT_CENTER, &format!("{sel_v}"), font(FS_SMALL), text());
+        p.text(pos2(zr.right() - 3.0, zr.center().y), Align2::RIGHT_CENTER, format!("{sel_v}"), font(FS_SMALL), text());
         let resp = ui.interact(zr, egui::Id::unique(("rack_selr", dev.id)), Sense::click_and_drag()).on_hover_text("Chain Selector");
         if let Some(pt) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
             if resp.drag_started() || resp.clicked() {

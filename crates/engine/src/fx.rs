@@ -213,6 +213,7 @@ impl AlignDelayParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum FxParams {
     Utility(UtilityParams),
     AlignDelay(AlignDelayParams),
@@ -248,7 +249,7 @@ impl FxSlot {
     pub fn new(id: u64, on: bool, params: FxParams) -> Self {
         let mut state = FxState::for_params(&params);
         if let StateKind::Eq(e) = &mut state.kind {
-            *e = Box::new(EqState::new(Some(crate::eq8::spectrum_tap(id))));
+            **e = EqState::new(Some(crate::eq8::spectrum_tap(id)));
         }
         Self { id, on, params, state: Box::new(state), rack: None }
     }

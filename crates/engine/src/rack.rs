@@ -285,8 +285,7 @@ mod tests {
 
     #[test]
     fn solo_activator_and_selector_gate_chains() {
-        let mut solo = ChainMix::default();
-        solo.solo = true;
+        let solo = ChainMix { solo: true, ..Default::default() };
         let off = ChainMix { on: false, ..Default::default() };
         let far = ChainMix { zone: Zone { lo: 64, hi: 127, fade_lo: 64, fade_hi: 127 }, ..Default::default() };
         let mut s = vec![rack(vec![

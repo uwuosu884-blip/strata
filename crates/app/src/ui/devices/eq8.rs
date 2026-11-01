@@ -31,7 +31,7 @@ pub fn band_id(ch: usize, b: usize, field: u8) -> u8 {
 }
 
 fn split(k: u8) -> Option<(usize, usize, u8)> {
-    (k < 80).then(|| ((k / 40) as usize, ((k % 40) / 5) as usize, k % 5))
+    (k < 80).then_some(((k / 40) as usize, ((k % 40) / 5) as usize, k % 5))
 }
 
 const LN_RANGE: f32 = 7.696_213; // ln(22000 / 10)
