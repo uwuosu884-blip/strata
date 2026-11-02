@@ -119,7 +119,18 @@ fn shape_val(v: f32, db: bool) -> f32 {
 /// `frame_at_x(x)` = source frame at the left edge of pixel column `x`
 /// (None = outside the clip). `gain` scales the drawing only; the painter's
 /// clip rect cuts what overflows.
-pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &dyn Fn(f32) -> Option<f64>, gain: f32, ink: Color32) {
+/// `env(x)` = extra gain at pixel `x` (Arrangement fades), applied to the shape.
+#[allow(clippy::too_many_arguments)]
+pub fn draw(
+    p: &Painter,
+    body: Rect,
+    visible: Rect,
+    src: &Source,
+    frame_at_x: &dyn Fn(f32) -> Option<f64>,
+    gain: f32,
+    ink: Color32,
+    env: Option<&dyn Fn(f32) -> f32>,
+) {
     // Only what can be seen: a clip zoomed far in can be millions of pixels
     // wide (huge column buffers / meshes used to exhaust memory and GL).
     let visible = visible.intersect(p.clip_rect()).intersect(body);
@@ -144,6 +155,10 @@ pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &d
         cols.push(f0.map(|a| (a, a + fpp.max(1e-9))));
         x += 1.0;
     }
+    let envs: Vec<f32> = match env {
+        Some(e) => (0..cols.len()).map(|i| e(x0 + i as f32 + 0.5).clamp(0.0, 1.0)).collect(),
+        None => Vec::new(),
+    };
     let lanes = if src.stereo && body.height() >= 30.0 { 2 } else { 1 };
     let lane_h = body.height() / lanes as f32;
     let zoomed = src.raw.is_some() && fpp < 1.5;
@@ -161,10 +176,22 @@ pub fn draw(p: &Painter, body: Rect, visible: Rect, src: &Source, frame_at_x: &d
         let lane_r = Rect::from_x_y_ranges(body.x_range(), (mid - half)..=(mid + half));
         let p = &p.with_clip_rect(lane_r.intersect(p.clip_rect()));
         if zoomed {
-            sample_line(p, src, chs[0], &cols, x0, mid, half, gain, ink);
+            sample_line(p, src, chs[0], &cols, x0, mid, half, gain, ink, &envs);
             continue;
         }
-        let peaks: Vec<Option<Peak>> = cols.iter().map(|c| c.and_then(|(a, b)| summary(src, chs, a, b))).collect();
+        let peaks: Vec<Option<Peak>> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut pk = c.and_then(|(a, b)| summary(src, chs, a, b))?;
+                if let Some(&e) = envs.get(i) {
+                    pk.max *= e;
+                    pk.min *= e;
+                    pk.ms *= e * e;
+                }
+                Some(pk)
+            })
+            .collect();
         // Clamped just past the lane: huge zoom values stay sane (cut anyway).
         let y = |v: f32, db: bool| mid - (shape_val(v * gain, db) * half).clamp(-half - 2.0, half + 2.0);
         match st {
@@ -268,7 +295,18 @@ fn filled(p: &Painter, peaks: &[Option<Peak>], x0: f32, span: impl Fn(&Peak) -> 
 
 /// Zoomed far in: a polyline through the individual samples.
 #[allow(clippy::too_many_arguments)]
-fn sample_line(p: &Painter, src: &Source, ch: usize, cols: &[Option<(f64, f64)>], x0: f32, mid: f32, half: f32, gain: f32, ink: Color32) {
+fn sample_line(
+    p: &Painter,
+    src: &Source,
+    ch: usize,
+    cols: &[Option<(f64, f64)>],
+    x0: f32,
+    mid: f32,
+    half: f32,
+    gain: f32,
+    ink: Color32,
+    envs: &[f32],
+) {
     let Some(raw) = src.raw else { return };
     let ch = raw[ch];
     let mut pts: Vec<Pos2> = Vec::new();
@@ -293,7 +331,8 @@ fn sample_line(p: &Painter, src: &Source, ch: usize, cols: &[Option<(f64, f64)>]
         while (f as f64) < b && f < ch.len() {
             if last != Some(f) {
                 let x = x0 + i as f32 + ((f as f64 - a) / (b - a)) as f32;
-                pts.push(pos2(x, mid - (ch[f] * gain * half).clamp(-half - 2.0, half + 2.0)));
+                let e = envs.get(i).copied().unwrap_or(1.0);
+                pts.push(pos2(x, mid - (ch[f] * gain * e * half).clamp(-half - 2.0, half + 2.0)));
                 last = Some(f);
             }
             f += 1;

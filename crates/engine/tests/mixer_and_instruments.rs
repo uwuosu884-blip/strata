@@ -31,7 +31,8 @@ fn mute_solo_and_gain() {
     h.send(Command::SetTrackSolo { track: 1, solo: true }).unwrap();
     assert!((level(&mut e) - 0.125).abs() < 1e-4, "solo b");
     h.send(Command::SetTrackMute { track: 1, mute: true }).unwrap();
-    assert!(level(&mut e).abs() < 1e-4, "solo b muted → silence");
+    // Soloing a muted track makes it sound (Live).
+    assert!((level(&mut e) - 0.125).abs() < 1e-4, "solo overrides mute");
     send_all(
         &mut h,
         &[

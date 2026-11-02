@@ -1264,7 +1264,16 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         let body = wave.shrink2(vec2(0.0, wave.height() * 0.05));
         let fx = |x: f32| Some(map.frame_at(beat_at(x)));
         let src = super::wave::Source::of(&buf);
-        super::wave::draw(&p.with_clip_rect(wave.intersect(p.clip_rect())), body, wave, &src, &fx, daw_project::db_to_gain(*gain_db), col);
+        super::wave::draw(
+            &p.with_clip_rect(wave.intersect(p.clip_rect())),
+            body,
+            wave,
+            &src,
+            &fx,
+            daw_project::db_to_gain(*gain_db),
+            col,
+            None,
+        );
     }
     // Outside the markers: dimmed.
     for (a, z) in [(f64::NEG_INFINITY, w0), (w1, f64::INFINITY)] {

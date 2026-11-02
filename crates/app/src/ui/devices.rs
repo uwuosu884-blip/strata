@@ -14,6 +14,7 @@ use std::f32::consts::PI;
 mod dynamics;
 mod eq8;
 mod lfo;
+mod modfx;
 mod rack;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
@@ -44,6 +45,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Glue(g) => dynamics::glue_width(&g),
         FxParams::Limiter(_) => dynamics::LIMITER_W,
         FxParams::Lfo(_) => lfo::WIDTH,
+        FxParams::EqThree(_) => modfx::EQ3_W,
+        FxParams::Chorus(_) => modfx::CHO_W,
+        FxParams::AutoPan(_) => modfx::PAN_W,
+        FxParams::AutoFilter(a) => modfx::af_width(&a),
     }
 }
 
@@ -104,6 +109,7 @@ pub fn reset(p: &mut FxParams, k: u8) {
         },
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::reset(p, k),
         FxParams::Lfo(_) => lfo::reset(p, k),
+        FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::reset(p, k),
     }
 }
 
@@ -156,6 +162,7 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         },
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::step(p, k, dir),
         FxParams::Lfo(_) => lfo::step(p, k, dir),
+        FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::step(p, k, dir),
     }
 }
 
@@ -195,6 +202,7 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Rack(_) => MACRO_NAMES.get(k as usize).copied().unwrap_or("Chain Selector"),
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::name(p, k),
         FxParams::Lfo(_) => lfo::name(k),
+        FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::name(p, k),
     }
 }
 
@@ -518,6 +526,13 @@ impl<'a> Ctx<'a> {
             self.focus(k);
         }
         let d = if enabled { super::widgets::endless_drag(ui, &resp) } else { egui::Vec2::ZERO };
+        // Unsnapped drag position: stepped parameters (synced rates, Glue
+        // times...) would otherwise round slow movements back every frame.
+        let acc_id = resp.id.with("drag_acc");
+        if resp.drag_started() {
+            let v0 = norm(&self.params, k).unwrap_or(0.0);
+            ui.data_mut(|m| m.insert_temp(acc_id, v0));
+        }
         if enabled && resp.double_clicked() {
             self.undo_step();
             reset(&mut self.params, k);
@@ -526,9 +541,15 @@ impl<'a> Ctx<'a> {
             if dv != 0.0 {
                 self.undo_step();
                 let fine = ui.input(|i| i.modifiers.shift);
-                let v = norm(&self.params, k).unwrap_or(0.0) - dv / if fine { DRAG_PX * 10.0 } else { DRAG_PX };
+                let cur = norm(&self.params, k).unwrap_or(0.0);
+                let acc = ui.data(|m| m.get_temp::<f32>(acc_id)).unwrap_or(cur);
+                let v = (acc - dv / if fine { DRAG_PX * 10.0 } else { DRAG_PX }).clamp(0.0, 1.0);
+                ui.data_mut(|m| m.insert_temp(acc_id, v));
                 set_norm(&mut self.params, k, v);
             }
+        }
+        if resp.drag_stopped() {
+            ui.data_mut(|m| m.remove::<f32>(acc_id));
         }
         self.param_menu(&resp, k);
         resp
@@ -674,6 +695,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     // Title strip: select / drag / context menu.
     let tr = ui.interact(title, egui::Id::unique(("dev_title", dev.id)), Sense::click_and_drag());
     select_clicks(cx.app, ui, c, dev.id, &body, &tr);
+    latency_hover(cx.app, &tr, &dev);
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {
         super::cursors::set(ui.ctx(), super::cursors::Cur::Drag);
@@ -682,6 +704,11 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let mut dup = false;
     let mut oversample = false;
     let mut group = false;
+    let mut sc_mono = false;
+    let af_mono = match dev.params {
+        FxParams::AutoFilter(a) => Some(a.sc_mono),
+        _ => None,
+    };
     let eq_os = match dev.params {
         FxParams::EqEight(e) => Some(e.oversample),
         FxParams::Glue(g) => Some(g.oversample),
@@ -707,6 +734,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         if let Some(on) = eq_os {
             menu::sep(ui);
             oversample = menu::check_item(ui, "Oversampling", "", on, true);
+        }
+        if let Some(on) = af_mono {
+            menu::sep(ui);
+            sc_mono = menu::check_item(ui, "Mono Sidechain", "", on, true);
         }
     });
 
@@ -751,7 +782,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         eq8::header_button(&mut cx, ui, &p, l, t);
         name_x = l + 36.0;
     }
-    if dev.params.sidechain().is_some_and(|s| s.shown) {
+    if dev.params.sidechain().is_some_and(|s| s.shown) && !matches!(dev.params, FxParams::AutoFilter(_)) {
         dynamics::title_fold(&mut cx, ui, &p, l, t);
         name_x = l + 38.0;
     }
@@ -767,7 +798,15 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Glue(_) => dynamics::glue(&mut cx, ui, &p, l, t),
         FxParams::Limiter(_) => dynamics::limiter(&mut cx, ui, &p, l, t),
         FxParams::Lfo(_) => lfo::lfo(&mut cx, ui, &p, l, t),
+        FxParams::EqThree(_) => modfx::eq_three(&mut cx, ui, &p, r),
+        FxParams::Chorus(_) => modfx::chorus(&mut cx, ui, &p, r),
+        FxParams::AutoPan(_) => modfx::auto_pan(&mut cx, ui, &p, r),
+        FxParams::AutoFilter(_) => modfx::auto_filter(&mut cx, ui, &p, r),
         FxParams::Rack(_) => {}
+    }
+    if sc_mono && let FxParams::AutoFilter(a) = &mut cx.params {
+        a.sc_mono = !a.sc_mono;
+        cx.undo_step();
     }
     if oversample {
         match &mut cx.params {
@@ -799,6 +838,29 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
             Some((sc, ids)) if in_sel && ids.len() > 1 => app.delete_devices(sc, &ids),
             _ => app.delete_device(c, dev.id),
         }
+    }
+}
+
+/// Device latency (samples): its own lookahead; a rack reports its
+/// slowest chain of enabled devices.
+pub fn dev_latency(d: &Device, sr: f32) -> usize {
+    match &d.rack {
+        Some(rk) if matches!(d.params, FxParams::Rack(_)) => {
+            rk.chains.iter().map(|c| c.devices.iter().filter(|x| x.on).map(|x| dev_latency(x, sr)).sum::<usize>()).max().unwrap_or(0)
+        }
+        _ => d.params.latency(sr),
+    }
+}
+
+/// Hovering a device title shows its latency in the status bar (Live).
+pub(super) fn latency_hover(app: &mut DawApp, title: &Response, d: &Device) {
+    if title.hovered() {
+        let sr = app.audio.info.sample_rate as f32;
+        let n = dev_latency(d, sr);
+        let ms = n as f32 * 1000.0 / sr.max(1.0);
+        let t = format!("{ms:.2}");
+        let t = t.trim_end_matches('0').trim_end_matches('.');
+        app.status_hover = Some(format!("Latency: {n} samples ({t} ms)"));
     }
 }
 
@@ -1159,6 +1221,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::EqEight(_) => eq8::typable(k),
         FxParams::Rack(_) => false,
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) | FxParams::Lfo(_) => false,
+        FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => false,
     }
 }
 

@@ -8,6 +8,10 @@ pub use daw_engine::fx::{
     ALIGN_DIST_MAX_M, ALIGN_SAMPLES_MAX, ALIGN_TEMP_MAX_C, ALIGN_TEMP_MIN_C, ALIGN_TIME_MAX_MS, BASS_MONO_MAX_HZ, BASS_MONO_MIN_HZ,
     FEET_PER_M, UTIL_GAIN_MAX_DB, UTIL_GAIN_MIN_DB, UTIL_WIDTH_MAX,
 };
+pub use daw_engine::modfx::{
+    AfWave, AutoFilterParams, AutoPanParams, ChorusMode, ChorusParams, Circuit, EqThreeParams, FilterType, PanWave, Quantize, Rate,
+    TimeMode,
+};
 pub use daw_engine::params;
 pub use daw_engine::rack::{CHAIN_VOL_MAX, CHAIN_VOL_MIN, MACROS, ZONE_MAX};
 pub use daw_engine::{AlignDelayParams, ChannelMode, DelayMode, EqBand, EqEightParams, EqFilter, EqMode, FxParams, UtilityParams};
@@ -232,11 +236,15 @@ fn yes() -> bool {
 }
 
 /// Audio effects offered by the browser (name, default parameters).
-pub fn audio_effects() -> [(&'static str, FxParams); 8] {
+pub fn audio_effects() -> [(&'static str, FxParams); 12] {
     [
         ("Audio Effect Rack", FxParams::Rack(RackParams::default())),
         ("Align Delay", FxParams::AlignDelay(AlignDelayParams::default())),
+        ("Auto Filter", FxParams::AutoFilter(AutoFilterParams::default())),
+        ("Auto Pan-Tremolo", FxParams::AutoPan(AutoPanParams::default())),
+        ("Chorus-Ensemble", FxParams::Chorus(ChorusParams::default())),
         ("EQ Eight", FxParams::EqEight(EqEightParams::default())),
+        ("EQ Three", FxParams::EqThree(EqThreeParams::default())),
         ("Gate", FxParams::Gate(GateParams::default())),
         ("Glue Compressor", FxParams::Glue(GlueParams::default())),
         ("LFO", FxParams::Lfo(LfoParams::default())),

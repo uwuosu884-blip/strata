@@ -165,6 +165,7 @@ fn sc_of(p: &mut FxParams) -> Option<&mut Sidechain> {
     match p {
         FxParams::Gate(g) => Some(&mut g.sc),
         FxParams::Glue(g) => Some(&mut g.sc),
+        FxParams::AutoFilter(a) => Some(&mut a.sc),
         _ => None,
     }
 }
@@ -174,16 +175,18 @@ fn sc_get(p: &FxParams) -> Sidechain {
 }
 
 /// The narrow strip at the device's left: fold ▼, listen, "Sidechain", LED.
-fn sc_strip(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
+pub(super) fn sc_strip(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32, divider: bool) {
     let s = sc_get(&cx.params);
-    quad(p, Rect::from_min_max(pos2(l + 19.0, t + 21.0), pos2(l + 20.0, t + 184.0)), gray(0x24));
+    if divider {
+        quad(p, Rect::from_min_max(pos2(l + 19.0, t + 21.0), pos2(l + 20.0, t + 184.0)), gray(0x24));
+    }
     // Fold button.
     let fc = pos2(l + 9.5, t + 27.5);
     p.circle_filled(fc, 6.5, gray(0x12));
     p.circle_filled(fc, 5.5, gray(0x1c));
     let g = gray(0xb5);
     let tri = if s.shown {
-        vec![pos2(l + 6.0, t + 30.5), pos2(l + 9.5, t + 24.0), pos2(l + 13.0, t + 30.5)]
+        vec![pos2(l + 7.0, t + 24.0), pos2(l + 13.5, t + 27.5), pos2(l + 7.0, t + 31.0)]
     } else {
         vec![pos2(l + 6.0, t + 25.0), pos2(l + 13.0, t + 25.0), pos2(l + 9.5, t + 31.5)]
     };
@@ -375,6 +378,92 @@ fn sc_section(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     ));
 }
 
+/// Auto Filter sidechain section (right of the strip; Live 12 manual
+/// layout): External, Source / tap, Mix, SC Gain | SC Filter, type, Freq,
+/// Res (Gain for shelves / peak).
+pub(super) fn af_sc_section(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
+    let s = sc_get(&cx.params);
+    let own = match crate::fx_ops::top_of(&cx.app.project, cx.chain) {
+        ChainRef::Track(id) => Some(id),
+        _ => None,
+    };
+    if tbutton(cx, ui, p, Rect::from_min_size(pos2(l + 24.0, t + 21.0), vec2(69.0, 13.0)), sc::ON, "External", s.on, true)
+        && let Some(sc) = sc_of(&mut cx.params)
+    {
+        sc.on = !sc.on;
+    }
+    if tbutton(cx, ui, p, Rect::from_min_size(pos2(l + 102.0, t + 21.0), vec2(51.0, 13.0)), sc::EQ_ON, "SC Filter", s.eq_on, true)
+        && let Some(sc) = sc_of(&mut cx.params)
+    {
+        sc.eq_on = !sc.eq_on;
+    }
+    quad(p, Rect::from_min_max(pos2(l + 97.0, t + 21.0), pos2(l + 98.0, t + 184.0)), gray(0x24));
+    let ext = s.on && s.source != 0;
+    text_at(p, l + 58.5, t + 57.0, Align2::CENTER_BOTTOM, "Source", font(FS), if s.on { text() } else { dim() });
+    let prj = &cx.app.project;
+    let tracks: Vec<(u64, String)> =
+        prj.tracks.iter().enumerate().filter(|(_, x)| Some(x.id) != own).map(|(i, x)| (x.id, prj.track_label(i))).collect();
+    let cur = tracks.iter().find(|x| x.0 == s.source).map_or("No Input".to_string(), |x| x.1.clone());
+    let mut items: Vec<&str> = vec!["No Input"];
+    items.extend(tracks.iter().map(|x| x.1.as_str()));
+    let cr = Rect::from_min_size(pos2(l + 24.0, t + 60.0), vec2(69.0, 13.0));
+    let shown = fit(p, &cur, &font(FS), cr.width() - 14.0);
+    if let Some(i) = chooser(cx, ui, p, cr, sc::SOURCE, &shown, &items, s.on)
+        && let Some(sc) = sc_of(&mut cx.params)
+    {
+        sc.source = if i == 0 { 0 } else { tracks[i - 1].0 };
+    }
+    let tr = Rect::from_min_size(pos2(l + 24.0, t + 76.0), vec2(69.0, 13.0));
+    let taps: Vec<&str> = ScTap::ALL.iter().map(|x| x.label()).collect();
+    if let Some(i) = chooser(cx, ui, p, tr, sc::TAP, &format!("    {}", s.tap.label()), &taps, ext)
+        && let Some(sc) = sc_of(&mut cx.params)
+    {
+        sc.tap = ScTap::ALL[i];
+    }
+    for (i, c) in [Color32::from_rgb(0x00, 0xd4, 0x4a), Color32::from_rgb(0xff, 0xa0, 0x30)].into_iter().enumerate() {
+        let bx = tr.left() + 4.0 + i as f32 * 3.0;
+        quad(
+            p,
+            Rect::from_min_max(pos2(bx, tr.top() + 3.0), pos2(bx + 2.0, tr.bottom() - 3.0)),
+            if ext { c } else { mix(c, gray(0x24), 0.6) },
+        );
+    }
+    text_at(p, l + 58.5, t + 122.0, Align2::CENTER_BOTTOM, "Mix", font(FS), if ext { text() } else { dim() });
+    value_box(
+        cx,
+        ui,
+        p,
+        Rect::from_min_size(pos2(l + 24.0, t + 125.0), vec2(69.0, 13.0)),
+        sc::MIX,
+        &format!("{:.1} %", s.mix * 100.0),
+        ext,
+    );
+    text_at(p, l + 58.5, t + 166.0, Align2::CENTER_BOTTOM, "SC Gain", font(FS), if ext { text() } else { dim() });
+    let gain = if s.gain <= SC_GAIN_MIN { "-inf dB".to_string() } else { format!("{} dB", sig3(s.gain)) };
+    value_box(cx, ui, p, Rect::from_min_size(pos2(l + 24.0, t + 169.0), vec2(69.0, 13.0)), sc::GAIN, &gain, ext);
+    // Filter column.
+    let eq = s.eq_on;
+    text_at(p, l + 127.5, t + 57.0, Align2::CENTER_BOTTOM, "Type", font(FS), if eq { text() } else { dim() });
+    let ty = Rect::from_min_size(pos2(l + 102.0, t + 60.0), vec2(51.0, 13.0));
+    let names: Vec<&str> = ScEq::ALL.iter().map(|k| k.label()).collect();
+    if let Some(i) = chooser(cx, ui, p, ty, sc::EQ, "", &names, eq)
+        && let Some(sc) = sc_of(&mut cx.params)
+    {
+        sc.eq = ScEq::ALL[i];
+    }
+    sc_icon(p, Rect::from_min_max(ty.min, pos2(ty.left() + 24.0, ty.bottom())), s.eq, if eq && cx.on { text() } else { dim() });
+    let fq = if s.freq >= 1000.0 { format!("{} kHz", sig3(s.freq / 1000.0)) } else { format!("{:.0} Hz", s.freq) };
+    knob_lv(cx, ui, p, l + 127.5, t + 98.0, sc::FREQ, "Freq", &fq, 0.0, KN, 15.5, 36.0, eq);
+    let br = Rect::from_min_size(pos2(l + 102.0, t + 169.0), vec2(51.0, 13.0));
+    if s.eq.has_gain() {
+        text_at(p, l + 127.5, t + 166.0, Align2::CENTER_BOTTOM, "Gain", font(FS), if eq { text() } else { dim() });
+        value_box(cx, ui, p, br, sc::EQ_GAIN, &format!("{} dB", sig3(s.eq_gain)), eq);
+    } else {
+        text_at(p, l + 127.5, t + 166.0, Align2::CENTER_BOTTOM, "Res", font(FS), if eq { text() } else { dim() });
+        value_box(cx, ui, p, br, sc::Q, &format!("{:.2}", s.q), eq);
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Gate (283 px + sidechain).
 // ----------------------------------------------------------------------------
@@ -390,7 +479,7 @@ pub(super) fn gate(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32)
         sc_section(cx, ui, p, l, t);
         SC_W
     } else {
-        sc_strip(cx, ui, p, l, t);
+        sc_strip(cx, ui, p, l, t, true);
         0.0
     };
     let l = l + ox;
@@ -447,14 +536,20 @@ pub(super) fn gate(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32)
     let tap = dev_tap(cx.dev.id);
     let cols = (gx1 - gx0 - 1.0) as usize;
     const PER: usize = 16;
-    let h = tap.history(cols * PER);
+    // Buckets start on absolute multiples of PER: the picture scrolls by
+    // whole columns instead of re-binning (twitching) every repaint.
+    let w = tap.written();
+    let h = tap.history_to(w - w % PER, cols * PER);
     let off = cols * PER - h.len().min(cols * PER);
-    let mut outline = Vec::with_capacity(cols);
+    // Output outline, broken at silent columns (no lines across gaps).
+    let mut outline: Vec<Pos2> = Vec::with_capacity(cols);
+    let mut runs: Vec<Vec<Pos2>> = Vec::new();
     let yy = |v: f32| gate_y(bottom, daw_engine::dynfx::lin_db(v).max(-70.0)).clamp(gy0 + 1.0, gy1);
     for c in 0..cols {
         let a = (c * PER).saturating_sub(off);
         let b = ((c + 1) * PER).saturating_sub(off).min(h.len());
         if a >= b {
+            outline.clear();
             continue;
         }
         let mut m = [0.0f32; 4];
@@ -465,6 +560,10 @@ pub(super) fn gate(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32)
         }
         let x = gx0 + 1.0 + c as f32;
         if m[0].max(m[1]).max(m[2]) < 3.2e-4 {
+            if outline.len() > 1 {
+                runs.push(std::mem::take(&mut outline));
+            }
+            outline.clear();
             continue;
         }
         let (yi, yo) = (yy(m[0]), yy(m[1]));
@@ -478,7 +577,10 @@ pub(super) fn gate(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32)
         }
     }
     if outline.len() > 1 {
-        p.add(Shape::line(outline, Stroke::new(1.0, gray(0xd8))));
+        runs.push(outline);
+    }
+    for run in runs {
+        p.add(Shape::line(run, Stroke::new(1.0, gray(0xd8))));
     }
     if tap.written() > 0 {
         cx.app.animating = true;
@@ -558,7 +660,7 @@ pub(super) fn glue(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32)
         sc_section(cx, ui, p, l, t);
         SC_W
     } else {
-        sc_strip(cx, ui, p, l, t);
+        sc_strip(cx, ui, p, l, t, true);
         0.0
     };
     let l = l + ox;
@@ -658,6 +760,9 @@ pub(super) fn cytomic(p: &Painter, right: f32, t: f32) {
 // Limiter (284 px).
 // ----------------------------------------------------------------------------
 
+/// Limiter GR bar fill (darker than the orange edge, as the input bars).
+const GR_FILL: Color32 = Color32::from_rgb(0xe6, 0xa5, 0x2e);
+
 /// Limiter scale: dB below 0 → y (rows from the device top), Live's ticks.
 const LIM_SCALE: [(f32, f32); 9] =
     [(0.0, 42.5), (1.0, 54.5), (2.0, 65.5), (3.0, 75.5), (4.0, 85.5), (5.0, 94.5), (6.0, 103.5), (12.0, 140.5), (24.0, 162.5)];
@@ -747,8 +852,11 @@ pub(super) fn limiter(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f
     for (ch, g) in [gl, gr].into_iter().enumerate() {
         let (a, b) = bars[2 + ch];
         if g > 0.005 {
-            quad(p, Rect::from_min_max(pos2(l + a, bar_top), pos2(l + b, bar_top + 1.0)), ORANGE);
+            // Filled from the top down to the reduction (like the input
+            // bars fill from the bottom), bright edge lines on both ends.
             let y = lim_y(t, g).floor();
+            quad(p, Rect::from_min_max(pos2(l + a, bar_top), pos2(l + b, y + 1.0)), GR_FILL);
+            quad(p, Rect::from_min_max(pos2(l + a, bar_top), pos2(l + b, bar_top + 1.0)), ORANGE);
             quad(p, Rect::from_min_max(pos2(l + a, y), pos2(l + b, y + 1.0)), ORANGE);
         }
     }
@@ -892,6 +1000,10 @@ pub(super) fn name(p: &FxParams, k: u8) -> &'static str {
             _ => "Gain Reduction",
         },
     }
+}
+
+pub(super) fn sc_reset_pub(s: &mut Sidechain, k: u8) {
+    sc_reset(s, k)
 }
 
 fn sc_reset(s: &mut Sidechain, k: u8) {

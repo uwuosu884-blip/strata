@@ -18,7 +18,9 @@ pub mod fx;
 pub mod instruments;
 pub mod lfo;
 mod metronome;
+pub mod modfx;
 pub mod params;
+pub mod pdc;
 pub mod pv;
 pub mod rack;
 mod sample;
@@ -40,6 +42,7 @@ pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
 pub use lfo::{LfoMap, LfoParams, LfoWave};
+pub use modfx::{AutoFilterParams, AutoPanParams, ChorusParams, EqThreeParams};
 pub use rack::{ChainMix, RackParams, Zone};
 pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
 pub use song::{
@@ -1306,6 +1309,7 @@ impl Engine {
         }
 
         // LFOs write their modulation into the target devices.
+        modfx::set_clock(ctx.tempo, ctx.playing.then_some(ctx.beat0));
         fx::modulate(song, n, ctx.sr, ctx.tempo, ctx.playing.then_some(ctx.beat0));
 
         // Solo through the routing graph: a track is audible if nothing is
@@ -1336,6 +1340,27 @@ impl Engine {
             up[rt] = tracks[rt].solo || matches!(st.output, TrackOutput::Track(d) if up[d as usize]);
             feed[rt] = st.sends.iter().any(|&(d, _)| up[d as usize] || feed[d as usize])
                 || matches!(st.output, TrackOutput::Track(d) if feed[d as usize]);
+        }
+
+        // Delay compensation (Live's PDC): path latency at each track's
+        // output = latest input + its chain; every feed into a bus (group,
+        // return, main) is delayed up to that bus's latest input.
+        let mut lat_in = [0usize; MAX_TRACKS];
+        let mut lat_out = [0usize; MAX_TRACKS];
+        let mut lat_main = 0usize;
+        for &i in &song.order {
+            let st = &song.tracks[i as usize];
+            let rt = st.rt as usize;
+            let lo = (lat_in[rt] + fx::chain_latency(&st.fx, ctx.sr)).min(pdc::PDC_MAX);
+            lat_out[rt] = lo;
+            match st.output {
+                TrackOutput::Track(d) => lat_in[d as usize] = lat_in[d as usize].max(lo),
+                TrackOutput::Master => lat_main = lat_main.max(lo),
+                _ => {}
+            }
+            for &(d, _) in &st.sends {
+                lat_in[d as usize] = lat_in[d as usize].max(lo);
+            }
         }
 
         // Resampling reads the main output one internal block back.
@@ -1458,17 +1483,25 @@ impl Engine {
             let audible = !any_solo || up[rt] || down[rt] || feed[rt];
             if !tracks[rt].mix(n, audible) {
                 tracks[rt].send_g = [0.0; MAX_SENDS];
+                tracks[rt].pdc.write_silence(n);
                 continue;
             }
+            {
+                let t = &mut tracks[rt];
+                t.pdc.write(&t.post_l[..n], &t.post_r[..n]);
+            }
+            let lo = lat_out[rt];
             // Post-fader sends into the return tracks' buses (gain ramped per block).
             for (k, &(d, target)) in st.sends.iter().enumerate() {
+                let dl = lat_in[d as usize] - lo.min(lat_in[d as usize]);
                 let (t, rtn) = two_mut(tracks, rt, d as usize);
                 let g0 = t.send_g[k];
                 let step = (target - g0) / n.max(1) as f32;
                 for j in 0..n {
                     let g = g0 + step * (j + 1) as f32;
-                    rtn.bus_l[j] += t.post_l[j] * g;
-                    rtn.bus_r[j] += t.post_r[j] * g;
+                    let (a, b) = t.pdc.read(n, j, dl);
+                    rtn.bus_l[j] += a * g;
+                    rtn.bus_r[j] += b * g;
                 }
                 t.send_g[k] = target;
                 rtn.bus_active = true;
@@ -1479,22 +1512,27 @@ impl Engine {
             match st.output {
                 TrackOutput::Master => {
                     let t = &tracks[rt];
+                    let dl = lat_main - lo.min(lat_main);
                     for k in 0..n {
-                        ml[k] += t.post_l[k];
-                        mr[k] += t.post_r[k];
+                        let (a, b) = t.pdc.read(n, k, dl);
+                        ml[k] += a;
+                        mr[k] += b;
                     }
                     if st.input == TrackInput::Resampling {
                         for k in 0..n {
-                            xl[k] += t.post_l[k];
-                            xr[k] += t.post_r[k];
+                            let (a, b) = t.pdc.read(n, k, dl);
+                            xl[k] += a;
+                            xr[k] += b;
                         }
                     }
                 }
                 TrackOutput::Track(d) => {
+                    let dl = lat_in[d as usize] - lo.min(lat_in[d as usize]);
                     let (t, g) = two_mut(tracks, rt, d as usize);
                     for k in 0..n {
-                        g.bus_l[k] += t.post_l[k];
-                        g.bus_r[k] += t.post_r[k];
+                        let (a, b) = t.pdc.read(n, k, dl);
+                        g.bus_l[k] += a;
+                        g.bus_r[k] += b;
                     }
                     g.bus_active = true;
                 }

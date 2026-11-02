@@ -9,6 +9,7 @@ use crate::dynfx::{GateState, GlueState, LimiterState, ScState};
 pub use crate::eq8::EqEightParams;
 use crate::eq8::EqState;
 use crate::lfo::{LfoMap, LfoState};
+use crate::modfx::{AutoFilterState, AutoPanState, ChorusState, EqThreeState};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -225,6 +226,10 @@ pub enum FxParams {
     Glue(crate::dynfx::GlueParams),
     Limiter(crate::dynfx::LimiterParams),
     Lfo(crate::lfo::LfoParams),
+    EqThree(crate::modfx::EqThreeParams),
+    Chorus(crate::modfx::ChorusParams),
+    AutoFilter(crate::modfx::AutoFilterParams),
+    AutoPan(crate::modfx::AutoPanParams),
 }
 
 impl FxParams {
@@ -238,14 +243,29 @@ impl FxParams {
             FxParams::Glue(_) => "Glue Compressor",
             FxParams::Limiter(_) => "Limiter",
             FxParams::Lfo(_) => "LFO",
+            FxParams::EqThree(_) => "EQ Three",
+            FxParams::Chorus(_) => "Chorus-Ensemble",
+            FxParams::AutoFilter(_) => "Auto Filter",
+            FxParams::AutoPan(_) => "Auto Pan-Tremolo",
         }
     }
 
     /// Sidechain section (Gate, Glue Compressor).
+    /// Lookahead latency (samples) of the device itself (racks: the
+    /// slowest chain, see [`chain_latency`]).
+    pub fn latency(&self, sr: f32) -> usize {
+        match self {
+            FxParams::Gate(p) => (crate::dynfx::GATE_LOOKAHEAD[(p.lookahead as usize).min(2)] * 0.001 * sr).round() as usize,
+            FxParams::Limiter(p) => crate::dynfx::LimiterState::latency(p, sr),
+            _ => 0,
+        }
+    }
+
     pub fn sidechain(&self) -> Option<&crate::dynfx::Sidechain> {
         match self {
             FxParams::Gate(g) => Some(&g.sc),
             FxParams::Glue(g) => Some(&g.sc),
+            FxParams::AutoFilter(a) => Some(&a.sc),
             _ => None,
         }
     }
@@ -278,6 +298,10 @@ impl FxSlot {
             StateKind::Glue(g) => **g = GlueState::new(Some(id)),
             StateKind::Limiter(l) => **l = LimiterState::new(Some(id)),
             StateKind::Lfo(l) => **l = LfoState::new(Some(id)),
+            StateKind::EqThree(e) => **e = EqThreeState::new(Some(id)),
+            StateKind::Chorus(c) => **c = ChorusState::new(Some(id)),
+            StateKind::AutoFilter(a) => **a = AutoFilterState::new(Some(id)),
+            StateKind::AutoPan(a) => **a = AutoPanState::new(Some(id)),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -316,6 +340,7 @@ impl FxSlot {
         match &mut self.state.kind {
             StateKind::Gate(g) => Some(&mut g.sc),
             StateKind::Glue(g) => Some(&mut g.sc),
+            StateKind::AutoFilter(a) => Some(&mut a.sc),
             _ => None,
         }
     }
@@ -459,6 +484,10 @@ enum StateKind {
     Glue(Box<GlueState>),
     Limiter(Box<LimiterState>),
     Lfo(Box<LfoState>),
+    EqThree(Box<EqThreeState>),
+    Chorus(Box<ChorusState>),
+    AutoFilter(Box<AutoFilterState>),
+    AutoPan(Box<AutoPanState>),
 }
 
 impl PartialEq for StateKind {
@@ -478,6 +507,10 @@ impl FxState {
             FxParams::Glue(_) => StateKind::Glue(Box::new(GlueState::new(None))),
             FxParams::Limiter(_) => StateKind::Limiter(Box::new(LimiterState::new(None))),
             FxParams::Lfo(_) => StateKind::Lfo(Box::new(LfoState::new(None))),
+            FxParams::EqThree(_) => StateKind::EqThree(Box::new(EqThreeState::new(None))),
+            FxParams::Chorus(_) => StateKind::Chorus(Box::new(ChorusState::new(None))),
+            FxParams::AutoFilter(_) => StateKind::AutoFilter(Box::new(AutoFilterState::new(None))),
+            FxParams::AutoPan(_) => StateKind::AutoPan(Box::new(AutoPanState::new(None))),
         };
         Self { kind, was_on: false }
     }
@@ -491,6 +524,10 @@ impl FxState {
             StateKind::Gate(g) => g.reset(),
             StateKind::Glue(g) => g.reset(),
             StateKind::Limiter(l) => l.reset(),
+            StateKind::EqThree(e) => e.reset(),
+            StateKind::Chorus(c) => c.reset(),
+            StateKind::AutoFilter(a) => a.reset(),
+            StateKind::AutoPan(a) => a.reset(),
         }
     }
 }
@@ -499,6 +536,19 @@ impl FxState {
 /// Runs the chain in place; `meters[0]` takes the chain input and
 /// `meters[i + 1]` the signal after device `i` (empty slice = no metering).
 /// Returns the output peak.
+/// Latency (samples) of a DSP chain: enabled devices in series; a rack
+/// counts its slowest chain (the others are compensated inside).
+pub fn chain_latency(chain: &[FxSlot], sr: f32) -> usize {
+    chain
+        .iter()
+        .filter(|s| s.on)
+        .map(|s| match (&s.params, s.rack.as_deref()) {
+            (FxParams::Rack(_), Some(r)) => r.latency(sr),
+            (p, _) => p.latency(sr),
+        })
+        .sum()
+}
+
 pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: f32, meters: &[crate::status::FxMeter]) -> f32 {
     if let Some(m) = meters.first() {
         m.add(l, r);
@@ -522,6 +572,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Gate(p), StateKind::Gate(st)) => st.process(p, l, r, sr),
             (FxParams::Glue(p), StateKind::Glue(st)) => st.process(p, l, r, sr),
             (FxParams::Limiter(p), StateKind::Limiter(st)) => st.process(p, l, r, sr),
+            (FxParams::EqThree(p), StateKind::EqThree(st)) => st.process(p, l, r, sr),
+            (FxParams::Chorus(p), StateKind::Chorus(st)) => st.process(p, l, r, sr),
+            (FxParams::AutoFilter(p), StateKind::AutoFilter(st)) => st.process(p, l, r, sr),
+            (FxParams::AutoPan(p), StateKind::AutoPan(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

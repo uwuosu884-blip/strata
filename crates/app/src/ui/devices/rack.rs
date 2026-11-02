@@ -197,6 +197,7 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
         Rect::from_min_max(pos2(l + 17.0, t), pos2(pr - 50.0, t + TITLE_H))
     };
     let tr = ui.interact(title, egui::Id::unique(("rack_title", dev.id)), Sense::click_and_drag());
+    super::latency_hover(app, &tr, &dev);
     super::select_clicks(app, ui, c, dev.id, &body, &tr);
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {

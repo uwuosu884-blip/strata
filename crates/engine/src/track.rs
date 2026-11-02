@@ -126,6 +126,8 @@ pub(crate) struct TrackRt {
     pub env_pan: f32,
     /// Send gains applied last block (per send slot), ramped to the target.
     pub send_g: [f32; crate::song::MAX_SENDS],
+    /// Post-fader history for delay compensation (read at any delay).
+    pub pdc: crate::pdc::PdcLine,
 }
 
 impl TrackRt {
@@ -174,6 +176,7 @@ impl TrackRt {
             env_vol: 1.0,
             env_pan: 0.0,
             send_g: [0.0; crate::song::MAX_SENDS],
+            pdc: crate::pdc::PdcLine::new(),
         }
     }
 
@@ -203,7 +206,8 @@ impl TrackRt {
 
     /// Equal-power pan normalised to unity at centre.
     fn target_gains(&self, audible: bool) -> (f32, f32) {
-        if self.mute || !audible {
+        // Solo overrides the track's own mute (a soloed muted track sounds).
+        if (self.mute && !self.solo) || !audible {
             return (0.0, 0.0);
         }
         let a = ((self.pan + self.env_pan).clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;

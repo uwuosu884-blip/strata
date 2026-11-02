@@ -396,6 +396,16 @@ impl SpecTap {
         self.sr.load(Ordering::Relaxed) as f32
     }
 
+    /// Append the mono sum of a block (audio thread).
+    pub(crate) fn write(&self, l: &[f32], r: &[f32], n: usize, sr: f32) {
+        self.sr.store(sr as u32, Ordering::Relaxed);
+        let start = self.pos.load(Ordering::Relaxed);
+        for i in 0..n.min(l.len()).min(r.len()) {
+            self.buf[(start + i) & (TAP_LEN - 1)].store((0.5 * (l[i] + r[i])).to_bits(), Ordering::Relaxed);
+        }
+        self.pos.store(start.wrapping_add(n), Ordering::Release);
+    }
+
     /// The latest `out.len()` samples (≤ [`TAP_LEN`]).
     pub fn read(&self, out: &mut [f32]) {
         let n = out.len().min(TAP_LEN);

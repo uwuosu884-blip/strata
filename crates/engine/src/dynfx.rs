@@ -169,13 +169,13 @@ impl Default for ScState {
 }
 
 impl ScState {
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.eq = Default::default();
     }
 
     /// Detector sample `i` (stereo) for own input (l, r).
     #[inline]
-    fn detect(&mut self, sc: &Sidechain, i: usize, l: f32, r: f32, g_ext: f32) -> (f32, f32) {
+    pub(crate) fn detect(&mut self, sc: &Sidechain, i: usize, l: f32, r: f32, g_ext: f32) -> (f32, f32) {
         let (mut a, mut b) = (l, r);
         if sc.on && sc.source != 0 && i < self.len {
             let m = sc.mix.clamp(0.0, 1.0);
@@ -189,7 +189,7 @@ impl ScState {
         (a, b)
     }
 
-    fn prepare(&mut self, sc: &Sidechain, sr: f32) -> f32 {
+    pub(crate) fn prepare(&mut self, sc: &Sidechain, sr: f32) -> f32 {
         if sc.eq_on {
             let key = (sc.eq, sc.freq.to_bits(), sc.q.to_bits(), sc.eq_gain.to_bits(), sr.to_bits());
             if self.key != Some(key) {

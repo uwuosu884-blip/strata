@@ -158,12 +158,19 @@ pub(super) fn lfo(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) 
     let frames = ((tap.rate() * 3.0 / hz) as usize).clamp(2, daw_engine::devtap::RING / 2);
     let h = if tap.written() > 0 && tap.rate() > 0.0 { tap.history(frames) } else { Vec::new() };
     if h.len() >= 2 {
-        for x in 0..=w as usize {
-            let i = (x as f32 / w * (frames - 1) as f32) as isize - (frames - h.len()) as isize;
-            if i < 0 {
+        // Half-pixel steps, linearly interpolated between frames (smooth,
+        // anti-aliased curve instead of nearest-frame jitter).
+        let miss = (frames - h.len()) as f32;
+        let n = (w * 2.0) as usize;
+        for x in 0..=n {
+            let fi = x as f32 / n as f32 * (frames - 1) as f32 - miss;
+            if fi < 0.0 {
                 continue;
             }
-            pts.push(pos2(d.left() + x as f32, cy - h[i as usize][0] * amp));
+            let i0 = (fi.floor() as usize).min(h.len() - 1);
+            let i1 = (i0 + 1).min(h.len() - 1);
+            let v = h[i0][0] + (h[i1][0] - h[i0][0]) * (fi - i0 as f32);
+            pts.push(pos2(d.left() + x as f32 * 0.5, cy - v * amp));
         }
         cx.app.animating = true;
     } else {

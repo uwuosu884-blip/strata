@@ -90,7 +90,13 @@ impl DevTap {
 
     /// The latest `n` frames, oldest first (≤ [`RING`]).
     pub fn history(&self, n: usize) -> Vec<[f32; FRAME]> {
-        let end = self.written();
+        self.history_to(self.written(), n)
+    }
+
+    /// The `n` frames before frame `end` (absolute index), oldest first.
+    /// Displays bucket frames from a fixed boundary so columns don't shimmer.
+    pub fn history_to(&self, end: usize, n: usize) -> Vec<[f32; FRAME]> {
+        let end = end.min(self.written());
         let n = n.min(RING).min(end);
         (0..n)
             .map(|j| {

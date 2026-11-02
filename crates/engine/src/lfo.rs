@@ -360,16 +360,23 @@ impl LfoState {
     }
 
     fn publish(&mut self, out: f32, n: usize, sr: f32) {
+        let prev = self.out;
         self.out = out;
         if let Some(t) = &self.tap {
             t.set(0, out);
             let hop = ((HOP as f32 * sr / 48_000.0) as usize).max(1);
+            let start = self.hop;
             self.hop += n;
             if self.hop >= hop {
                 t.set_rate(sr / hop as f32);
+                // One value per block: the frames inside the block are
+                // interpolated from the previous value (no staircase scope).
+                let mut k = hop - start.min(hop);
                 while self.hop >= hop {
-                    t.push([out, 0.0, 0.0, 0.0]);
+                    let f = (k as f32 / n.max(1) as f32).min(1.0);
+                    t.push([prev + (out - prev) * f, 0.0, 0.0, 0.0]);
                     self.hop -= hop;
+                    k += hop;
                 }
             }
         }

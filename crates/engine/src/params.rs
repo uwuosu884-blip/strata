@@ -6,6 +6,7 @@
 use crate::dynfx::*;
 use crate::fx::*;
 use crate::lfo::*;
+use crate::modfx::*;
 
 /// Rack: macros are 0..16, the chain selector 16.
 pub const RACK_SELECTOR: u8 = 16;
@@ -85,6 +86,10 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
         FxParams::Glue(g) => glue_norm(g, k),
         FxParams::Limiter(l) => lim_norm(l, k),
         FxParams::Lfo(l) => lfo_norm(l, k),
+        FxParams::EqThree(e) => eq3_norm(e, k),
+        FxParams::Chorus(c) => cho_norm(c, k),
+        FxParams::AutoFilter(a) => af_norm(a, k),
+        FxParams::AutoPan(a) => pan_norm(a, k),
         FxParams::Rack(r) => match k {
             0..16 => Some(r.macros[k as usize] / 127.0),
             RACK_SELECTOR => Some(r.selector / 127.0),
@@ -117,6 +122,10 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
         FxParams::Glue(g) => glue_set(g, k, v),
         FxParams::Limiter(l) => lim_set(l, k, v),
         FxParams::Lfo(l) => lfo_set(l, k, v),
+        FxParams::EqThree(e) => eq3_set(e, k, v),
+        FxParams::Chorus(c) => cho_set(c, k, v),
+        FxParams::AutoFilter(a) => af_set(a, k, v),
+        FxParams::AutoPan(a) => pan_set(a, k, v),
         FxParams::Rack(r) => match k {
             0..16 => r.macros[k as usize] = (v * 127.0).round(),
             RACK_SELECTOR => r.selector = (v * 127.0).round(),
@@ -581,6 +590,268 @@ fn lfo_set(l: &mut LfoParams, k: u8, v: f32) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// EQ Three, Chorus-Ensemble, Auto Filter, Auto Pan-Tremolo.
+// ----------------------------------------------------------------------------
+
+/// EQ Three ids.
+pub mod e3p {
+    pub const GAIN: [u8; 3] = [0, 1, 2];
+    pub const ON: [u8; 3] = [3, 4, 5];
+    pub const FREQ_LO: u8 = 6;
+    pub const FREQ_HI: u8 = 7;
+    pub const SLOPE: u8 = 8;
+}
+
+/// EQ Three gain knob: amplitude taper, 0 dB at 0.865 of the turn (Live).
+pub const EQ3_TAPER: f32 = 0.209;
+
+pub fn eq3_gain_norm(db: f32) -> f32 {
+    if db <= EQ3_GAIN_MIN { 0.0 } else { (db_lin(db.min(EQ3_GAIN_MAX)) / db_lin(EQ3_GAIN_MAX)).powf(EQ3_TAPER) }
+}
+
+pub fn eq3_norm_gain(v: f32) -> f32 {
+    if v <= 1e-4 {
+        return EQ3_GAIN_MIN;
+    }
+    let a = v.min(1.0).powf(1.0 / EQ3_TAPER) * db_lin(EQ3_GAIN_MAX);
+    lin_db(a).clamp(EQ3_GAIN_MIN, EQ3_GAIN_MAX)
+}
+
+fn eq3_norm(e: &EqThreeParams, k: u8) -> Option<f32> {
+    Some(match k {
+        0..=2 => eq3_gain_norm(e.gain[k as usize]),
+        e3p::FREQ_LO => log_norm(e.freq_lo, EQ3_LO.0, EQ3_LO.1),
+        e3p::FREQ_HI => log_norm(e.freq_hi, EQ3_HI.0, EQ3_HI.1),
+        _ => return None,
+    })
+}
+
+fn eq3_set(e: &mut EqThreeParams, k: u8, v: f32) {
+    match k {
+        0..=2 => e.gain[k as usize] = eq3_norm_gain(v),
+        e3p::FREQ_LO => e.freq_lo = log_val(v, EQ3_LO.0, EQ3_LO.1),
+        e3p::FREQ_HI => e.freq_hi = log_val(v, EQ3_HI.0, EQ3_HI.1),
+        _ => {}
+    }
+}
+
+/// Chorus-Ensemble ids.
+pub mod chp {
+    pub const MODE: u8 = 0;
+    pub const HP_ON: u8 = 1;
+    pub const HP_FREQ: u8 = 2;
+    pub const WIDTH: u8 = 3;
+    pub const TIME: u8 = 4;
+    pub const TAPS: u8 = 5;
+    pub const OFFSET: u8 = 6;
+    pub const SHAPE: u8 = 7;
+    pub const RATE: u8 = 8;
+    pub const AMOUNT: u8 = 9;
+    pub const FEEDBACK: u8 = 10;
+    pub const FB_INV: u8 = 11;
+    pub const OUTPUT: u8 = 12;
+    pub const WARMTH: u8 = 13;
+    pub const DRY_WET: u8 = 14;
+}
+
+/// Rate knob tapers fitted to Live (Chorus 0.90 Hz at 0.413, LFOs 1 Hz at 0.372).
+pub const CHO_RATE_K: f32 = 3.52;
+pub const LFO_HZ_K: f32 = 3.75;
+
+fn cho_norm(c: &ChorusParams, k: u8) -> Option<f32> {
+    Some(match k {
+        chp::HP_FREQ => log_norm(c.hp_freq, CHO_HP.0, CHO_HP.1),
+        chp::WIDTH => c.width / 2.0,
+        chp::OFFSET => c.offset / 180.0,
+        chp::SHAPE => c.shape,
+        chp::RATE => pow_norm(c.rate, CHO_RATE.0, CHO_RATE.1, CHO_RATE_K),
+        chp::AMOUNT => c.amount,
+        chp::FEEDBACK => c.feedback / CHO_FB_MAX,
+        chp::OUTPUT => lin_norm(c.output, CHO_OUT.0, CHO_OUT.1),
+        chp::WARMTH => c.warmth,
+        chp::DRY_WET => c.dry_wet,
+        _ => return None,
+    })
+}
+
+fn cho_set(c: &mut ChorusParams, k: u8, v: f32) {
+    match k {
+        chp::HP_FREQ => c.hp_freq = log_val(v, CHO_HP.0, CHO_HP.1),
+        chp::WIDTH => c.width = v * 2.0,
+        chp::OFFSET => c.offset = v * 180.0,
+        chp::SHAPE => c.shape = v,
+        chp::RATE => c.rate = pow_val(v, CHO_RATE.0, CHO_RATE.1, CHO_RATE_K),
+        chp::AMOUNT => c.amount = v,
+        chp::FEEDBACK => c.feedback = v * CHO_FB_MAX,
+        chp::OUTPUT => c.output = lin_val(v, CHO_OUT.0, CHO_OUT.1),
+        chp::WARMTH => c.warmth = v,
+        chp::DRY_WET => c.dry_wet = v,
+        _ => {}
+    }
+}
+
+/// Rate knob of a [`Rate`] (mode-dependent; synced modes are stepped).
+pub fn rate_norm(r: &Rate) -> f32 {
+    match r.mode {
+        TimeMode::Rate => pow_norm(r.hz, LFO_HZ.0, LFO_HZ.1, LFO_HZ_K),
+        TimeMode::Time => log_norm(r.ms, LFO_MS.0, LFO_MS.1),
+        TimeMode::Sixteenth => (r.sixteenth.clamp(1, SIXTEENTH_MAX) as f32 - 1.0) / (SIXTEENTH_MAX as f32 - 1.0),
+        _ => idx_norm(r.div, SYNC_DIVS.len()),
+    }
+}
+
+pub fn rate_set(r: &mut Rate, v: f32) {
+    match r.mode {
+        TimeMode::Rate => r.hz = pow_val(v, LFO_HZ.0, LFO_HZ.1, LFO_HZ_K),
+        TimeMode::Time => r.ms = log_val(v, LFO_MS.0, LFO_MS.1),
+        TimeMode::Sixteenth => r.sixteenth = 1 + (v.clamp(0.0, 1.0) * (SIXTEENTH_MAX as f32 - 1.0)).round() as u8,
+        _ => r.div = norm_idx(v, SYNC_DIVS.len()),
+    }
+}
+
+/// Auto Pan-Tremolo ids.
+pub mod pnp {
+    pub const MODE: u8 = 0;
+    pub const WAVE: u8 = 1;
+    pub const TIME_MODE: u8 = 2;
+    pub const RATE: u8 = 3;
+    pub const STEREO: u8 = 4;
+    /// Phase (Phase mode) or Spin (Spin mode).
+    pub const PHASE: u8 = 5;
+    pub const OFFSET: u8 = 6;
+    pub const INVERT: u8 = 7;
+    pub const HARMONIC: u8 = 8;
+    pub const VINTAGE: u8 = 9;
+    pub const AMOUNT: u8 = 10;
+    pub const SHAPE: u8 = 11;
+    pub const ATTACK: u8 = 12;
+    pub const DYN_MOD: u8 = 13;
+}
+
+fn pan_norm(a: &AutoPanParams, k: u8) -> Option<f32> {
+    Some(match k {
+        pnp::RATE => rate_norm(&a.rate),
+        pnp::PHASE if a.spin_mode => a.spin,
+        pnp::PHASE => a.phase / 360.0,
+        pnp::OFFSET => a.offset / 360.0,
+        pnp::AMOUNT => a.amount,
+        pnp::SHAPE if a.tremolo => 0.5 + 0.5 * a.shape_trem,
+        pnp::SHAPE => a.shape_pan,
+        pnp::ATTACK => pow_norm(a.attack, 0.0, PAN_ATTACK_MAX, 4.0),
+        pnp::DYN_MOD => 0.5 + 0.5 * a.dyn_mod,
+        _ => return None,
+    })
+}
+
+fn pan_set(a: &mut AutoPanParams, k: u8, v: f32) {
+    match k {
+        pnp::RATE => rate_set(&mut a.rate, v),
+        pnp::PHASE if a.spin_mode => a.spin = v,
+        pnp::PHASE => a.phase = v * 360.0,
+        pnp::OFFSET => a.offset = v * 360.0,
+        pnp::AMOUNT => a.amount = v,
+        pnp::SHAPE if a.tremolo => a.shape_trem = v * 2.0 - 1.0,
+        pnp::SHAPE => a.shape_pan = v,
+        pnp::ATTACK => a.attack = pow_val(v, 0.0, PAN_ATTACK_MAX, 4.0),
+        pnp::DYN_MOD => a.dyn_mod = v * 2.0 - 1.0,
+        _ => {}
+    }
+}
+
+/// Auto Filter ids (sidechain: the shared `sc` ids).
+pub mod afp {
+    pub const TYPE: u8 = 0;
+    pub const SLOPE: u8 = 1;
+    pub const CIRCUIT: u8 = 2;
+    /// Freq (DJ: Control, Vowel: Pitch).
+    pub const FREQ: u8 = 3;
+    /// Res (Vowel: Formant).
+    pub const RES: u8 = 4;
+    pub const MORPH: u8 = 5;
+    pub const DRIVE: u8 = 6;
+    pub const CLIP: u8 = 7;
+    pub const OUTPUT: u8 = 8;
+    pub const DRY_WET: u8 = 9;
+    pub const LFO_AMT: u8 = 10;
+    pub const RATE: u8 = 11;
+    pub const WAVE: u8 = 12;
+    pub const LFO_MORPH: u8 = 13;
+    pub const TIME_MODE: u8 = 14;
+    pub const STEREO: u8 = 15;
+    /// Phase or Spin.
+    pub const PHASE: u8 = 16;
+    pub const OFFSET: u8 = 17;
+    pub const QUANT: u8 = 18;
+    /// Steps count or S&H rate.
+    pub const STEPS: u8 = 19;
+    pub const ENV_AMT: u8 = 20;
+    pub const ATTACK: u8 = 21;
+    pub const HOLD: u8 = 22;
+    pub const RELEASE: u8 = 23;
+    pub const ENV_SH: u8 = 24;
+    pub const ENV_DIV: u8 = 25;
+    pub const SECTION: u8 = 26;
+}
+
+fn af_norm(a: &AutoFilterParams, k: u8) -> Option<f32> {
+    Some(match k {
+        afp::FREQ => match a.kind {
+            FilterType::Dj => 0.5 + 0.5 * a.dj,
+            FilterType::Vowel => lin_norm(a.pitch, AF_PITCH.0, AF_PITCH.1),
+            _ => log_norm(a.freq, AF_FREQ.0, AF_FREQ.1),
+        },
+        afp::RES => a.res,
+        afp::MORPH => a.morph,
+        afp::DRIVE => a.drive,
+        afp::OUTPUT => lin_norm(a.output, AF_OUT.0, AF_OUT.1),
+        afp::DRY_WET => a.dry_wet,
+        afp::LFO_AMT => a.lfo_amt,
+        afp::RATE => rate_norm(&a.rate),
+        afp::LFO_MORPH if a.wave == AfWave::SampleHold => a.lfo_morph.max(0.0),
+        afp::LFO_MORPH => 0.5 + 0.5 * a.lfo_morph,
+        afp::PHASE if a.spin_mode => a.spin,
+        afp::PHASE => a.phase / 360.0,
+        afp::OFFSET => a.offset / 360.0,
+        afp::STEPS if a.quantize == Quantize::SampleHold => idx_norm(a.q_div, SYNC_DIVS.len()),
+        afp::STEPS => (a.steps.clamp(AF_STEPS.0, AF_STEPS.1) - AF_STEPS.0) as f32 / (AF_STEPS.1 - AF_STEPS.0) as f32,
+        afp::ENV_AMT => 0.5 + 0.5 * a.env_amt,
+        afp::ATTACK => log_norm(a.attack, AF_ATTACK.0, AF_ATTACK.1),
+        afp::RELEASE => log_norm(a.release, AF_RELEASE.0, AF_RELEASE.1),
+        afp::ENV_DIV => idx_norm(a.env_div, SYNC_DIVS.len()),
+        _ => return sc_norm(&a.sc, k),
+    })
+}
+
+fn af_set(a: &mut AutoFilterParams, k: u8, v: f32) {
+    match k {
+        afp::FREQ => match a.kind {
+            FilterType::Dj => a.dj = v * 2.0 - 1.0,
+            FilterType::Vowel => a.pitch = lin_val(v, AF_PITCH.0, AF_PITCH.1),
+            _ => a.freq = log_val(v, AF_FREQ.0, AF_FREQ.1),
+        },
+        afp::RES => a.res = v,
+        afp::MORPH => a.morph = v,
+        afp::DRIVE => a.drive = v,
+        afp::OUTPUT => a.output = lin_val(v, AF_OUT.0, AF_OUT.1),
+        afp::DRY_WET => a.dry_wet = v,
+        afp::LFO_AMT => a.lfo_amt = v,
+        afp::RATE => rate_set(&mut a.rate, v),
+        afp::LFO_MORPH if a.wave == AfWave::SampleHold => a.lfo_morph = v,
+        afp::LFO_MORPH => a.lfo_morph = v * 2.0 - 1.0,
+        afp::PHASE if a.spin_mode => a.spin = v,
+        afp::PHASE => a.phase = v * 360.0,
+        afp::OFFSET => a.offset = v * 360.0,
+        afp::STEPS if a.quantize == Quantize::SampleHold => a.q_div = norm_idx(v, SYNC_DIVS.len()),
+        afp::STEPS => a.steps = AF_STEPS.0 + (v.clamp(0.0, 1.0) * (AF_STEPS.1 - AF_STEPS.0) as f32).round() as u8,
+        afp::ENV_AMT => a.env_amt = v * 2.0 - 1.0,
+        afp::ATTACK => a.attack = log_val(v, AF_ATTACK.0, AF_ATTACK.1),
+        afp::RELEASE => a.release = log_val(v, AF_RELEASE.0, AF_RELEASE.1),
+        afp::ENV_DIV => a.env_div = norm_idx(v, SYNC_DIVS.len()),
+        _ => sc_set(&mut a.sc, k, v),
+    }
+}
+
 /// Whether an LFO may map this parameter (continuous device parameters,
 /// not rack macros/selector and not other LFOs).
 pub fn mappable(p: &FxParams, k: u8) -> bool {
@@ -598,6 +869,13 @@ mod tests {
             FxParams::Glue(GlueParams::default()),
             FxParams::Limiter(LimiterParams::default()),
             FxParams::Lfo(LfoParams::default()),
+            FxParams::EqThree(EqThreeParams::default()),
+            FxParams::Chorus(ChorusParams::default()),
+            FxParams::AutoFilter(AutoFilterParams::default()),
+            FxParams::AutoPan(AutoPanParams::default()),
+            FxParams::AutoPan(AutoPanParams { tremolo: true, ..Default::default() }),
+            FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Dj, ..Default::default() }),
+            FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Vowel, ..Default::default() }),
         ];
         for p in all {
             for k in 0..=120u8 {

@@ -949,7 +949,7 @@ fn live_preview(app: &DawApp, p: &egui::Painter, g: &Geo, lane: Rect, t: usize, 
             (b >= 0.0).then_some(b * fpb + lat)
         };
         let vis = body.intersect(p.clip_rect());
-        super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, wave_zoom(), Color32::from_gray(0x18));
+        super::wave::draw(&p.with_clip_rect(vis), body, vis, &src, &fx, wave_zoom(), Color32::from_gray(0x18), None);
     }
     clip_grid(p, g, r, lane, collapsed);
 }
@@ -2425,7 +2425,7 @@ fn draw_clip_fill(
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
             // Waveform Vertical Zoom Level: display only (the clip gain is untouched).
-            draw_wave(p, body, visible, buf, zoom, &frame_of, *gain_db + 20.0 * wave_zoom().log10(), ink);
+            draw_wave(p, body, visible, buf, zoom, &frame_of, *gain_db + 20.0 * wave_zoom().log10(), ink, Some(clip));
         }
     }
 }
@@ -2472,7 +2472,7 @@ pub fn draw_clip_overview(app: &DawApp, p: &egui::Painter, r: Rect, clip: &Clip,
                 }
             };
             let frame_of = |local: f64| clip.content_at(local).map(|u| map.frame_at(u));
-            draw_wave(p, r, r, buf, zoom, &frame_of, *gain_db, ink);
+            draw_wave(p, r, r, buf, zoom, &frame_of, *gain_db, ink, Some(clip));
         }
     }
 }
@@ -2507,12 +2507,29 @@ pub fn draw_wave(
     frame_of: &dyn Fn(f64) -> Option<f64>,
     gain_db: f32,
     ink: Color32,
+    fades: Option<&Clip>,
 ) {
     if buf.is_empty() || px_per_beat <= 0.0 {
         return;
     }
     let fx = super::wave::beat_mapper(body.min.x, px_per_beat, frame_of);
     let clip = visible.intersect(body);
+    // Fades scale the drawn waveform like the audio (engine's fade curve).
+    let env = fades.map(|c| {
+        let (fi, fo, ci, co) = clip_fades(c);
+        let (x0, len) = (body.min.x, c.length);
+        move |x: f32| {
+            let b = (x - x0) as f64 / px_per_beat;
+            let mut g = 1.0;
+            if fi > 1e-9 && b < fi {
+                g *= daw_engine::fade_gain((b / fi).clamp(0.0, 1.0), ci);
+            }
+            if fo > 1e-9 && b > len - fo {
+                g *= daw_engine::fade_gain(((len - b) / fo).clamp(0.0, 1.0), co);
+            }
+            g
+        }
+    });
     super::wave::draw(
         &p.with_clip_rect(clip.intersect(p.clip_rect())),
         body,
@@ -2521,6 +2538,7 @@ pub fn draw_wave(
         &fx,
         daw_project::db_to_gain(gain_db),
         ink,
+        env.as_ref().map(|e| e as &dyn Fn(f32) -> f32),
     );
 }
 

@@ -10,6 +10,44 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.5] - 2026-11-01
+
+### Added
+- Plugin delay compensation (Live style): tracks with lookahead devices
+  (Gate, Limiter, racks) are kept aligned with every other path into the
+  Main, groups, returns and track outputs. Rack chains are aligned inside
+  the rack.
+- Hovering a device's title bar shows its latency in the status bar
+  ("Latency: 72 samples (1.5 ms)"), whether or not the device is selected.
+- EQ Three: Low / Mid / High gain (−inf … +6 dB) with band on/off buttons and
+  −24 dB signal LEDs, FreqLow / FreqHigh crossovers, 24 / 48 dB slope.
+- Chorus-Ensemble: Chorus / Ensemble / Vibrato modes, HP filter, Width, Delay
+  Time (Auto or fixed), Taps, Vibrato Offset and Shape, Rate (also by
+  dragging the display), Amount, Feedback with invert, Output, Warmth and
+  Dry/Wet.
+- Auto Pan-Tremolo: Panning / Tremolo modes, 9 waveforms, Rate / Time /
+  Synced / Dotted / Triplet / 16th, Phase / Spin, Phase Offset, Invert,
+  Harmonic and Vintage tremolo, Amount, Shape, Attack and Dynamic Frequency
+  Modulation, live position bar.
+- Auto Filter (Live 12): LP / HP / BP / Notch / Morph / DJ / Comb /
+  Resampling / Notch+LP / Vowel types, SVF / DFM / MS2 / PRD circuits, Drive,
+  Clip with LED, Output, Dry/Wet. Interactive display with modulated L/R
+  curves. LFO section (8 waveforms, Phase / Spin, Quantize, Hz / Time /
+  sync rates), Envelope section (Attack, Hold, Release, S&H) and a full
+  sidechain (External source and tap, Gain, Mix, SC filter, Listen, Mono
+  Sidechain in the context menu).
+
+### Fixed
+- Gate display: no more diagonal lines across silent gaps, and no lag or
+  twitching with 10 ms lookahead.
+- LFO waveform display is anti-aliased.
+- Stepped knobs (synced LFO rate, Glue attack / release, …) follow slow
+  mouse movement smoothly instead of sticking.
+- Limiter: the gain-reduction meter uses the same yellow fill as the input
+  meter.
+- Clip fades are now drawn on the waveform.
+- Soloing a muted track makes it audible.
+
 ## [0.8.4] - 2026-11-01
 
 ### Added

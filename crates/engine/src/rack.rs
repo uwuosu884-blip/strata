@@ -154,11 +154,13 @@ pub struct ChainDsp {
     pub devices: Vec<FxSlot>,
     /// Gains applied at the end of the last sub-block (ramp start).
     cur: Option<(f32, f32)>,
+    /// Delay compensation against the rack's slowest chain.
+    pdc: Box<crate::pdc::PdcLine>,
 }
 
 impl ChainDsp {
     pub fn new(id: u64, mix: ChainMix, devices: Vec<FxSlot>) -> Self {
-        Self { id, mix, devices, cur: None }
+        Self { id, mix, devices, cur: None, pdc: Box::new(crate::pdc::PdcLine::new()) }
     }
 }
 
@@ -177,6 +179,11 @@ impl RackDsp {
         Self { chains, inp: Box::new([[0.0; SUB]; 2]), acc: Box::new([[0.0; SUB]; 2]), work: Box::new([[0.0; SUB]; 2]) }
     }
 
+    /// Latency of the slowest chain (samples).
+    pub fn latency(&self, sr: f32) -> usize {
+        self.chains.iter().map(|c| crate::fx::chain_latency(&c.devices, sr)).max().unwrap_or(0)
+    }
+
     /// Process `l`/`r` in place. No chains = the input passes unchanged.
     pub fn process(&mut self, p: &RackParams, l: &mut [f32], r: &mut [f32], sr: f32) {
         if self.chains.is_empty() {
@@ -185,6 +192,7 @@ impl RackDsp {
         let sel = p.selector.round().clamp(0.0, ZONE_MAX as f32) as u8;
         let soloing = self.chains.iter().any(|c| c.mix.solo);
         let n = l.len().min(r.len());
+        let lat = self.latency(sr);
         let mut off = 0;
         while off < n {
             let m = (n - off).min(SUB);
@@ -209,6 +217,11 @@ impl RackDsp {
                 if !c.devices.is_empty() {
                     let (wl, wr) = work.split_at_mut(1);
                     run_chain(&mut c.devices, &mut wl[0][..m], &mut wr[0][..m], sr, &[]);
+                }
+                if lat > 0 {
+                    let d = lat - crate::fx::chain_latency(&c.devices, sr).min(lat);
+                    let (wl, wr) = work.split_at_mut(1);
+                    c.pdc.process(&mut wl[0][..m], &mut wr[0][..m], d);
                 }
                 if sl == 0.0 && tl == 0.0 && sr0 == 0.0 && tr == 0.0 {
                     continue;

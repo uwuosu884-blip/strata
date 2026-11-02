@@ -323,3 +323,21 @@ fn effect_chains_on_tracks_and_main() {
     let out = run(&mut e, &mut input, 4800, 2);
     assert_eq!((ch(&out, 2, 0), ch(&out, 2, 1)), (0.0, 0.0), "main muted");
 }
+
+#[test]
+fn delay_compensation_aligns_lookahead_tracks() {
+    let (mut e, mut h, mut input) = engine4();
+    // Track 0: Limiter (1.5 ms lookahead = 72 samples); track 1: dry.
+    let mut a = ext(0, 0, false, Monitor::In);
+    a.fx = vec![FxSlot::new(1, true, FxParams::Limiter(LimiterParams { lookahead: 0, ..Default::default() }))];
+    let b = ext(1, 1, false, Monitor::In);
+    h.set_song(Song::new(vec![a, b])).unwrap();
+    let out = run(&mut e, &mut input, 4800, 2);
+    let l: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+    // The dry track waits for the limited one: silence before 72 samples.
+    let first = l.iter().position(|x| x.abs() > 1e-6).unwrap();
+    assert!((70..=74).contains(&first), "first output at {first}");
+    let steady = *l.last().unwrap();
+    assert!(steady > 0.05, "{steady}");
+    assert!((l[first + 40] - steady).abs() < 0.02 * steady, "both paths arrive together: {} vs {steady}", l[first + 40]);
+}
