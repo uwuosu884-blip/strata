@@ -237,6 +237,10 @@ pub enum FxParams {
     Echo(crate::echo::EchoParams),
     Erosion(crate::erosion::ErosionParams),
     Reverb(crate::reverb::ReverbParams),
+    Redux(crate::redux::ReduxParams),
+    Saturator(crate::saturator::SaturatorParams),
+    Delay(crate::delay::DelayParams),
+    GrainDelay(crate::graindelay::GrainDelayParams),
 }
 
 impl FxParams {
@@ -262,6 +266,10 @@ impl FxParams {
             FxParams::Echo(_) => "Echo",
             FxParams::Erosion(_) => "Erosion",
             FxParams::Reverb(_) => "Reverb",
+            FxParams::Redux(_) => "Redux",
+            FxParams::Saturator(_) => "Saturator",
+            FxParams::Delay(_) => "Delay",
+            FxParams::GrainDelay(_) => "Grain Delay",
         }
     }
 
@@ -545,6 +553,10 @@ enum StateKind {
     Echo(Box<crate::echo::EchoState>),
     Erosion(Box<crate::erosion::ErosionState>),
     Reverb(Box<crate::reverb::ReverbState>),
+    Redux(Box<crate::redux::ReduxState>),
+    Saturator(Box<crate::saturator::SaturatorState>),
+    Delay(Box<crate::delay::DelayState>),
+    GrainDelay(Box<crate::graindelay::GrainDelayState>),
 }
 
 impl PartialEq for StateKind {
@@ -575,6 +587,10 @@ impl FxState {
             FxParams::Echo(_) => StateKind::Echo(Box::default()),
             FxParams::Erosion(_) => StateKind::Erosion(Box::new(crate::erosion::ErosionState::new(None))),
             FxParams::Reverb(_) => StateKind::Reverb(Box::default()),
+            FxParams::Redux(_) => StateKind::Redux(Box::default()),
+            FxParams::Saturator(_) => StateKind::Saturator(Box::default()),
+            FxParams::Delay(_) => StateKind::Delay(Box::default()),
+            FxParams::GrainDelay(_) => StateKind::GrainDelay(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -598,6 +614,10 @@ impl FxState {
             StateKind::Echo(e) => e.reset(),
             StateKind::Erosion(e) => e.reset(),
             StateKind::Reverb(v) => v.reset(),
+            StateKind::Redux(v) => v.reset(),
+            StateKind::Saturator(v) => v.reset(),
+            StateKind::Delay(v) => v.reset(),
+            StateKind::GrainDelay(v) => v.reset(),
         }
     }
 }
@@ -653,6 +673,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Echo(p), StateKind::Echo(st)) => st.process(p, l, r, sr),
             (FxParams::Erosion(p), StateKind::Erosion(st)) => st.process(p, l, r, sr),
             (FxParams::Reverb(p), StateKind::Reverb(st)) => st.process(p, l, r, sr),
+            (FxParams::Redux(p), StateKind::Redux(st)) => st.process(p, l, r, sr),
+            (FxParams::Saturator(p), StateKind::Saturator(st)) => st.process(p, l, r, sr),
+            (FxParams::Delay(p), StateKind::Delay(st)) => st.process(p, l, r, sr),
+            (FxParams::GrainDelay(p), StateKind::GrainDelay(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

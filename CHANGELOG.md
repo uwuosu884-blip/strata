@@ -10,6 +10,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.8] - 2026-11-02
+
+### Added
+- Redux: sample-rate reduction with Jitter, Pre/Post filters (Post = octaves relative to half Rate), bit reduction with Shape and DC Shift, Dry/Wet.
+- Saturator: 8 curve types (incl. Bass Shaper and Waveshaper), live transfer graph, No/Soft/Hard post clip, Color EQ (pre + inverted post) with draggable curve handles, expanded view with Waveshaper Drive/Curve/Depth/Linear/Damp/Period; context menu Hi-Quality and Pre-DC Filter.
+- Delay: synced (1–16 sixteenths + offset) or free time per side, Stereo Link, Feedback, Freeze, Ping Pong, Repitch/Fade/Jump smoothing, band-pass XY filter display, LFO (7 waves, Morph, Rate/Time/Synced/Triplet/Dotted/Sixteenth modes) modulating delay time and filter; context menu Hi-Quality and Equal-Loudness.
+- Grain Delay: Delay Time (synced or ms), Spray, Frequency, Pitch, Random Pitch, Feedback, Dry/Wet with the X/Y pad and axis selectors.
+
 ## [0.8.7] - 2026-11-02
 
 ### Added

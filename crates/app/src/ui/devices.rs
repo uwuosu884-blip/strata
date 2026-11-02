@@ -14,14 +14,18 @@ use std::f32::consts::PI;
 mod autoshift;
 mod chaneq;
 mod comp;
+mod delay;
 mod dynamics;
 mod echo;
 mod eq8;
 mod erosion;
+mod graindelay;
 mod lfo;
 mod modfx;
 mod rack;
+mod redux;
 mod reverb;
+mod saturator;
 mod shaper;
 mod spec;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
@@ -71,6 +75,16 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Echo(_) => echo::WIDTH,
         FxParams::Erosion(_) => erosion::WIDTH,
         FxParams::Reverb(_) => reverb::WIDTH,
+        FxParams::Redux(_) => redux::WIDTH,
+        FxParams::Saturator(s) => {
+            if s.expanded {
+                saturator::WIDTH_EXT
+            } else {
+                saturator::WIDTH
+            }
+        }
+        FxParams::Delay(_) => delay::WIDTH,
+        FxParams::GrainDelay(_) => graindelay::WIDTH,
     }
 }
 
@@ -139,6 +153,10 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Echo(_) => echo::reset(p, k),
         FxParams::Erosion(_) => erosion::reset(p, k),
         FxParams::Reverb(_) => reverb::reset(p, k),
+        FxParams::Redux(_) => redux::reset(p, k),
+        FxParams::Saturator(_) => saturator::reset(p, k),
+        FxParams::Delay(_) => delay::reset(p, k),
+        FxParams::GrainDelay(_) => graindelay::reset(p, k),
     }
 }
 
@@ -199,6 +217,10 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Echo(_) => echo::step(p, k, dir),
         FxParams::Erosion(_) => erosion::step(p, k, dir),
         FxParams::Reverb(_) => reverb::step(p, k, dir),
+        FxParams::Redux(_) => redux::step(p, k, dir),
+        FxParams::Saturator(_) => saturator::step(p, k, dir),
+        FxParams::Delay(_) => delay::step(p, k, dir),
+        FxParams::GrainDelay(_) => graindelay::step(p, k, dir),
     }
 }
 
@@ -246,6 +268,10 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Echo(_) => echo::name(k),
         FxParams::Erosion(_) => erosion::name(k),
         FxParams::Reverb(_) => reverb::name(k),
+        FxParams::Redux(_) => redux::name(k),
+        FxParams::Saturator(_) => saturator::name(k),
+        FxParams::Delay(_) => delay::name(k),
+        FxParams::GrainDelay(_) => graindelay::name(k),
     }
 }
 
@@ -758,6 +784,13 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::AutoFilter(a) => Some(a.sc_mono),
         _ => None,
     };
+    // Device-specific context switches: (label, on).
+    let extra: Vec<(&str, bool)> = match dev.params {
+        FxParams::Saturator(s) => vec![("Hi-Quality", s.hq), ("Pre-DC Filter", s.pre_dc)],
+        FxParams::Delay(d) => vec![("Hi-Quality", d.hq), ("Equal-Loudness", d.eq_loud)],
+        _ => Vec::new(),
+    };
+    let mut extra_hit: Option<usize> = None;
     let eq_os = match dev.params {
         FxParams::EqEight(e) => Some(e.oversample),
         FxParams::Glue(g) => Some(g.oversample),
@@ -787,6 +820,14 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         if let Some(on) = af_mono {
             menu::sep(ui);
             sc_mono = menu::check_item(ui, "Mono Sidechain", "", on, true);
+        }
+        if !extra.is_empty() {
+            menu::sep(ui);
+            for (i, (label, on)) in extra.iter().enumerate() {
+                if menu::check_item(ui, label, "", *on, true) {
+                    extra_hit = Some(i);
+                }
+            }
         }
     });
 
@@ -835,6 +876,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         dynamics::title_fold(&mut cx, ui, &p, l, t);
         name_x = l + 38.0;
     }
+    if matches!(dev.params, FxParams::Saturator(_)) {
+        saturator::title_button(&mut cx, ui, &p, l, t);
+        name_x = l + 38.0;
+    }
     let nf = bold(FS);
     let name = fit(&p, dev.params.name(), &nf, name_right - name_x);
     text_at(&p, name_x, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
@@ -859,10 +904,24 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Echo(_) => echo::draw(&mut cx, ui, &p, r),
         FxParams::Erosion(_) => erosion::erosion(&mut cx, ui, &p, r),
         FxParams::Reverb(_) => reverb::draw(&mut cx, ui, &p, r),
+        FxParams::Redux(_) => redux::draw(&mut cx, ui, &p, r),
+        FxParams::Saturator(_) => saturator::draw(&mut cx, ui, &p, r),
+        FxParams::Delay(_) => delay::draw(&mut cx, ui, &p, r),
+        FxParams::GrainDelay(_) => graindelay::draw(&mut cx, ui, &p, r),
         FxParams::Rack(_) => {}
     }
     if sc_mono && let FxParams::AutoFilter(a) = &mut cx.params {
         a.sc_mono = !a.sc_mono;
+        cx.undo_step();
+    }
+    if let Some(i) = extra_hit {
+        match &mut cx.params {
+            FxParams::Saturator(s) if i == 0 => s.hq = !s.hq,
+            FxParams::Saturator(s) => s.pre_dc = !s.pre_dc,
+            FxParams::Delay(d) if i == 0 => d.hq = !d.hq,
+            FxParams::Delay(d) => d.eq_loud = !d.eq_loud,
+            _ => {}
+        }
         cx.undo_step();
     }
     if oversample {
@@ -1368,6 +1427,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => false,
         FxParams::Compressor(_) | FxParams::Spectrum(_) | FxParams::AutoShift(_) => false,
         FxParams::ChannelEq(_) | FxParams::Echo(_) | FxParams::Erosion(_) | FxParams::Reverb(_) => false,
+        FxParams::Redux(_) | FxParams::Saturator(_) | FxParams::Delay(_) | FxParams::GrainDelay(_) => false,
     }
 }
 

@@ -158,6 +158,44 @@ fn big_song(variant: usize) -> Song {
         FxSlot::new(15, true, FxParams::Erosion(Default::default())),
         FxSlot::new(16, true, FxParams::Reverb(verb)),
     ];
+    // v0.8.8 devices with their optional stages on.
+    let redux = daw_engine::redux::ReduxParams {
+        rate: 3000.0,
+        jitter: 0.5,
+        pre: true,
+        post: true,
+        bits: 6.5,
+        shape: 0.4,
+        dc: true,
+        ..Default::default()
+    };
+    let sat = daw_engine::saturator::SaturatorParams {
+        curve: (variant % 8) as u8,
+        clip: (variant % 3) as u8,
+        hq: variant.is_multiple_of(2),
+        pre_dc: true,
+        amt_lo: 0.3,
+        amt_hi: -0.4,
+        drive: 12.0,
+        ..Default::default()
+    };
+    let delay = daw_engine::delay::DelayParams {
+        lfo_delay: 0.4,
+        lfo_filter: 0.6,
+        wave: (variant % 7) as u8,
+        smooth: (variant % 3) as u8,
+        ping_pong: variant.is_multiple_of(2),
+        freeze: variant % 4 == 1,
+        eq_loud: true,
+        ..Default::default()
+    };
+    let grain = daw_engine::graindelay::GrainDelayParams { spray: 40.0, pitch: 7.0, rand: 30.0, feedback: 0.5, ..Default::default() };
+    song.tracks[3].fx = vec![
+        FxSlot::new(17, true, FxParams::Redux(redux)),
+        FxSlot::new(18, true, FxParams::Saturator(sat)),
+        FxSlot::new(19, true, FxParams::Delay(delay)),
+        FxSlot::new(20, true, FxParams::GrainDelay(grain)),
+    ];
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;
     song
