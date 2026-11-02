@@ -241,6 +241,10 @@ pub enum FxParams {
     Saturator(crate::saturator::SaturatorParams),
     Delay(crate::delay::DelayParams),
     GrainDelay(crate::graindelay::GrainDelayParams),
+    Resonators(crate::resonators::ResonatorsParams),
+    DrumBuss(crate::drumbuss::DrumBussParams),
+    SpectralResonator(crate::specres::SpecResParams),
+    SpectralTime(crate::spectime::SpecTimeParams),
 }
 
 impl FxParams {
@@ -270,6 +274,10 @@ impl FxParams {
             FxParams::Saturator(_) => "Saturator",
             FxParams::Delay(_) => "Delay",
             FxParams::GrainDelay(_) => "Grain Delay",
+            FxParams::Resonators(_) => "Resonators",
+            FxParams::DrumBuss(_) => "Drum Buss",
+            FxParams::SpectralResonator(_) => "Spectral Resonator",
+            FxParams::SpectralTime(_) => "Spectral Time",
         }
     }
 
@@ -282,6 +290,8 @@ impl FxParams {
             FxParams::Limiter(p) => crate::dynfx::LimiterState::latency(p, sr),
             FxParams::Compressor(p) => p.latency(sr),
             FxParams::AutoShift(p) => p.latency(sr),
+            FxParams::SpectralResonator(_) => crate::specres::SpecResState::LATENCY,
+            FxParams::SpectralTime(p) => p.latency(),
             _ => 0,
         }
     }
@@ -294,6 +304,7 @@ impl FxParams {
             FxParams::Compressor(c) => Some(&c.sc),
             // MIDI In source (resolved and ordered like a sidechain).
             FxParams::AutoShift(a) => Some(&a.midi),
+            FxParams::SpectralResonator(a) => Some(&a.midi),
             _ => None,
         }
     }
@@ -336,6 +347,9 @@ impl FxSlot {
             StateKind::ChannelEq(c) => **c = crate::chaneq::ChannelEqState::new(Some(id)),
             StateKind::Echo(e) => e.set_tap(id),
             StateKind::Erosion(e) => **e = crate::erosion::ErosionState::new(Some(id)),
+            StateKind::DrumBuss(d) => **d = crate::drumbuss::DrumBussState::new(Some(id)),
+            StateKind::SpecRes(d) => d.set_id(id),
+            StateKind::SpecTime(d) => d.set_id(id),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -396,8 +410,13 @@ pub(crate) fn fill_sidechains<'a>(
     for s in chain.iter_mut() {
         s.visit(&mut |s| {
             let Some((rt, tap)) = s.sc_src else { return };
-            if let (FxParams::AutoShift(p), StateKind::AutoShift(st)) = (&s.params, &mut s.state.kind) {
-                if p.midi.on {
+            let midi_on = match &s.params {
+                FxParams::AutoShift(p) => Some(p.midi.on),
+                FxParams::SpectralResonator(p) => Some(p.midi_mode),
+                _ => None,
+            };
+            if let Some(on) = midi_on {
+                if on {
                     let mut buf = [crate::autoshift::AsNote::default(); 64];
                     let mut k = 0;
                     notes(rt, &mut |e| {
@@ -406,7 +425,11 @@ pub(crate) fn fill_sidechains<'a>(
                             k += 1;
                         }
                     });
-                    st.set_notes(&mut buf[..k].iter().copied());
+                    match &mut s.state.kind {
+                        StateKind::AutoShift(st) => st.set_notes(&mut buf[..k].iter().copied()),
+                        StateKind::SpecRes(st) => st.set_notes(&mut buf[..k].iter().copied()),
+                        _ => {}
+                    }
                 }
                 return;
             }
@@ -557,6 +580,10 @@ enum StateKind {
     Saturator(Box<crate::saturator::SaturatorState>),
     Delay(Box<crate::delay::DelayState>),
     GrainDelay(Box<crate::graindelay::GrainDelayState>),
+    Resonators(Box<crate::resonators::ResonatorsState>),
+    DrumBuss(Box<crate::drumbuss::DrumBussState>),
+    SpecRes(Box<crate::specres::SpecResState>),
+    SpecTime(Box<crate::spectime::SpecTimeState>),
 }
 
 impl PartialEq for StateKind {
@@ -591,6 +618,10 @@ impl FxState {
             FxParams::Saturator(_) => StateKind::Saturator(Box::default()),
             FxParams::Delay(_) => StateKind::Delay(Box::default()),
             FxParams::GrainDelay(_) => StateKind::GrainDelay(Box::default()),
+            FxParams::Resonators(_) => StateKind::Resonators(Box::default()),
+            FxParams::DrumBuss(_) => StateKind::DrumBuss(Box::default()),
+            FxParams::SpectralResonator(_) => StateKind::SpecRes(Box::default()),
+            FxParams::SpectralTime(_) => StateKind::SpecTime(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -618,6 +649,10 @@ impl FxState {
             StateKind::Saturator(v) => v.reset(),
             StateKind::Delay(v) => v.reset(),
             StateKind::GrainDelay(v) => v.reset(),
+            StateKind::Resonators(v) => v.reset(),
+            StateKind::DrumBuss(v) => v.reset(),
+            StateKind::SpecRes(v) => v.reset(),
+            StateKind::SpecTime(v) => v.reset(),
         }
     }
 }
@@ -677,6 +712,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Saturator(p), StateKind::Saturator(st)) => st.process(p, l, r, sr),
             (FxParams::Delay(p), StateKind::Delay(st)) => st.process(p, l, r, sr),
             (FxParams::GrainDelay(p), StateKind::GrainDelay(st)) => st.process(p, l, r, sr),
+            (FxParams::Resonators(p), StateKind::Resonators(st)) => st.process(p, l, r, sr),
+            (FxParams::DrumBuss(p), StateKind::DrumBuss(st)) => st.process(p, l, r, sr),
+            (FxParams::SpectralResonator(p), StateKind::SpecRes(st)) => st.process(p, l, r, sr),
+            (FxParams::SpectralTime(p), StateKind::SpecTime(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

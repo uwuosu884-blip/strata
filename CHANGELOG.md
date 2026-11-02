@@ -10,6 +10,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.9] - 2026-11-02
+
+### Added
+- Resonators: input filter (LP/HP/BP/Notch, Frequency), Mode A/B, Decay with Const, Color; five resonators (I on L+R, II/IV on L, III/V on R) with Note / Pitch ±24 st, Fine (cents), Gain and On; Width, Output, Dry/Wet; ♭♯ Scale Awareness follows the current scale.
+- Drum Buss: Trim, Comp, Drive with Soft / Medium / Hard, Crunch, Damp, Transients (±, above 100 Hz), Boom with Freq, Decay, Force To Note and Boom Audition, Bass meter, Output meter with fader, Dry/Wet.
+- Spectral Resonator: Internal (Freq in Hz or notes) or MIDI mode (MIDI From, Mono/Poly, voices, MIDI Gate, Glide, PB, Transp.); Stretch, Shift, Decay, Hi/Lo Damp; None / Chorus / Wander / Granular modulation with Mod Rate and Pch.Mod; Harmonics, Quantize, ♭♯ scale; Input Send with limiter LED, Unison, Uni. Amt, Dry/Wet; live spectrogram (dry yellow, wet blue).
+- Spectral Time: Freezer (Manual / Retrigger on Onsets or Sync, Crossfade X-Fade or Envelope Fade In/Out, stacked layers, Freeze pad) and spectral Delay (Time / Notes / 16th / 16th T / 16th D, Feedback, frequency Shift, Stereo, Mix, Tilt, Spray, Mask) in Frz > Dly or Dly > Frz order; Resolution, Input Send, Dry/Wet, spectrogram.
+- Shared STFT engine (Hann, 4× overlap); Spectral Resonator / Spectral Time report their latency for PDC.
+
 ## [0.8.8] - 2026-11-02
 
 ### Added

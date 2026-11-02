@@ -23,7 +23,6 @@ pub fn width(a: &AutoShiftParams) -> f32 {
 /// Grey labels in the display.
 const LABEL: Color32 = Color32::from_rgb(0x86, 0x86, 0x86);
 /// Use Current Scale (Live's scale purple).
-const PURPLE: Color32 = Color32::from_rgb(0xa6, 0x8b, 0xf5);
 const KEY_ON: Color32 = Color32::from_rgb(3, 195, 213);
 const KEY_OFF: Color32 = Color32::from_rgb(19, 58, 61);
 const BAR_L: Color32 = Color32::from_rgb(70, 54, 36);
@@ -212,20 +211,7 @@ pub(super) fn auto_shift(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) 
     if cx.toggle(ui, Rect::from_min_max(pos2(lm.left() - 2.0, t + 2.0), pos2(lt.right() + 2.0, t + 15.0)), asp::LIVE, true) {
         set(cx, |a| a.live = !a.live);
     }
-    let br = Rect::from_min_size(pos2(l + 389.0, t + 2.0), vec2(13.0, 13.0));
-    let (bf, bc) = if a0.use_current { (if cx.on { PURPLE } else { gray(0x75) }, gray(0x12)) } else { (gray(0x1e), text()) };
-    boxed(p, br, bf);
-    // ♭♯ glyph (pixel art as in Live).
-    let px = |x0: f32, y0: f32, x1: f32, y1: f32| quad(p, Rect::from_min_max(pos2(l + x0, t + y0), pos2(l + x1, t + y1)), bc);
-    px(391.0, 7.0, 392.0, 13.0);
-    px(392.0, 9.0, 393.0, 10.0);
-    px(393.0, 10.0, 394.0, 12.0);
-    px(392.0, 12.0, 393.0, 13.0);
-    px(396.0, 4.0, 397.0, 9.0);
-    px(398.0, 4.0, 399.0, 9.0);
-    px(395.0, 5.0, 400.0, 6.0);
-    px(395.0, 7.0, 400.0, 8.0);
-    if cx.toggle(ui, br, asp::USE_CUR, true) {
+    if super::fx4::scale_btn(cx, ui, p, l + 389.0, t, asp::USE_CUR, a0.use_current) {
         set(cx, |a| a.use_current = !a.use_current);
     }
 

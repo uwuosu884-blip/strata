@@ -15,19 +15,24 @@ mod autoshift;
 mod chaneq;
 mod comp;
 mod delay;
+mod drumbuss;
 mod dynamics;
 mod echo;
 mod eq8;
 mod erosion;
+mod fx4;
 mod graindelay;
 mod lfo;
 mod modfx;
 mod rack;
 mod redux;
+mod resonators;
 mod reverb;
 mod saturator;
 mod shaper;
 mod spec;
+mod specres;
+mod spectime;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
 const TITLE_H: f32 = 17.0;
@@ -76,6 +81,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Erosion(_) => erosion::WIDTH,
         FxParams::Reverb(_) => reverb::WIDTH,
         FxParams::Redux(_) => redux::WIDTH,
+        FxParams::Resonators(_) => resonators::WIDTH,
+        FxParams::DrumBuss(_) => drumbuss::WIDTH,
+        FxParams::SpectralResonator(_) => specres::WIDTH,
+        FxParams::SpectralTime(_) => spectime::WIDTH,
         FxParams::Saturator(s) => {
             if s.expanded {
                 saturator::WIDTH_EXT
@@ -154,6 +163,10 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Erosion(_) => erosion::reset(p, k),
         FxParams::Reverb(_) => reverb::reset(p, k),
         FxParams::Redux(_) => redux::reset(p, k),
+        FxParams::Resonators(_) => resonators::reset(p, k),
+        FxParams::DrumBuss(_) => drumbuss::reset(p, k),
+        FxParams::SpectralResonator(_) => specres::reset(p, k),
+        FxParams::SpectralTime(_) => spectime::reset(p, k),
         FxParams::Saturator(_) => saturator::reset(p, k),
         FxParams::Delay(_) => delay::reset(p, k),
         FxParams::GrainDelay(_) => graindelay::reset(p, k),
@@ -218,6 +231,10 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Erosion(_) => erosion::step(p, k, dir),
         FxParams::Reverb(_) => reverb::step(p, k, dir),
         FxParams::Redux(_) => redux::step(p, k, dir),
+        FxParams::Resonators(_) => resonators::step(p, k, dir),
+        FxParams::DrumBuss(_) => drumbuss::step(p, k, dir),
+        FxParams::SpectralResonator(_) => specres::step(p, k, dir),
+        FxParams::SpectralTime(_) => spectime::step(p, k, dir),
         FxParams::Saturator(_) => saturator::step(p, k, dir),
         FxParams::Delay(_) => delay::step(p, k, dir),
         FxParams::GrainDelay(_) => graindelay::step(p, k, dir),
@@ -269,6 +286,10 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Erosion(_) => erosion::name(k),
         FxParams::Reverb(_) => reverb::name(k),
         FxParams::Redux(_) => redux::name(k),
+        FxParams::Resonators(_) => resonators::name(k),
+        FxParams::DrumBuss(_) => drumbuss::name(k),
+        FxParams::SpectralResonator(_) => specres::name(k),
+        FxParams::SpectralTime(_) => spectime::name(k),
         FxParams::Saturator(_) => saturator::name(k),
         FxParams::Delay(_) => delay::name(k),
         FxParams::GrainDelay(_) => graindelay::name(k),
@@ -905,6 +926,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Erosion(_) => erosion::erosion(&mut cx, ui, &p, r),
         FxParams::Reverb(_) => reverb::draw(&mut cx, ui, &p, r),
         FxParams::Redux(_) => redux::draw(&mut cx, ui, &p, r),
+        FxParams::Resonators(_) => resonators::draw(&mut cx, ui, &p, r),
+        FxParams::DrumBuss(_) => drumbuss::draw(&mut cx, ui, &p, r),
+        FxParams::SpectralResonator(_) => specres::draw(&mut cx, ui, &p, r),
+        FxParams::SpectralTime(_) => spectime::draw(&mut cx, ui, &p, r),
         FxParams::Saturator(_) => saturator::draw(&mut cx, ui, &p, r),
         FxParams::Delay(_) => delay::draw(&mut cx, ui, &p, r),
         FxParams::GrainDelay(_) => graindelay::draw(&mut cx, ui, &p, r),
@@ -1428,6 +1453,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Compressor(_) | FxParams::Spectrum(_) | FxParams::AutoShift(_) => false,
         FxParams::ChannelEq(_) | FxParams::Echo(_) | FxParams::Erosion(_) | FxParams::Reverb(_) => false,
         FxParams::Redux(_) | FxParams::Saturator(_) | FxParams::Delay(_) | FxParams::GrainDelay(_) => false,
+        FxParams::Resonators(_) | FxParams::DrumBuss(_) | FxParams::SpectralResonator(_) | FxParams::SpectralTime(_) => false,
     }
 }
 

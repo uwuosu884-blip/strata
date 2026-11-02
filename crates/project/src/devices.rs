@@ -16,6 +16,7 @@ pub use daw_engine::modfx::{
 pub use daw_engine::params;
 pub use daw_engine::params2;
 pub use daw_engine::params3;
+pub use daw_engine::params4;
 pub use daw_engine::rack::{CHAIN_VOL_MAX, CHAIN_VOL_MIN, MACROS, ZONE_MAX};
 pub use daw_engine::{AlignDelayParams, ChannelMode, DelayMode, EqBand, EqEightParams, EqFilter, EqMode, FxParams, UtilityParams};
 pub use daw_engine::{AutoShiftParams, SpecChannel, SpecScale, SpectrumParams};
@@ -26,7 +27,7 @@ pub use daw_engine::{
 };
 pub use daw_engine::{DevTap, dev_tap};
 pub use daw_engine::{SH_GRID_MAX, SH_PTS, ShPt, ShTrig};
-pub use daw_engine::{chaneq, delay, echo, erosion, graindelay, redux, reverb, saturator};
+pub use daw_engine::{chaneq, delay, drumbuss, echo, erosion, graindelay, redux, resonators, reverb, saturator, specres, spectime, stft};
 use serde::{Deserialize, Serialize};
 
 /// One device in a chain.
@@ -248,7 +249,7 @@ fn yes() -> bool {
 }
 
 /// Audio effects offered by the browser (name, default parameters).
-pub fn audio_effects() -> [(&'static str, FxParams); 24] {
+pub fn audio_effects() -> [(&'static str, FxParams); 28] {
     [
         ("Audio Effect Rack", FxParams::Rack(RackParams::default())),
         ("Align Delay", FxParams::AlignDelay(AlignDelayParams::default())),
@@ -259,6 +260,7 @@ pub fn audio_effects() -> [(&'static str, FxParams); 24] {
         ("Chorus-Ensemble", FxParams::Chorus(ChorusParams::default())),
         ("Compressor", FxParams::Compressor(CompressorParams::default())),
         ("Delay", FxParams::Delay(Default::default())),
+        ("Drum Buss", FxParams::DrumBuss(Default::default())),
         ("Echo", FxParams::Echo(Default::default())),
         ("EQ Eight", FxParams::EqEight(EqEightParams::default())),
         ("EQ Three", FxParams::EqThree(EqThreeParams::default())),
@@ -269,9 +271,12 @@ pub fn audio_effects() -> [(&'static str, FxParams); 24] {
         ("LFO", FxParams::Lfo(LfoParams::default())),
         ("Limiter", FxParams::Limiter(LimiterParams::default())),
         ("Redux", FxParams::Redux(Default::default())),
+        ("Resonators", FxParams::Resonators(Default::default())),
         ("Reverb", FxParams::Reverb(Default::default())),
         ("Saturator", FxParams::Saturator(Default::default())),
         ("Shaper", FxParams::Lfo(LfoParams::shaper())),
+        ("Spectral Resonator", FxParams::SpectralResonator(Default::default())),
+        ("Spectral Time", FxParams::SpectralTime(Default::default())),
         ("Spectrum", FxParams::Spectrum(SpectrumParams::default())),
         ("Utility", FxParams::Utility(UtilityParams::default())),
     ]

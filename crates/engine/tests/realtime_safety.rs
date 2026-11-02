@@ -195,6 +195,45 @@ fn big_song(variant: usize) -> Song {
         FxSlot::new(18, true, FxParams::Saturator(sat)),
         FxSlot::new(19, true, FxParams::Delay(delay)),
         FxSlot::new(20, true, FxParams::GrainDelay(grain)),
+        FxSlot::new(
+            21,
+            true,
+            FxParams::Resonators(daw_engine::resonators::ResonatorsParams { scale_aware: variant.is_multiple_of(2), ..Default::default() }),
+        ),
+        FxSlot::new(
+            22,
+            true,
+            FxParams::DrumBuss(daw_engine::drumbuss::DrumBussParams {
+                comp: true,
+                boom: 0.6,
+                crunch: 0.4,
+                dtype: (variant % 3) as u8,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            23,
+            true,
+            FxParams::SpectralResonator(daw_engine::specres::SpecResParams {
+                mod_mode: (variant % 4) as u8,
+                unison: 3.0,
+                quantize: variant % 3 == 1,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            24,
+            true,
+            FxParams::SpectralTime(daw_engine::spectime::SpecTimeParams {
+                retrigger: variant % 2 == 1,
+                sync: variant % 4 == 3,
+                envelope: variant.is_multiple_of(3),
+                time_mode: (variant % 5) as u8,
+                feedback: 0.6,
+                spray: 30.0,
+                ..Default::default()
+            }),
+        ),
     ];
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;
