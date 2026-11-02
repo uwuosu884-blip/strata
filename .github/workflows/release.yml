@@ -148,7 +148,8 @@ jobs:
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
-            gh release edit "$TAG" --notes-file notes.md
+            # A re-pushed tag turns the release into a draft; publish it again.
+            gh release edit "$TAG" --notes-file notes.md --title "daw $TAG" --draft=false
           else
             gh release create "$TAG" dist/* --verify-tag --title "daw $TAG" --notes-file notes.md
           fi
