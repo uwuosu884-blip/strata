@@ -207,13 +207,17 @@ fn edit_col(e: &EqEightParams) -> Color32 {
 /// Header unfold button (left of the name): ↑ folded, ↓ when the display is
 /// in the main window.
 pub(super) fn header_button(cx: &mut Ctx, ui: &egui::Ui, p: &Painter, l: f32, t: f32) {
-    let e = eq(cx);
+    let expanded = match cx.params {
+        FxParams::EqEight(e) => e.expanded,
+        FxParams::Spectrum(s) => s.expanded,
+        _ => false,
+    };
     let c = pos2(l + 25.5, t + 8.5);
     p.circle_filled(c, 6.5, gray(0x12));
     p.circle_filled(c, 5.5, gray(0x1e));
     let g = gray(0xb5);
     let s = Stroke::new(1.0, g);
-    if e.expanded {
+    if expanded {
         quad(p, Rect::from_min_max(pos2(c.x - 0.5, t + 4.0), pos2(c.x + 0.5, t + 9.0)), g);
         p.add(Shape::line(vec![pos2(c.x - 2.5, t + 6.5), pos2(c.x, t + 9.0), pos2(c.x + 2.5, t + 6.5)], s));
     } else {
@@ -223,7 +227,12 @@ pub(super) fn header_button(cx: &mut Ctx, ui: &egui::Ui, p: &Painter, l: f32, t:
     quad(p, Rect::from_min_max(pos2(c.x - 2.5, t + 11.0), pos2(c.x + 2.5, t + 12.0)), g);
     let r = ui.interact(Rect::from_center_size(c, vec2(13.0, 13.0)), egui::Id::unique(("eq_unfold", cx.dev.id)), Sense::click());
     if r.clicked() {
-        with(cx, |e| e.expanded = !e.expanded);
+        cx.undo_step();
+        match &mut cx.params {
+            FxParams::EqEight(e) => e.expanded = !e.expanded,
+            FxParams::Spectrum(s) => s.expanded = !s.expanded,
+            _ => {}
+        }
     }
 }
 
@@ -794,6 +803,9 @@ pub(super) fn display(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, big
 /// The unfolded display above the Device View (Live's maximised EQ Eight).
 pub fn maximised(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, id: u64) {
     let Some(dev) = chain(&app.project, c).iter().find(|d| d.id == id).cloned() else { return };
+    if matches!(dev.params, FxParams::Spectrum(_)) {
+        return super::spec::maximised(app, ui, r, c, id);
+    }
     let mut cx = Ctx::new(app, c, dev.clone());
     let p = ui.painter().clone();
     display(&mut cx, ui, &p, r, true);
@@ -805,7 +817,7 @@ pub fn maximised(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, id: 
 pub fn unfolded(app: &DawApp) -> Option<(ChainRef, u64)> {
     fn find(v: &[daw_project::Device]) -> Option<u64> {
         v.iter().find_map(|d| {
-            if matches!(d.params, FxParams::EqEight(e) if e.expanded) {
+            if matches!(d.params, FxParams::EqEight(e) if e.expanded) || matches!(d.params, FxParams::Spectrum(s) if s.expanded) {
                 return Some(d.id);
             }
             d.rack.as_deref().and_then(|r| r.chains.iter().find_map(|c| find(&c.devices)))

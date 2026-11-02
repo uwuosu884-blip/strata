@@ -91,6 +91,7 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
         FxParams::AutoFilter(a) => af_norm(a, k),
         FxParams::AutoPan(a) => pan_norm(a, k),
         FxParams::Compressor(c) => comp_norm(c, k),
+        FxParams::Spectrum(s) => spec_norm(s, k),
         FxParams::Rack(r) => match k {
             0..16 => Some(r.macros[k as usize] / 127.0),
             RACK_SELECTOR => Some(r.selector / 127.0),
@@ -128,6 +129,7 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
         FxParams::AutoFilter(a) => af_set(a, k, v),
         FxParams::AutoPan(a) => pan_set(a, k, v),
         FxParams::Compressor(c) => comp_set(c, k, v),
+        FxParams::Spectrum(s) => spec_set(s, k, v),
         FxParams::Rack(r) => match k {
             0..16 => r.macros[k as usize] = (v * 127.0).round(),
             RACK_SELECTOR => r.selector = (v * 127.0).round(),
@@ -510,6 +512,55 @@ fn comp_set(c: &mut CompressorParams, k: u8, v: f32) {
         cmp::OUTPUT => c.output = lin_val(v, -COMP_OUT_MAX, COMP_OUT_MAX),
         cmp::DRY_WET => c.dry_wet = v,
         _ => sc_set(&mut c.sc, k, v),
+    }
+}
+
+/// Spectrum ids.
+pub mod spp {
+    pub const BLOCK: u8 = 0;
+    pub const CHANNEL: u8 = 1;
+    pub const REFRESH: u8 = 2;
+    pub const AVG: u8 = 3;
+    pub const LINE: u8 = 4;
+    pub const MAX: u8 = 5;
+    pub const SCALE: u8 = 6;
+    pub const AUTO: u8 = 7;
+    pub const HI: u8 = 8;
+    pub const LO: u8 = 9;
+}
+
+fn spec_norm(s: &crate::spectrum::SpectrumParams, k: u8) -> Option<f32> {
+    use crate::spectrum::*;
+    let bi = SPEC_BLOCKS.iter().position(|&b| b == s.block).unwrap_or(5) as u8;
+    Some(match k {
+        spp::BLOCK => idx_norm(bi, SPEC_BLOCKS.len()),
+        spp::CHANNEL => idx_norm(s.channel as u8, 3),
+        spp::REFRESH => lin_norm(s.refresh, SPEC_REFRESH.0, SPEC_REFRESH.1),
+        spp::AVG => lin_norm(s.avg, 1.0, SPEC_AVG_MAX),
+        spp::LINE => s.line as u8 as f32,
+        spp::MAX => s.max as u8 as f32,
+        spp::SCALE => idx_norm(s.scale as u8, 3),
+        spp::AUTO => s.auto as u8 as f32,
+        spp::HI => lin_norm(s.hi, SPEC_DB.0, SPEC_DB.1),
+        spp::LO => lin_norm(s.lo, SPEC_DB.0, SPEC_DB.1),
+        _ => return None,
+    })
+}
+
+fn spec_set(s: &mut crate::spectrum::SpectrumParams, k: u8, v: f32) {
+    use crate::spectrum::*;
+    match k {
+        spp::BLOCK => s.block = SPEC_BLOCKS[norm_idx(v, SPEC_BLOCKS.len()) as usize],
+        spp::CHANNEL => s.channel = [SpecChannel::L, SpecChannel::R, SpecChannel::LR][norm_idx(v, 3) as usize],
+        spp::REFRESH => s.refresh = lin_val(v, SPEC_REFRESH.0, SPEC_REFRESH.1),
+        spp::AVG => s.avg = lin_val(v, 1.0, SPEC_AVG_MAX).round(),
+        spp::LINE => s.line = v >= 0.5,
+        spp::MAX => s.max = v >= 0.5,
+        spp::SCALE => s.scale = [SpecScale::Lin, SpecScale::Log, SpecScale::St][norm_idx(v, 3) as usize],
+        spp::AUTO => s.auto = v >= 0.5,
+        spp::HI => s.hi = lin_val(v, SPEC_DB.0, SPEC_DB.1).max(s.lo + 1.0),
+        spp::LO => s.lo = lin_val(v, SPEC_DB.0, SPEC_DB.1).min(s.hi - 1.0),
+        _ => {}
     }
 }
 
@@ -929,6 +980,7 @@ mod tests {
             FxParams::AutoFilter(AutoFilterParams::default()),
             FxParams::AutoPan(AutoPanParams::default()),
             FxParams::Compressor(CompressorParams::default()),
+            FxParams::Spectrum(crate::spectrum::SpectrumParams::default()),
             FxParams::AutoPan(AutoPanParams { tremolo: true, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Dj, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Vowel, ..Default::default() }),

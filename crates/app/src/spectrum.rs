@@ -14,6 +14,8 @@ pub struct EqSpec {
     pub block: usize,
     /// Something above −100 dB is shown (the display still moves).
     pub live: bool,
+    /// Max hold of `pow` (Spectrum's Max line).
+    pub peak: Vec<f32>,
     last: Option<Instant>,
     /// Tap position at the last analysis (no new audio → decay to silence).
     seen: usize,
@@ -40,6 +42,7 @@ impl Spectra {
             pow: Vec::new(),
             block: 0,
             live: false,
+            peak: Vec::new(),
             last: None,
             seen: 0,
             buf: Vec::new(),
@@ -95,10 +98,64 @@ impl Spectra {
         self.map.get(&id).expect("entry")
     }
 
+    /// Spectrum: a new analysis every `refresh_ms`, averaged over `avg`
+    /// blocks (exponential), with a max hold.
+    pub fn update_blocks(&mut self, id: u64, block: u32, refresh_ms: f32, avg: f32) -> &EqSpec {
+        let e = self.entry(id);
+        let n = (block as usize).clamp(256, daw_engine::eq8::TAP_LEN).next_power_of_two();
+        let now = Instant::now();
+        if e.block != n {
+            e.block = n;
+            e.pow = vec![0.0; n / 2 + 1];
+            e.peak = vec![0.0; n / 2 + 1];
+            e.buf = vec![0.0; n];
+            e.re = vec![0.0; n];
+            e.im = vec![0.0; n];
+            e.win = (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos()).collect();
+            e.last = None;
+        }
+        let due = e.last.is_none_or(|t| now.duration_since(t).as_secs_f32() * 1000.0 >= refresh_ms.max(1.0));
+        if due {
+            e.last = Some(now);
+            let written = e.tap.written();
+            let fresh = written != e.seen;
+            e.seen = written;
+            if fresh {
+                e.tap.read(&mut e.buf);
+            } else {
+                e.buf.iter_mut().for_each(|x| *x = 0.0);
+            }
+            for i in 0..n {
+                e.re[i] = e.buf[i] * e.win[i];
+                e.im[i] = 0.0;
+            }
+            fft(&mut e.re, &mut e.im);
+            let k = 4.0 / n as f32;
+            let a = 1.0 / avg.max(1.0);
+            for (b, p) in e.pow.iter_mut().enumerate() {
+                let m = (e.re[b] * e.re[b] + e.im[b] * e.im[b]) * k * k;
+                *p += (m - *p) * a;
+                if *p > e.peak[b] {
+                    e.peak[b] = *p;
+                }
+            }
+            e.live = e.pow.iter().any(|&p| p > 1e-10);
+        }
+        self.map.get(&id).expect("entry")
+    }
+
+    /// Spectrum: forget the max hold (click on the display).
+    pub fn reset_peak(&mut self, id: u64) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.peak.iter_mut().for_each(|p| *p = 0.0);
+        }
+    }
+
     /// Clear a device's analyzer (device off / analyzer off: empty display).
     pub fn clear(&mut self, id: u64) {
         if let Some(e) = self.map.get_mut(&id) {
             e.pow.iter_mut().for_each(|p| *p = 0.0);
+            e.peak.iter_mut().for_each(|p| *p = 0.0);
             e.live = false;
         }
     }
@@ -115,16 +172,40 @@ impl EqSpec {
     /// Level (dB) between `f0` and `f1` Hz: the loudest bin when the range
     /// spans bins, else a Catmull-Rom interpolation (smooth when zoomed in).
     pub fn level_db(&self, f0: f32, f1: f32, sr: f32) -> f32 {
+        level_in(&self.pow, self.block, f0, f1, sr)
+    }
+
+    /// Like [`level_db`](Self::level_db) on the max hold.
+    pub fn peak_db(&self, f0: f32, f1: f32, sr: f32) -> f32 {
+        level_in(&self.peak, self.block, f0, f1, sr)
+    }
+
+    /// Loudest bin in `f0..f1` without interpolation (Bins / ST graphs).
+    pub fn bin_db(&self, peak: bool, f0: f32, f1: f32, sr: f32) -> f32 {
+        let v = if peak { &self.peak } else { &self.pow };
+        let last = v.len().saturating_sub(1);
+        if last == 0 {
+            return -200.0;
+        }
         let n = self.block as f32;
-        let last = self.pow.len().saturating_sub(1);
+        let a = ((f0 * n / sr).round() as usize).min(last);
+        let b = ((f1 * n / sr).round() as usize).clamp(a, last);
+        10.0 * v[a..=b].iter().fold(0.0f32, |m, &x| m.max(x)).max(1e-20).log10()
+    }
+}
+
+fn level_in(pow: &[f32], block: usize, f0: f32, f1: f32, sr: f32) -> f32 {
+    {
+        let n = block as f32;
+        let last = pow.len().saturating_sub(1);
         if last == 0 {
             return -200.0;
         }
         let (k0, k1) = (f0 * n / sr, f1 * n / sr);
-        let db = |i: isize| 10.0 * self.pow[i.clamp(0, last as isize) as usize].max(1e-20).log10();
+        let db = |i: isize| 10.0 * pow[i.clamp(0, last as isize) as usize].max(1e-20).log10();
         if k1 - k0 >= 1.0 {
             let (a, b) = (k0.ceil() as usize, (k1.floor() as usize).min(last));
-            let m = self.pow[a.min(last)..=b.max(a.min(last))].iter().fold(0.0f32, |m, &x| m.max(x));
+            let m = pow[a.min(last)..=b.max(a.min(last))].iter().fold(0.0f32, |m, &x| m.max(x));
             return 10.0 * m.max(1e-20).log10();
         }
         let k = 0.5 * (k0 + k1);
@@ -230,6 +311,7 @@ mod tests {
             pow: vec![1e-6, 1.0, 1e-6, 1e-6, 1e-6],
             block: 8,
             live: true,
+            peak: vec![],
             last: None,
             seen: 0,
             buf: vec![],
@@ -252,6 +334,7 @@ mod tests {
             pow,
             block: 1024,
             live: true,
+            peak: vec![],
             last: None,
             seen: 0,
             buf: vec![],

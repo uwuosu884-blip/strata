@@ -17,6 +17,7 @@ mod eq8;
 mod lfo;
 mod modfx;
 mod rack;
+mod spec;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
 const TITLE_H: f32 = 17.0;
@@ -57,6 +58,7 @@ pub fn width(d: &Device) -> f32 {
         FxParams::AutoPan(_) => modfx::PAN_W,
         FxParams::AutoFilter(a) => modfx::af_width(&a),
         FxParams::Compressor(c) => comp::width(&c),
+        FxParams::Spectrum(s) => spec::width(&s),
     }
 }
 
@@ -119,6 +121,7 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Lfo(_) => lfo::reset(p, k),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::reset(p, k),
         FxParams::Compressor(_) => comp::reset(p, k),
+        FxParams::Spectrum(_) => spec::reset(p, k),
     }
 }
 
@@ -173,6 +176,7 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Lfo(_) => lfo::step(p, k, dir),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::step(p, k, dir),
         FxParams::Compressor(_) => comp::step(p, k, dir),
+        FxParams::Spectrum(_) => spec::step(p, k, dir),
     }
 }
 
@@ -214,6 +218,7 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Lfo(_) => lfo::name(k),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::name(p, k),
         FxParams::Compressor(_) => comp::name(k),
+        FxParams::Spectrum(_) => spec::name(k),
     }
 }
 
@@ -795,7 +800,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         name_right = ir.left() - 2.0;
     }
     let mut name_x = l + 20.0;
-    if matches!(dev.params, FxParams::EqEight(_)) {
+    if matches!(dev.params, FxParams::EqEight(_) | FxParams::Spectrum(_)) {
         eq8::header_button(&mut cx, ui, &p, l, t);
         name_x = l + 36.0;
     }
@@ -820,6 +825,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::AutoPan(_) => modfx::auto_pan(&mut cx, ui, &p, r),
         FxParams::AutoFilter(_) => modfx::auto_filter(&mut cx, ui, &p, r),
         FxParams::Compressor(_) => comp::compressor(&mut cx, ui, &p, r),
+        FxParams::Spectrum(_) => spec::spectrum(&mut cx, ui, &p, r),
         FxParams::Rack(_) => {}
     }
     if sc_mono && let FxParams::AutoFilter(a) = &mut cx.params {
@@ -1326,7 +1332,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Rack(_) => false,
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) | FxParams::Lfo(_) => false,
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => false,
-        FxParams::Compressor(_) => false,
+        FxParams::Compressor(_) | FxParams::Spectrum(_) => false,
     }
 }
 

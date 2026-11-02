@@ -231,6 +231,7 @@ pub enum FxParams {
     AutoFilter(crate::modfx::AutoFilterParams),
     AutoPan(crate::modfx::AutoPanParams),
     Compressor(crate::dynfx::CompressorParams),
+    Spectrum(crate::spectrum::SpectrumParams),
 }
 
 impl FxParams {
@@ -249,6 +250,7 @@ impl FxParams {
             FxParams::AutoFilter(_) => "Auto Filter",
             FxParams::AutoPan(_) => "Auto Pan-Tremolo",
             FxParams::Compressor(_) => "Compressor",
+            FxParams::Spectrum(_) => "Spectrum",
         }
     }
 
@@ -307,6 +309,7 @@ impl FxSlot {
             StateKind::AutoFilter(a) => **a = AutoFilterState::new(Some(id)),
             StateKind::AutoPan(a) => **a = AutoPanState::new(Some(id)),
             StateKind::Compressor(c) => **c = CompressorState::new(Some(id)),
+            StateKind::Spectrum(s) => **s = crate::spectrum::SpectrumState::new(Some(crate::eq8::spectrum_tap(id))),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -495,6 +498,7 @@ enum StateKind {
     AutoFilter(Box<AutoFilterState>),
     AutoPan(Box<AutoPanState>),
     Compressor(Box<CompressorState>),
+    Spectrum(Box<crate::spectrum::SpectrumState>),
 }
 
 impl PartialEq for StateKind {
@@ -519,6 +523,7 @@ impl FxState {
             FxParams::AutoFilter(_) => StateKind::AutoFilter(Box::new(AutoFilterState::new(None))),
             FxParams::AutoPan(_) => StateKind::AutoPan(Box::new(AutoPanState::new(None))),
             FxParams::Compressor(_) => StateKind::Compressor(Box::new(CompressorState::new(None))),
+            FxParams::Spectrum(_) => StateKind::Spectrum(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -528,7 +533,7 @@ impl FxState {
             StateKind::Utility(u) => u.reset(),
             StateKind::Align(a) => a.reset(),
             StateKind::Eq(e) => e.reset(),
-            StateKind::Rack | StateKind::Lfo(_) => {}
+            StateKind::Rack | StateKind::Lfo(_) | StateKind::Spectrum(_) => {}
             StateKind::Gate(g) => g.reset(),
             StateKind::Glue(g) => g.reset(),
             StateKind::Limiter(l) => l.reset(),
@@ -586,6 +591,7 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::AutoFilter(p), StateKind::AutoFilter(st)) => st.process(p, l, r, sr),
             (FxParams::AutoPan(p), StateKind::AutoPan(st)) => st.process(p, l, r, sr),
             (FxParams::Compressor(p), StateKind::Compressor(st)) => st.process(p, l, r, sr),
+            (FxParams::Spectrum(p), StateKind::Spectrum(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

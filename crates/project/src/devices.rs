@@ -17,6 +17,7 @@ pub use daw_engine::rack::{CHAIN_VOL_MAX, CHAIN_VOL_MIN, MACROS, ZONE_MAX};
 pub use daw_engine::{AlignDelayParams, ChannelMode, DelayMode, EqBand, EqEightParams, EqFilter, EqMode, FxParams, UtilityParams};
 pub use daw_engine::{ChainMix, RackParams, Zone};
 pub use daw_engine::{DevTap, dev_tap};
+pub use daw_engine::{SpecChannel, SpecScale, SpectrumParams};
 pub use daw_engine::{CompMode, CompView, CompressorParams, GateParams, GlueParams, LfoMap, LfoParams, LfoWave, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
 use serde::{Deserialize, Serialize};
 
@@ -239,7 +240,7 @@ fn yes() -> bool {
 }
 
 /// Audio effects offered by the browser (name, default parameters).
-pub fn audio_effects() -> [(&'static str, FxParams); 13] {
+pub fn audio_effects() -> [(&'static str, FxParams); 14] {
     [
         ("Audio Effect Rack", FxParams::Rack(RackParams::default())),
         ("Align Delay", FxParams::AlignDelay(AlignDelayParams::default())),
@@ -253,6 +254,7 @@ pub fn audio_effects() -> [(&'static str, FxParams); 13] {
         ("Glue Compressor", FxParams::Glue(GlueParams::default())),
         ("LFO", FxParams::Lfo(LfoParams::default())),
         ("Limiter", FxParams::Limiter(LimiterParams::default())),
+        ("Spectrum", FxParams::Spectrum(SpectrumParams::default())),
         ("Utility", FxParams::Utility(UtilityParams::default())),
     ]
 }

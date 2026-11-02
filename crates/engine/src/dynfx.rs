@@ -1176,7 +1176,9 @@ mod tests {
     #[test]
     fn compressor_reduces_loud_signal_and_lookahead_delays() {
         let mut st = CompressorState::new(None);
-        let p = CompressorParams { threshold: -20.0, ratio: 100.0, knee: 0.0, mode: CompMode::Peak, attack: 0.01, ..Default::default() };
+        // DC test signal: the sidechain filter (on by default) would remove it.
+        let mut p = CompressorParams { threshold: -20.0, ratio: 100.0, knee: 0.0, mode: CompMode::Peak, attack: 0.01, ..Default::default() };
+        p.sc.eq_on = false;
         let (mut l, mut r) = (vec![0.5f32; 4800], vec![0.5f32; 4800]);
         st.process(&p, &mut l, &mut r, 48_000.0);
         let out = lin_db(l[4000]);
