@@ -235,6 +235,64 @@ fn big_song(variant: usize) -> Song {
             }),
         ),
     ];
+    // v0.8.10 devices.
+    song.tracks[3].fx.extend([
+        FxSlot::new(
+            25,
+            true,
+            FxParams::DynamicTube(daw_engine::dyntube::DynTubeParams {
+                tube: (variant % 3) as u8,
+                envelope: 1.5,
+                hq: variant.is_multiple_of(2),
+                drive: 9.0,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            26,
+            true,
+            FxParams::Vocoder(daw_engine::vocoder::VocoderParams {
+                carrier: (variant % 4) as u8,
+                enhance: variant.is_multiple_of(2),
+                retro: variant % 3 == 1,
+                chan: (variant % 3) as u8,
+                unvoiced: -12.0,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            27,
+            true,
+            FxParams::VinylDistortion(daw_engine::vinyl::VinylParams {
+                tr_on: true,
+                pi_on: true,
+                tr_drive: 0.5,
+                pi_drive: 0.5,
+                volume: 1.0,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            28,
+            true,
+            FxParams::Shifter(daw_engine::shifter::ShifterParams {
+                mode: (variant % 3) as u8,
+                coarse: 7.0,
+                coarse_hz: 150.0,
+                delay_on: true,
+                delay_sync: variant.is_multiple_of(2),
+                feedback: 0.5,
+                wave: (variant % 10) as u8,
+                lfo_amt: 0.3,
+                env_on: true,
+                env_amt: 0.4,
+                drive_on: true,
+                wide: true,
+                spread: 20.0,
+                ..Default::default()
+            }),
+        ),
+    ]);
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;
     song

@@ -10,6 +10,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.10] - 2026-11-02
+
+### Added
+- Dynamic Tube: Tubes A / B / C, Drive, Tone, Bias, Envelope (±, follower on Bias) with Attack / Release, Output, Dry/Wet; tube display with characteristic curve and output meters; context menu Hi-Quality.
+- Vocoder: Noise (XY pad: rate / density), External (Audio From + tap), Modulator and Pitch Tracking (High / Low, Saw / Pulse waves, Pitch) carriers; Enhance, Unvoiced, Sens., Fast/Slow; band display (click/drag to attenuate, live band levels), Bands 4–40, Range, Width, Precise/Retro, Gate, Output; Depth, Attack, Release, Mono/Stereo/L/R, Formant, Dry/Wet.
+- Vinyl Distortion: Tracing Model (even harmonics) and Pinch (odd, 180°) sections with response display and XY handle (Alt = width), On / Drive / Freq / B; Soft/Hard, Stereo/Mono; Crackle Volume / Density; global Drive.
+- Shifter: Pitch / Freq / Ring modes, Coarse, Fine or Spread (Wide), Window, Tone, Delay (ms / sync) with Feedback, LFO (10 waves, Duty, Phase / Spin / Width, Hz / sync Rate, Amount) with display, Env Fol (Attack, Release, Amount), Drive (Ring), Output, Dry/Wet; MIDI Input column (Internal / MIDI, MIDI From, Glide, PB).
+
+### Fixed
+- Spectral Resonator: MIDI input had no effect unless an external sidechain was also enabled.
+
 ## [0.8.9] - 2026-11-02
 
 ### Added

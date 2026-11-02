@@ -17,10 +17,12 @@ mod comp;
 mod delay;
 mod drumbuss;
 mod dynamics;
+mod dyntube;
 mod echo;
 mod eq8;
 mod erosion;
 mod fx4;
+mod fx5;
 mod graindelay;
 mod lfo;
 mod modfx;
@@ -30,9 +32,12 @@ mod resonators;
 mod reverb;
 mod saturator;
 mod shaper;
+mod shifter;
 mod spec;
 mod specres;
 mod spectime;
+mod vinyl;
+mod vocoder;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
 const TITLE_H: f32 = 17.0;
@@ -85,6 +90,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::DrumBuss(_) => drumbuss::WIDTH,
         FxParams::SpectralResonator(_) => specres::WIDTH,
         FxParams::SpectralTime(_) => spectime::WIDTH,
+        FxParams::DynamicTube(_) => dyntube::WIDTH,
+        FxParams::Vocoder(v) => vocoder::width(&v),
+        FxParams::VinylDistortion(v) => vinyl::width(&v),
+        FxParams::Shifter(v) => shifter::width(&v),
         FxParams::Saturator(s) => {
             if s.expanded {
                 saturator::WIDTH_EXT
@@ -167,6 +176,10 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::DrumBuss(_) => drumbuss::reset(p, k),
         FxParams::SpectralResonator(_) => specres::reset(p, k),
         FxParams::SpectralTime(_) => spectime::reset(p, k),
+        FxParams::DynamicTube(_) => dyntube::reset(p, k),
+        FxParams::Vocoder(_) => vocoder::reset(p, k),
+        FxParams::VinylDistortion(_) => vinyl::reset(p, k),
+        FxParams::Shifter(_) => shifter::reset(p, k),
         FxParams::Saturator(_) => saturator::reset(p, k),
         FxParams::Delay(_) => delay::reset(p, k),
         FxParams::GrainDelay(_) => graindelay::reset(p, k),
@@ -235,6 +248,10 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::DrumBuss(_) => drumbuss::step(p, k, dir),
         FxParams::SpectralResonator(_) => specres::step(p, k, dir),
         FxParams::SpectralTime(_) => spectime::step(p, k, dir),
+        FxParams::DynamicTube(_) => dyntube::step(p, k, dir),
+        FxParams::Vocoder(_) => vocoder::step(p, k, dir),
+        FxParams::VinylDistortion(_) => vinyl::step(p, k, dir),
+        FxParams::Shifter(_) => shifter::step(p, k, dir),
         FxParams::Saturator(_) => saturator::step(p, k, dir),
         FxParams::Delay(_) => delay::step(p, k, dir),
         FxParams::GrainDelay(_) => graindelay::step(p, k, dir),
@@ -290,6 +307,10 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::DrumBuss(_) => drumbuss::name(k),
         FxParams::SpectralResonator(_) => specres::name(k),
         FxParams::SpectralTime(_) => spectime::name(k),
+        FxParams::DynamicTube(_) => dyntube::name(k),
+        FxParams::Vocoder(_) => vocoder::name(k),
+        FxParams::VinylDistortion(_) => vinyl::name(k),
+        FxParams::Shifter(_) => shifter::name(k),
         FxParams::Saturator(_) => saturator::name(k),
         FxParams::Delay(_) => delay::name(k),
         FxParams::GrainDelay(_) => graindelay::name(k),
@@ -809,6 +830,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let extra: Vec<(&str, bool)> = match dev.params {
         FxParams::Saturator(s) => vec![("Hi-Quality", s.hq), ("Pre-DC Filter", s.pre_dc)],
         FxParams::Delay(d) => vec![("Hi-Quality", d.hq), ("Equal-Loudness", d.eq_loud)],
+        FxParams::DynamicTube(d) => vec![("Hi-Quality", d.hq)],
         _ => Vec::new(),
     };
     let mut extra_hit: Option<usize> = None;
@@ -930,6 +952,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::DrumBuss(_) => drumbuss::draw(&mut cx, ui, &p, r),
         FxParams::SpectralResonator(_) => specres::draw(&mut cx, ui, &p, r),
         FxParams::SpectralTime(_) => spectime::draw(&mut cx, ui, &p, r),
+        FxParams::DynamicTube(_) => dyntube::draw(&mut cx, ui, &p, r),
+        FxParams::Vocoder(_) => vocoder::draw(&mut cx, ui, &p, r),
+        FxParams::VinylDistortion(_) => vinyl::draw(&mut cx, ui, &p, r),
+        FxParams::Shifter(_) => shifter::draw(&mut cx, ui, &p, r),
         FxParams::Saturator(_) => saturator::draw(&mut cx, ui, &p, r),
         FxParams::Delay(_) => delay::draw(&mut cx, ui, &p, r),
         FxParams::GrainDelay(_) => graindelay::draw(&mut cx, ui, &p, r),
@@ -945,6 +971,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
             FxParams::Saturator(s) => s.pre_dc = !s.pre_dc,
             FxParams::Delay(d) if i == 0 => d.hq = !d.hq,
             FxParams::Delay(d) => d.eq_loud = !d.eq_loud,
+            FxParams::DynamicTube(d) => d.hq = !d.hq,
             _ => {}
         }
         cx.undo_step();
@@ -1454,6 +1481,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::ChannelEq(_) | FxParams::Echo(_) | FxParams::Erosion(_) | FxParams::Reverb(_) => false,
         FxParams::Redux(_) | FxParams::Saturator(_) | FxParams::Delay(_) | FxParams::GrainDelay(_) => false,
         FxParams::Resonators(_) | FxParams::DrumBuss(_) | FxParams::SpectralResonator(_) | FxParams::SpectralTime(_) => false,
+        FxParams::DynamicTube(_) | FxParams::Vocoder(_) | FxParams::VinylDistortion(_) | FxParams::Shifter(_) => false,
     }
 }
 

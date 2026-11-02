@@ -245,6 +245,10 @@ pub enum FxParams {
     DrumBuss(crate::drumbuss::DrumBussParams),
     SpectralResonator(crate::specres::SpecResParams),
     SpectralTime(crate::spectime::SpecTimeParams),
+    DynamicTube(crate::dyntube::DynTubeParams),
+    Vocoder(crate::vocoder::VocoderParams),
+    VinylDistortion(crate::vinyl::VinylParams),
+    Shifter(crate::shifter::ShifterParams),
 }
 
 impl FxParams {
@@ -278,6 +282,10 @@ impl FxParams {
             FxParams::DrumBuss(_) => "Drum Buss",
             FxParams::SpectralResonator(_) => "Spectral Resonator",
             FxParams::SpectralTime(_) => "Spectral Time",
+            FxParams::DynamicTube(_) => "Dynamic Tube",
+            FxParams::Vocoder(_) => "Vocoder",
+            FxParams::VinylDistortion(_) => "Vinyl Distortion",
+            FxParams::Shifter(_) => "Shifter",
         }
     }
 
@@ -305,8 +313,22 @@ impl FxParams {
             // MIDI In source (resolved and ordered like a sidechain).
             FxParams::AutoShift(a) => Some(&a.midi),
             FxParams::SpectralResonator(a) => Some(&a.midi),
+            FxParams::Shifter(a) => Some(&a.midi),
+            FxParams::Vocoder(a) => Some(&a.ext),
             _ => None,
         }
+    }
+
+    /// The sidechain / MIDI source when it is in use (devices whose source is
+    /// enabled by a mode rather than the `on` switch included).
+    pub fn sc_active(&self) -> Option<&crate::dynfx::Sidechain> {
+        let on = match self {
+            FxParams::SpectralResonator(a) => a.midi_mode,
+            FxParams::Shifter(a) => a.midi_mode,
+            FxParams::Vocoder(a) => a.carrier == 1,
+            _ => self.sidechain()?.on,
+        };
+        self.sidechain().filter(|s| on && s.source != 0)
     }
 }
 
@@ -350,6 +372,9 @@ impl FxSlot {
             StateKind::DrumBuss(d) => **d = crate::drumbuss::DrumBussState::new(Some(id)),
             StateKind::SpecRes(d) => d.set_id(id),
             StateKind::SpecTime(d) => d.set_id(id),
+            StateKind::DynTube(d) => **d = crate::dyntube::DynTubeState::new(Some(id)),
+            StateKind::Vocoder(d) => d.set_id(id),
+            StateKind::Shifter(d) => d.set_id(id),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -390,6 +415,7 @@ impl FxSlot {
             StateKind::Glue(g) => Some(&mut g.sc),
             StateKind::AutoFilter(a) => Some(&mut a.sc),
             StateKind::Compressor(c) => Some(&mut c.sc),
+            StateKind::Vocoder(v) => Some(&mut v.sc),
             _ => None,
         }
     }
@@ -413,6 +439,7 @@ pub(crate) fn fill_sidechains<'a>(
             let midi_on = match &s.params {
                 FxParams::AutoShift(p) => Some(p.midi.on),
                 FxParams::SpectralResonator(p) => Some(p.midi_mode),
+                FxParams::Shifter(p) => Some(p.midi_mode),
                 _ => None,
             };
             if let Some(on) = midi_on {
@@ -428,12 +455,13 @@ pub(crate) fn fill_sidechains<'a>(
                     match &mut s.state.kind {
                         StateKind::AutoShift(st) => st.set_notes(&mut buf[..k].iter().copied()),
                         StateKind::SpecRes(st) => st.set_notes(&mut buf[..k].iter().copied()),
+                        StateKind::Shifter(st) => st.set_notes(&mut buf[..k].iter().copied()),
                         _ => {}
                     }
                 }
                 return;
             }
-            let on = s.params.sidechain().is_some_and(|c| c.on);
+            let on = s.params.sc_active().is_some();
             if let Some(st) = s.sc_state() {
                 st.len = 0;
                 if on && let Some((l, r)) = src(rt, tap) {
@@ -584,6 +612,10 @@ enum StateKind {
     DrumBuss(Box<crate::drumbuss::DrumBussState>),
     SpecRes(Box<crate::specres::SpecResState>),
     SpecTime(Box<crate::spectime::SpecTimeState>),
+    DynTube(Box<crate::dyntube::DynTubeState>),
+    Vocoder(Box<crate::vocoder::VocoderState>),
+    Vinyl(Box<crate::vinyl::VinylState>),
+    Shifter(Box<crate::shifter::ShifterState>),
 }
 
 impl PartialEq for StateKind {
@@ -622,6 +654,10 @@ impl FxState {
             FxParams::DrumBuss(_) => StateKind::DrumBuss(Box::default()),
             FxParams::SpectralResonator(_) => StateKind::SpecRes(Box::default()),
             FxParams::SpectralTime(_) => StateKind::SpecTime(Box::default()),
+            FxParams::DynamicTube(_) => StateKind::DynTube(Box::default()),
+            FxParams::Vocoder(_) => StateKind::Vocoder(Box::default()),
+            FxParams::VinylDistortion(_) => StateKind::Vinyl(Box::default()),
+            FxParams::Shifter(_) => StateKind::Shifter(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -653,6 +689,10 @@ impl FxState {
             StateKind::DrumBuss(v) => v.reset(),
             StateKind::SpecRes(v) => v.reset(),
             StateKind::SpecTime(v) => v.reset(),
+            StateKind::DynTube(v) => v.reset(),
+            StateKind::Vocoder(v) => v.reset(),
+            StateKind::Vinyl(v) => v.reset(),
+            StateKind::Shifter(v) => v.reset(),
         }
     }
 }
@@ -716,6 +756,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::DrumBuss(p), StateKind::DrumBuss(st)) => st.process(p, l, r, sr),
             (FxParams::SpectralResonator(p), StateKind::SpecRes(st)) => st.process(p, l, r, sr),
             (FxParams::SpectralTime(p), StateKind::SpecTime(st)) => st.process(p, l, r, sr),
+            (FxParams::DynamicTube(p), StateKind::DynTube(st)) => st.process(p, l, r, sr),
+            (FxParams::Vocoder(p), StateKind::Vocoder(st)) => st.process(p, l, r, sr),
+            (FxParams::VinylDistortion(p), StateKind::Vinyl(st)) => st.process(p, l, r, sr),
+            (FxParams::Shifter(p), StateKind::Shifter(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

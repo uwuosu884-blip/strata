@@ -11,7 +11,7 @@ pub const FRAME: usize = 4;
 /// History frames kept (power of two).
 pub const RING: usize = 1 << 14;
 /// Latest-value slots.
-pub const VALS: usize = 8;
+pub const VALS: usize = 48;
 /// Samples between history frames at 48 kHz (scaled with the rate).
 pub const HOP: usize = 64;
 

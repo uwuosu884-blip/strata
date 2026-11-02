@@ -250,6 +250,28 @@ mod tests {
         assert!(max_diff < 1e-4, "max diff {max_diff}");
     }
 
+    /// Spectral Resonator in MIDI mode follows the notes of the MIDI From
+    /// track (regression: only `midi_mode` is set by the UI, not `on`).
+    #[test]
+    fn spectral_resonator_midi_input() {
+        use daw_project::devices::{Device, FxParams, specres::SpecResParams};
+        let render = |src: bool| {
+            let mut p = drum_project();
+            let pad: Vec<Note> = vec![Note { start: 0.0, length: 8.0, pitch: 60, velocity: 100, ..Default::default() }];
+            p.tracks[2].arrangement.push(ArrangementClip {
+                start: 0.0,
+                clip: Clip { length: 8.0, looping: false, content: ClipContent::Midi { notes: pad }, ..Default::default() },
+            });
+            let mut sr = SpecResParams { midi_mode: true, ..Default::default() };
+            sr.midi.source = if src { p.tracks[0].id } else { 0 };
+            p.tracks[2].devices.push(Device::new(9_999, FxParams::SpectralResonator(sr)));
+            render_project(&p, &ExportOptions { tail_seconds: 0.0, ..Default::default() }).unwrap().data
+        };
+        let (a, b) = (render(true), render(false));
+        let diff = a[4 * 48_000..].iter().zip(&b[4 * 48_000..]).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+        assert!(diff > 0.01, "MIDI From had no effect ({diff})");
+    }
+
     #[test]
     fn writes_16_and_32_bit_wavs() {
         let dir = std::env::temp_dir().join(format!("daw-export-{}", std::process::id()));

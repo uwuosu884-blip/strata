@@ -269,7 +269,8 @@ impl SpecResState {
                 v.held = v.held.saturating_sub(n as u32);
             }
             v.cur += (v.pitch as f32 - v.cur) * gl;
-            if v.held == 0 && p.midi_gate {
+            // MIDI Gate is always active in Poly mode (manual).
+            if v.held == 0 && (p.midi_gate || p.poly) {
                 v.env *= rel;
                 if v.env < 1e-4 {
                     v.active = false;

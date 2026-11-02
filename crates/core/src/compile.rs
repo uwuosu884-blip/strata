@@ -406,7 +406,7 @@ fn fx(devices: &[p::Device], slots: &RtSlots) -> Vec<e::FxSlot> {
         .map(|d| {
             let mut s = e::FxSlot::new(d.id, d.on, d.params);
             // External sidechain: project track id → engine track.
-            if let Some(sc) = d.params.sidechain().filter(|sc| sc.on && sc.source != 0) {
+            if let Some(sc) = d.params.sc_active() {
                 let tap = match sc.tap {
                     e::ScTap::PreFx => e::Tap::PreFx,
                     e::ScTap::PostFx => e::Tap::PostFx,
