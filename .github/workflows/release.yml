@@ -33,7 +33,7 @@ jobs:
           # Windows releases paused for now (CI still builds/tests it):
           # - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc,   exe: ".exe", archive: zip }
           - { name: macos-arm64,    os: macos-14,       target: aarch64-apple-darwin,     exe: "",     archive: tar.gz }
-          - { name: macos-x86_64,   os: macos-latest,   target: x86_64-apple-darwin,      exe: "",     archive: tar.gz }
+          - { name: macos-x86_64,   os: macos-14,       target: x86_64-apple-darwin,      exe: "",     archive: tar.gz }
     steps:
       - uses: actions/checkout@v5
         with:
