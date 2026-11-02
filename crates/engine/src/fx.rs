@@ -233,6 +233,10 @@ pub enum FxParams {
     Compressor(crate::dynfx::CompressorParams),
     Spectrum(crate::spectrum::SpectrumParams),
     AutoShift(crate::autoshift::AutoShiftParams),
+    ChannelEq(crate::chaneq::ChannelEqParams),
+    Echo(crate::echo::EchoParams),
+    Erosion(crate::erosion::ErosionParams),
+    Reverb(crate::reverb::ReverbParams),
 }
 
 impl FxParams {
@@ -254,6 +258,10 @@ impl FxParams {
             FxParams::Compressor(_) => "Compressor",
             FxParams::Spectrum(_) => "Spectrum",
             FxParams::AutoShift(_) => "Auto Shift",
+            FxParams::ChannelEq(_) => "Channel EQ",
+            FxParams::Echo(_) => "Echo",
+            FxParams::Erosion(_) => "Erosion",
+            FxParams::Reverb(_) => "Reverb",
         }
     }
 
@@ -317,6 +325,9 @@ impl FxSlot {
             StateKind::Compressor(c) => **c = CompressorState::new(Some(id)),
             StateKind::Spectrum(s) => **s = crate::spectrum::SpectrumState::new(Some(crate::eq8::spectrum_tap(id))),
             StateKind::AutoShift(a) => **a = crate::autoshift::AutoShiftState::new(Some(id)),
+            StateKind::ChannelEq(c) => **c = crate::chaneq::ChannelEqState::new(Some(id)),
+            StateKind::Echo(e) => e.set_tap(id),
+            StateKind::Erosion(e) => **e = crate::erosion::ErosionState::new(Some(id)),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -530,6 +541,10 @@ enum StateKind {
     Compressor(Box<CompressorState>),
     Spectrum(Box<crate::spectrum::SpectrumState>),
     AutoShift(Box<crate::autoshift::AutoShiftState>),
+    ChannelEq(Box<crate::chaneq::ChannelEqState>),
+    Echo(Box<crate::echo::EchoState>),
+    Erosion(Box<crate::erosion::ErosionState>),
+    Reverb(Box<crate::reverb::ReverbState>),
 }
 
 impl PartialEq for StateKind {
@@ -556,6 +571,10 @@ impl FxState {
             FxParams::Compressor(_) => StateKind::Compressor(Box::new(CompressorState::new(None))),
             FxParams::Spectrum(_) => StateKind::Spectrum(Box::default()),
             FxParams::AutoShift(_) => StateKind::AutoShift(Box::default()),
+            FxParams::ChannelEq(_) => StateKind::ChannelEq(Box::new(crate::chaneq::ChannelEqState::new(None))),
+            FxParams::Echo(_) => StateKind::Echo(Box::default()),
+            FxParams::Erosion(_) => StateKind::Erosion(Box::new(crate::erosion::ErosionState::new(None))),
+            FxParams::Reverb(_) => StateKind::Reverb(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -575,6 +594,10 @@ impl FxState {
             StateKind::AutoPan(a) => a.reset(),
             StateKind::Compressor(c) => c.reset(),
             StateKind::AutoShift(a) => a.reset(),
+            StateKind::ChannelEq(c) => c.reset(),
+            StateKind::Echo(e) => e.reset(),
+            StateKind::Erosion(e) => e.reset(),
+            StateKind::Reverb(v) => v.reset(),
         }
     }
 }
@@ -626,6 +649,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Compressor(p), StateKind::Compressor(st)) => st.process(p, l, r, sr),
             (FxParams::Spectrum(p), StateKind::Spectrum(st)) => st.process(p, l, r, sr),
             (FxParams::AutoShift(p), StateKind::AutoShift(st)) => st.process(p, l, r, sr),
+            (FxParams::ChannelEq(p), StateKind::ChannelEq(st)) => st.process(p, l, r, sr),
+            (FxParams::Echo(p), StateKind::Echo(st)) => st.process(p, l, r, sr),
+            (FxParams::Erosion(p), StateKind::Erosion(st)) => st.process(p, l, r, sr),
+            (FxParams::Reverb(p), StateKind::Reverb(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

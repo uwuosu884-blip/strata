@@ -11,19 +11,24 @@
 
 pub mod autoshift;
 mod buffer;
+pub mod chaneq;
 mod command;
 pub mod devtap;
 pub mod dynfx;
+pub mod echo;
 pub mod eq8;
+pub mod erosion;
 pub mod fx;
 pub mod instruments;
 pub mod lfo;
 mod metronome;
 pub mod modfx;
 pub mod params;
+pub mod params2;
 pub mod pdc;
 pub mod pv;
 pub mod rack;
+pub mod reverb;
 mod sample;
 mod smoother;
 mod song;

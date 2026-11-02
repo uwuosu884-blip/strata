@@ -93,6 +93,10 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
         FxParams::Compressor(c) => comp_norm(c, k),
         FxParams::Spectrum(s) => spec_norm(s, k),
         FxParams::AutoShift(a) => as_norm(a, k),
+        FxParams::ChannelEq(c) => crate::params2::ceq_norm(c, k),
+        FxParams::Echo(e) => crate::params2::echo_norm(e, k),
+        FxParams::Erosion(e) => crate::params2::ero_norm(e, k),
+        FxParams::Reverb(r) => crate::params2::rv_norm(r, k),
         FxParams::Rack(r) => match k {
             0..16 => Some(r.macros[k as usize] / 127.0),
             RACK_SELECTOR => Some(r.selector / 127.0),
@@ -132,6 +136,10 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
         FxParams::Compressor(c) => comp_set(c, k, v),
         FxParams::Spectrum(s) => spec_set(s, k, v),
         FxParams::AutoShift(a) => as_set(a, k, v),
+        FxParams::ChannelEq(c) => crate::params2::ceq_set(c, k, v),
+        FxParams::Echo(e) => crate::params2::echo_set(e, k, v),
+        FxParams::Erosion(e) => crate::params2::ero_set(e, k, v),
+        FxParams::Reverb(r) => crate::params2::rv_set(r, k, v),
         FxParams::Rack(r) => match k {
             0..16 => r.macros[k as usize] = (v * 127.0).round(),
             RACK_SELECTOR => r.selector = (v * 127.0).round(),
@@ -280,19 +288,19 @@ pub fn log_norm(v: f32, lo: f32, hi: f32) -> f32 {
     ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0)
 }
 
-fn lin_val(n: f32, lo: f32, hi: f32) -> f32 {
+pub(crate) fn lin_val(n: f32, lo: f32, hi: f32) -> f32 {
     lo + (hi - lo) * n.clamp(0.0, 1.0)
 }
 
-fn lin_norm(v: f32, lo: f32, hi: f32) -> f32 {
+pub(crate) fn lin_norm(v: f32, lo: f32, hi: f32) -> f32 {
     ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 
-fn idx_norm(i: u8, n: usize) -> f32 {
+pub(crate) fn idx_norm(i: u8, n: usize) -> f32 {
     (i as f32 / (n - 1) as f32).clamp(0.0, 1.0)
 }
 
-fn norm_idx(v: f32, n: usize) -> u8 {
+pub(crate) fn norm_idx(v: f32, n: usize) -> u8 {
     (v.clamp(0.0, 1.0) * (n - 1) as f32).round() as u8
 }
 
@@ -1107,6 +1115,12 @@ mod tests {
             FxParams::Compressor(CompressorParams::default()),
             FxParams::Spectrum(crate::spectrum::SpectrumParams::default()),
             FxParams::AutoShift(crate::autoshift::AutoShiftParams::default()),
+            FxParams::ChannelEq(crate::chaneq::ChannelEqParams::default()),
+            FxParams::Echo(crate::echo::EchoParams::default()),
+            FxParams::Echo(crate::echo::EchoParams { sync: [false; 2], link: false, mod_sync: true, ..Default::default() }),
+            FxParams::Echo(crate::echo::EchoParams { sync_mode: [3, 3], link: false, ..Default::default() }),
+            FxParams::Erosion(crate::erosion::ErosionParams::default()),
+            FxParams::Reverb(crate::reverb::ReverbParams::default()),
             FxParams::AutoPan(AutoPanParams { tremolo: true, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Dj, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Vowel, ..Default::default() }),

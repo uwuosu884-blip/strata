@@ -128,6 +128,36 @@ fn big_song(variant: usize) -> Song {
     let align = FxParams::AlignDelay(AlignDelayParams { mode: DelayMode::Distance, dist_l: 3.0, ..Default::default() });
     song.tracks[1].fx = vec![FxSlot::new(10, true, util), FxSlot::new(11, variant.is_multiple_of(2), align)];
     song.master_fx = vec![FxSlot::new(12, true, align)];
+    // v0.8.7 devices with their optional stages on.
+    let echo = daw_engine::echo::EchoParams {
+        reverb: 0.5,
+        verb_loc: (variant % 3) as u8,
+        noise: true,
+        noise_amt: 0.5,
+        gate: true,
+        repitch: variant.is_multiple_of(2),
+        mod_delay: 0.5,
+        mod_filter: 0.5,
+        wave: (variant % 6) as u8,
+        mode: (variant % 3) as u8,
+        ..Default::default()
+    };
+    let verb = daw_engine::reverb::ReverbParams {
+        chorus: true,
+        freeze: variant.is_multiple_of(2),
+        density: (variant % 4) as u8,
+        ..Default::default()
+    };
+    song.tracks[2].fx = vec![
+        FxSlot::new(
+            13,
+            true,
+            FxParams::ChannelEq(daw_engine::chaneq::ChannelEqParams { hp: true, low: 6.0, high: -9.0, ..Default::default() }),
+        ),
+        FxSlot::new(14, true, FxParams::Echo(echo)),
+        FxSlot::new(15, true, FxParams::Erosion(Default::default())),
+        FxSlot::new(16, true, FxParams::Reverb(verb)),
+    ];
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;
     song
