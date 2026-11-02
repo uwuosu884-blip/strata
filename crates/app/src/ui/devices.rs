@@ -12,12 +12,16 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, R
 use std::f32::consts::PI;
 
 mod autoshift;
+mod chaneq;
 mod comp;
 mod dynamics;
+mod echo;
 mod eq8;
+mod erosion;
 mod lfo;
 mod modfx;
 mod rack;
+mod reverb;
 mod shaper;
 mod spec;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
@@ -63,6 +67,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Compressor(c) => comp::width(&c),
         FxParams::Spectrum(s) => spec::width(&s),
         FxParams::AutoShift(a) => autoshift::width(&a),
+        FxParams::ChannelEq(_) => chaneq::WIDTH,
+        FxParams::Echo(_) => echo::WIDTH,
+        FxParams::Erosion(_) => erosion::WIDTH,
+        FxParams::Reverb(_) => reverb::WIDTH,
     }
 }
 
@@ -127,6 +135,10 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Compressor(_) => comp::reset(p, k),
         FxParams::Spectrum(_) => spec::reset(p, k),
         FxParams::AutoShift(_) => autoshift::reset(p, k),
+        FxParams::ChannelEq(_) => chaneq::reset(p, k),
+        FxParams::Echo(_) => echo::reset(p, k),
+        FxParams::Erosion(_) => erosion::reset(p, k),
+        FxParams::Reverb(_) => reverb::reset(p, k),
     }
 }
 
@@ -183,6 +195,10 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Compressor(_) => comp::step(p, k, dir),
         FxParams::Spectrum(_) => spec::step(p, k, dir),
         FxParams::AutoShift(_) => autoshift::step(p, k, dir),
+        FxParams::ChannelEq(_) => chaneq::step(p, k, dir),
+        FxParams::Echo(_) => echo::step(p, k, dir),
+        FxParams::Erosion(_) => erosion::step(p, k, dir),
+        FxParams::Reverb(_) => reverb::step(p, k, dir),
     }
 }
 
@@ -226,6 +242,10 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Compressor(_) => comp::name(k),
         FxParams::Spectrum(_) => spec::name(k),
         FxParams::AutoShift(_) => autoshift::name(k),
+        FxParams::ChannelEq(_) => chaneq::name(k),
+        FxParams::Echo(_) => echo::name(k),
+        FxParams::Erosion(_) => erosion::name(k),
+        FxParams::Reverb(_) => reverb::name(k),
     }
 }
 
@@ -835,6 +855,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Compressor(_) => comp::compressor(&mut cx, ui, &p, r),
         FxParams::Spectrum(_) => spec::spectrum(&mut cx, ui, &p, r),
         FxParams::AutoShift(_) => autoshift::auto_shift(&mut cx, ui, &p, r),
+        FxParams::ChannelEq(_) => chaneq::channel_eq(&mut cx, ui, &p, r),
+        FxParams::Echo(_) => echo::draw(&mut cx, ui, &p, r),
+        FxParams::Erosion(_) => erosion::erosion(&mut cx, ui, &p, r),
+        FxParams::Reverb(_) => reverb::draw(&mut cx, ui, &p, r),
         FxParams::Rack(_) => {}
     }
     if sc_mono && let FxParams::AutoFilter(a) = &mut cx.params {
@@ -1343,6 +1367,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) | FxParams::Lfo(_) => false,
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => false,
         FxParams::Compressor(_) | FxParams::Spectrum(_) | FxParams::AutoShift(_) => false,
+        FxParams::ChannelEq(_) | FxParams::Echo(_) | FxParams::Erosion(_) | FxParams::Reverb(_) => false,
     }
 }
 

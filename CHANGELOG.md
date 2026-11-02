@@ -10,6 +10,28 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.7] - 2026-11-02
+
+### Added
+- Channel EQ: 80 Hz high-pass, adaptive low shelf (±15 dB), sweepable mid
+  peak (120 Hz–7.5 kHz, ±12 dB), high shelf boost / shelf + low-pass cut,
+  Output, live spectrum and response curve.
+- Echo: Left / Right (Mid / Side) times, Sync with Notes / Triplet /
+  Dotted / 16th modes and offsets, Stereo Link, Input with Clip Dry,
+  Feedback with Invert (up to 150 %). Echo tab: tunnel display, HP / LP
+  filter with resonance (expandable graph). Modulation tab: six waveforms,
+  Sync / Hz rate, Phase, modulation of delay time (×4) and filter, Env Mix.
+  Character tab: Gate, Ducking, Noise and Wobble (sampled, with Morph),
+  Repitch. Reverb Pre / Post / Feedback with Decay, Stereo, Output,
+  Dry/Wet. Stereo / Ping Pong / Mid/Side.
+- Erosion: modulated short delay with sine / band-passed noise, XY display
+  (Frequency × Amount, Alt+drag = Width), Noise Blend, Width, Stereo.
+- Reverb: Input Filter XY (Lo / Hi Cut, Freq × Width), Early Reflections
+  (Spin Amount / Rate, Shape), Diffusion Network (High shelf / low-pass and
+  Low shelf on an XY display, Diffusion, Scale), Chorus, Predelay, Smooth,
+  Size, Decay, Freeze with Flat / Cut, Stereo, Density, Reflect / Diffuse
+  levels, Dry/Wet.
+
 ## [0.8.6] - 2026-11-02
 
 ### Added
