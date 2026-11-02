@@ -20,7 +20,7 @@ pub(crate) fn set_clock(tempo: f64, beat: Option<f64>) {
     BEAT.store(beat.unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
 }
 
-fn clock() -> (f64, Option<f64>) {
+pub(crate) fn clock() -> (f64, Option<f64>) {
     let t = f64::from_bits(TEMPO.load(Ordering::Relaxed));
     let b = f64::from_bits(BEAT.load(Ordering::Relaxed));
     (if t.is_finite() && t > 0.0 { t } else { 120.0 }, b.is_finite().then_some(b))

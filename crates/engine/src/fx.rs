@@ -232,6 +232,7 @@ pub enum FxParams {
     AutoPan(crate::modfx::AutoPanParams),
     Compressor(crate::dynfx::CompressorParams),
     Spectrum(crate::spectrum::SpectrumParams),
+    AutoShift(crate::autoshift::AutoShiftParams),
 }
 
 impl FxParams {
@@ -252,6 +253,7 @@ impl FxParams {
             FxParams::AutoPan(_) => "Auto Pan-Tremolo",
             FxParams::Compressor(_) => "Compressor",
             FxParams::Spectrum(_) => "Spectrum",
+            FxParams::AutoShift(_) => "Auto Shift",
         }
     }
 
@@ -263,6 +265,7 @@ impl FxParams {
             FxParams::Gate(p) => (crate::dynfx::GATE_LOOKAHEAD[(p.lookahead as usize).min(2)] * 0.001 * sr).round() as usize,
             FxParams::Limiter(p) => crate::dynfx::LimiterState::latency(p, sr),
             FxParams::Compressor(p) => p.latency(sr),
+            FxParams::AutoShift(p) => p.latency(sr),
             _ => 0,
         }
     }
@@ -273,6 +276,8 @@ impl FxParams {
             FxParams::Glue(g) => Some(&g.sc),
             FxParams::AutoFilter(a) => Some(&a.sc),
             FxParams::Compressor(c) => Some(&c.sc),
+            // MIDI In source (resolved and ordered like a sidechain).
+            FxParams::AutoShift(a) => Some(&a.midi),
             _ => None,
         }
     }
@@ -311,6 +316,7 @@ impl FxSlot {
             StateKind::AutoPan(a) => **a = AutoPanState::new(Some(id)),
             StateKind::Compressor(c) => **c = CompressorState::new(Some(id)),
             StateKind::Spectrum(s) => **s = crate::spectrum::SpectrumState::new(Some(crate::eq8::spectrum_tap(id))),
+            StateKind::AutoShift(a) => **a = crate::autoshift::AutoShiftState::new(Some(id)),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -358,10 +364,33 @@ impl FxSlot {
 
 /// Copy the external sidechain sources into the Gate / Glue states of
 /// `chain` (before it runs). `src(rt, tap)` returns the source block.
-pub(crate) fn fill_sidechains<'a>(chain: &mut [FxSlot], n: usize, src: &dyn Fn(u16, crate::song::Tap) -> Option<(&'a [f32], &'a [f32])>) {
+/// Calls the sink with each note of a source track (Auto Shift's MIDI In).
+pub(crate) type NoteSource<'n> = dyn Fn(u16, &mut dyn FnMut(crate::autoshift::AsNote)) + 'n;
+
+/// `notes(rt)` feeds Auto Shift's MIDI In with the source track's notes.
+pub(crate) fn fill_sidechains<'a>(
+    chain: &mut [FxSlot],
+    n: usize,
+    src: &dyn Fn(u16, crate::song::Tap) -> Option<(&'a [f32], &'a [f32])>,
+    notes: &NoteSource<'_>,
+) {
     for s in chain.iter_mut() {
         s.visit(&mut |s| {
             let Some((rt, tap)) = s.sc_src else { return };
+            if let (FxParams::AutoShift(p), StateKind::AutoShift(st)) = (&s.params, &mut s.state.kind) {
+                if p.midi.on {
+                    let mut buf = [crate::autoshift::AsNote::default(); 64];
+                    let mut k = 0;
+                    notes(rt, &mut |e| {
+                        if k < buf.len() {
+                            buf[k] = e;
+                            k += 1;
+                        }
+                    });
+                    st.set_notes(&mut buf[..k].iter().copied());
+                }
+                return;
+            }
             let on = s.params.sidechain().is_some_and(|c| c.on);
             if let Some(st) = s.sc_state() {
                 st.len = 0;
@@ -500,6 +529,7 @@ enum StateKind {
     AutoPan(Box<AutoPanState>),
     Compressor(Box<CompressorState>),
     Spectrum(Box<crate::spectrum::SpectrumState>),
+    AutoShift(Box<crate::autoshift::AutoShiftState>),
 }
 
 impl PartialEq for StateKind {
@@ -525,6 +555,7 @@ impl FxState {
             FxParams::AutoPan(_) => StateKind::AutoPan(Box::new(AutoPanState::new(None))),
             FxParams::Compressor(_) => StateKind::Compressor(Box::new(CompressorState::new(None))),
             FxParams::Spectrum(_) => StateKind::Spectrum(Box::default()),
+            FxParams::AutoShift(_) => StateKind::AutoShift(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -543,6 +574,7 @@ impl FxState {
             StateKind::AutoFilter(a) => a.reset(),
             StateKind::AutoPan(a) => a.reset(),
             StateKind::Compressor(c) => c.reset(),
+            StateKind::AutoShift(a) => a.reset(),
         }
     }
 }
@@ -593,6 +625,7 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::AutoPan(p), StateKind::AutoPan(st)) => st.process(p, l, r, sr),
             (FxParams::Compressor(p), StateKind::Compressor(st)) => st.process(p, l, r, sr),
             (FxParams::Spectrum(p), StateKind::Spectrum(st)) => st.process(p, l, r, sr),
+            (FxParams::AutoShift(p), StateKind::AutoShift(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

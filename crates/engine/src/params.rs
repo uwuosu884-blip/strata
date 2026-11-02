@@ -92,6 +92,7 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
         FxParams::AutoPan(a) => pan_norm(a, k),
         FxParams::Compressor(c) => comp_norm(c, k),
         FxParams::Spectrum(s) => spec_norm(s, k),
+        FxParams::AutoShift(a) => as_norm(a, k),
         FxParams::Rack(r) => match k {
             0..16 => Some(r.macros[k as usize] / 127.0),
             RACK_SELECTOR => Some(r.selector / 127.0),
@@ -130,6 +131,7 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
         FxParams::AutoPan(a) => pan_set(a, k, v),
         FxParams::Compressor(c) => comp_set(c, k, v),
         FxParams::Spectrum(s) => spec_set(s, k, v),
+        FxParams::AutoShift(a) => as_set(a, k, v),
         FxParams::Rack(r) => match k {
             0..16 => r.macros[k as usize] = (v * 127.0).round(),
             RACK_SELECTOR => r.selector = (v * 127.0).round(),
@@ -516,6 +518,120 @@ fn comp_set(c: &mut CompressorParams, k: u8, v: f32) {
 }
 
 /// Spectrum ids.
+/// Auto Shift: continuous parameters 0..27, switches 60..85 (clear of `sc`).
+pub mod asp {
+    pub const IN_GAIN: u8 = 0;
+    pub const GLIDE: u8 = 1;
+    pub const STRENGTH: u8 = 2;
+    pub const SMOOTH_MS: u8 = 3;
+    pub const SHIFT: u8 = 4;
+    pub const ATTACK: u8 = 5;
+    pub const RELEASE: u8 = 6;
+    pub const PB_RANGE: u8 = 7;
+    /// + target (Pitch, Formant, Volume, Pan).
+    pub const MOD_AMT: u8 = 8;
+    pub const LFO_DELAY: u8 = 12;
+    pub const LFO_FADE: u8 = 13;
+    pub const LFO_RATE: u8 = 14;
+    pub const LFO_DIV: u8 = 15;
+    /// + target.
+    pub const LFO_AMT: u8 = 16;
+    pub const PITCH: u8 = 20;
+    pub const FINE: u8 = 21;
+    pub const FORMANT: u8 = 22;
+    pub const F_FOLLOW: u8 = 23;
+    pub const VIB_AMT: u8 = 24;
+    pub const VIB_RATE: u8 = 25;
+    pub const VIB_FADE: u8 = 26;
+    pub const DRY_WET: u8 = 27;
+    pub const TAB: u8 = 60;
+    pub const MIDI_OPEN: u8 = 61;
+    pub const LIVE: u8 = 62;
+    pub const RANGE: u8 = 63;
+    pub const MIDI_ON: u8 = 64;
+    pub const SOURCE: u8 = 65;
+    pub const TAP: u8 = 66;
+    pub const POLY: u8 = 67;
+    pub const VOICES: u8 = 68;
+    pub const QUANT: u8 = 69;
+    pub const SMOOTH: u8 = 70;
+    pub const ROOT: u8 = 71;
+    pub const SCALE: u8 = 72;
+    pub const KEY: u8 = 73;
+    pub const USE_CUR: u8 = 74;
+    pub const LATCH: u8 = 75;
+    /// + target.
+    pub const MOD_SRC: u8 = 76;
+    pub const LFO_ON: u8 = 80;
+    pub const LFO_RESET: u8 = 81;
+    pub const LFO_WAVE: u8 = 82;
+    pub const LFO_SYNC: u8 = 83;
+    pub const VIB_ON: u8 = 84;
+    pub const NATURAL: u8 = 85;
+}
+
+fn as_norm(a: &crate::autoshift::AutoShiftParams, k: u8) -> Option<f32> {
+    use crate::autoshift::*;
+    let sq = |v: f32, max: f32| (v / max).clamp(0.0, 1.0).sqrt();
+    Some(
+        match k {
+            asp::IN_GAIN => (a.in_gain + AS_GAIN_DB) / (2.0 * AS_GAIN_DB),
+            asp::GLIDE => sq(a.glide, AS_GLIDE_MS),
+            asp::STRENGTH => a.strength,
+            asp::SMOOTH_MS => a.smooth_ms / AS_SMOOTH_MS,
+            asp::SHIFT => (a.shift as f32 + AS_SHIFT as f32) / (2.0 * AS_SHIFT as f32),
+            asp::ATTACK => sq(a.attack, AS_ATTACK_MS),
+            asp::RELEASE => sq(a.release, AS_RELEASE_MS),
+            asp::PB_RANGE => a.pb_range as f32 / AS_PB_MAX as f32,
+            8..=11 => (a.mod_amt[(k - asp::MOD_AMT) as usize] + 1.0) / 2.0,
+            asp::LFO_DELAY => sq(a.lfo_delay, AS_LFO_DELAY_MS),
+            asp::LFO_FADE => sq(a.lfo_fade, AS_LFO_FADE_MS),
+            asp::LFO_RATE => (a.lfo_rate / AS_LFO_HZ.0).ln() / (AS_LFO_HZ.1 / AS_LFO_HZ.0).ln(),
+            asp::LFO_DIV => a.lfo_div as f32 / (crate::modfx::SYNC_DIVS.len() - 1) as f32,
+            16..=19 => (a.lfo_amt[(k - asp::LFO_AMT) as usize] + 1.0) / 2.0,
+            asp::PITCH => (a.pitch + AS_PITCH_ST) / (2.0 * AS_PITCH_ST),
+            asp::FINE => (a.fine + AS_FINE_CT) / (2.0 * AS_FINE_CT),
+            asp::FORMANT => (a.formant + 1.0) / 2.0,
+            asp::F_FOLLOW => a.f_follow,
+            asp::VIB_AMT => a.vib_amt / AS_VIB_CT,
+            asp::VIB_RATE => (a.vib_rate / AS_VIB_HZ.0).ln() / (AS_VIB_HZ.1 / AS_VIB_HZ.0).ln(),
+            asp::VIB_FADE => sq(a.vib_fade, AS_VIB_FADE_MS),
+            asp::DRY_WET => a.dry_wet,
+            _ => return None,
+        }
+        .clamp(0.0, 1.0),
+    )
+}
+
+fn as_set(a: &mut crate::autoshift::AutoShiftParams, k: u8, v: f32) {
+    use crate::autoshift::*;
+    match k {
+        asp::IN_GAIN => a.in_gain = ((v * 2.0 - 1.0) * AS_GAIN_DB * 10.0).round() / 10.0,
+        asp::GLIDE => a.glide = v * v * AS_GLIDE_MS,
+        asp::STRENGTH => a.strength = v,
+        asp::SMOOTH_MS => a.smooth_ms = v * AS_SMOOTH_MS,
+        asp::SHIFT => a.shift = ((v * 2.0 - 1.0) * AS_SHIFT as f32).round() as i8,
+        asp::ATTACK => a.attack = v * v * AS_ATTACK_MS,
+        asp::RELEASE => a.release = v * v * AS_RELEASE_MS,
+        asp::PB_RANGE => a.pb_range = (v * AS_PB_MAX as f32).round() as u8,
+        8..=11 => a.mod_amt[(k - asp::MOD_AMT) as usize] = v * 2.0 - 1.0,
+        asp::LFO_DELAY => a.lfo_delay = v * v * AS_LFO_DELAY_MS,
+        asp::LFO_FADE => a.lfo_fade = v * v * AS_LFO_FADE_MS,
+        asp::LFO_RATE => a.lfo_rate = AS_LFO_HZ.0 * (AS_LFO_HZ.1 / AS_LFO_HZ.0).powf(v),
+        asp::LFO_DIV => a.lfo_div = (v * (crate::modfx::SYNC_DIVS.len() - 1) as f32).round() as u8,
+        16..=19 => a.lfo_amt[(k - asp::LFO_AMT) as usize] = v * 2.0 - 1.0,
+        asp::PITCH => a.pitch = ((v * 2.0 - 1.0) * AS_PITCH_ST).round(),
+        asp::FINE => a.fine = (v * 2.0 - 1.0) * AS_FINE_CT,
+        asp::FORMANT => a.formant = v * 2.0 - 1.0,
+        asp::F_FOLLOW => a.f_follow = v,
+        asp::VIB_AMT => a.vib_amt = v * AS_VIB_CT,
+        asp::VIB_RATE => a.vib_rate = AS_VIB_HZ.0 * (AS_VIB_HZ.1 / AS_VIB_HZ.0).powf(v),
+        asp::VIB_FADE => a.vib_fade = v * v * AS_VIB_FADE_MS,
+        asp::DRY_WET => a.dry_wet = v,
+        _ => {}
+    }
+}
+
 pub mod spp {
     pub const BLOCK: u8 = 0;
     pub const CHANNEL: u8 = 1;
@@ -990,6 +1106,7 @@ mod tests {
             FxParams::AutoPan(AutoPanParams::default()),
             FxParams::Compressor(CompressorParams::default()),
             FxParams::Spectrum(crate::spectrum::SpectrumParams::default()),
+            FxParams::AutoShift(crate::autoshift::AutoShiftParams::default()),
             FxParams::AutoPan(AutoPanParams { tremolo: true, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Dj, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Vowel, ..Default::default() }),

@@ -10,6 +10,45 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.6] - 2026-11-02
+
+### Added
+- Devices fold to their title strip with a double-click on the title bar.
+- Zooming in goes down to a 1/512-note grid.
+- Shift + mouse wheel scrolls a long device chain horizontally.
+- Audio effects can be dragged to another track: drop on a track header
+  (Session, Arrangement, Mixer) or into its chain. Moves by default,
+  Ctrl+drag copies.
+- Compressor: Threshold, Ratio, Attack, Release / Auto Release, Knee,
+  Lookahead 0 / 1 / 10 ms, Peak / RMS / Expand, Lin / Log envelope, Makeup,
+  Output, Dry/Wet. Collapsed, Transfer Curve and Activity (GR / Output)
+  views with draggable threshold. Full sidechain (External source and tap,
+  Gain, Mix, SC EQ, Listen).
+- Spectrum: Block, Channel L / R / L+R, Refresh, Avg, Line / Bins graph,
+  Max hold (click to reset), Lin / Log / ST scale, Range or Auto, hover
+  readout (Hz, note, dB), dB-legend scroll / zoom, unfold to the main window.
+- Shaper: breakpoint envelope editor (click to add, Alt+drag curves,
+  Shift+click deletes), Clear and presets, Grid / Snap, Jitter, Smooth,
+  Phase, Offset, Loop / 1-Shot / Manual, Hz or synced Rate, Depth; maps up
+  to 8 device parameters (also inside racks) like the LFO.
+- Auto Shift: real-time pitch detection (High / Mid / Bass ranges with their
+  latencies, Live Mode), Input Gain, Quantizer with correction meter,
+  Correction Strength, Smooth / Smoothing Time, Included Notes keyboard
+  (click a key for a Custom scale), Root / Scale (Custom, Chromatic and 34
+  scales), Pitch Shift in scale degrees; MIDI In (MIDI On, External Source
+  and tap, Mono with Glide / Poly with 2 / 4 / 8 voices) with the MIDI tab
+  (Attack, Release, Note Latch, PB Range, Mod Routing); LFO tab (9
+  waveforms, Hz / sync rate, Onset reset, Delay, Fade-In, Pitch / Formant /
+  Volume / Pan depths); Pitch, Fine, Formant, Formant Follow; Vibrato
+  (Amount, Rate, Fade-In, Natural); Dry/Wet.
+- Current scale: the song follows the scale of the selected clip (Clip View
+  Scale settings); Auto Shift's Use Current Scale (b#) uses it.
+
+### Notes
+- Auto Shift's mod sources other than Velocity (Pressure, Mod Wheel, Pitch
+  Bend, Note PB, Slide) are shown greyed: the engine does not generate them
+  yet.
+
 ## [0.8.5] - 2026-11-01
 
 ### Added

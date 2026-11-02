@@ -9,6 +9,7 @@
 //! Songs are swapped as whole immutable snapshots; the old snapshot is sent
 //! back to the GUI thread to be freed there.
 
+pub mod autoshift;
 mod buffer;
 mod command;
 pub mod devtap;
@@ -32,6 +33,7 @@ mod track;
 mod transport;
 pub mod warp;
 
+pub use autoshift::{AutoShiftParams, SCALES};
 pub use buffer::StereoBuffer;
 pub use command::{Command, MASTER_FX, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
 pub use devtap::{DevTap, dev_tap};
@@ -302,6 +304,9 @@ impl Engine {
             }
             self.out_used = 0;
             self.render(frames);
+            for t in &mut self.tracks {
+                t.n_live = 0;
+            }
             let p = self.master.peak(frames);
             block_peak = [block_peak[0].max(p[0]), block_peak[1].max(p[1])];
             self.apply_monitor_gain(frames);
@@ -835,6 +840,10 @@ impl Engine {
         }
         let st = &self.song.tracks[i];
         let t = &mut self.tracks[rt as usize];
+        if t.n_live < t.live.len() {
+            t.live[t.n_live] = (pitch, velocity);
+            t.n_live += 1;
+        }
         if velocity > 0 {
             t.voices.note_on(&st.instrument, pitch, velocity, u32::MAX, false, self.sr);
         } else {
@@ -1476,7 +1485,9 @@ impl Engine {
             tracks[rt].add_bus(n);
             {
                 let tr: &[TrackRt] = tracks;
-                fx::fill_sidechains(&mut song.tracks[i as usize].fx, n, &|src, tap| sc_source(tr, src, tap));
+                fx::fill_sidechains(&mut song.tracks[i as usize].fx, n, &|src, tap| sc_source(tr, src, tap), &|src, f| {
+                    midi_source(tr, src, f)
+                });
             }
             tracks[rt].run_fx(&mut song.tracks[i as usize].fx, n, ctx.sr, status.fx_meters(rt));
             let st = &song.tracks[i as usize];
@@ -1561,7 +1572,7 @@ impl Engine {
 
         {
             let tr: &[TrackRt] = tracks;
-            fx::fill_sidechains(&mut song.master_fx, n, &|src, tap| sc_source(tr, src, tap));
+            fx::fill_sidechains(&mut song.master_fx, n, &|src, tap| sc_source(tr, src, tap), &|src, f| midi_source(tr, src, f));
         }
         fx::run_chain(&mut song.master_fx, ml, mr, ctx.sr, status.fx_meters(MAX_TRACKS));
         let (cl, cr) = self.cue.range_mut(offset, n);
@@ -1601,6 +1612,17 @@ fn clamp_gain(g: f32) -> f32 {
 }
 
 /// Sidechain source block of engine track `src`.
+/// Notes of track `src` this segment (clip notes + live notes) for Auto Shift.
+fn midi_source(tracks: &[TrackRt], src: u16, f: &mut dyn FnMut(autoshift::AsNote)) {
+    let Some(s) = tracks.get(src as usize) else { return };
+    for e in &s.events[..s.n_events] {
+        f(autoshift::AsNote { offset: e.offset, pitch: e.pitch, vel: e.vel.max(1), len: e.len.max(1) });
+    }
+    for &(pitch, vel) in &s.live[..s.n_live] {
+        f(autoshift::AsNote { offset: 0, pitch, vel, len: u32::MAX });
+    }
+}
+
 fn sc_source(tracks: &[TrackRt], src: u16, tap: Tap) -> Option<(&[f32], &[f32])> {
     let s = tracks.get(src as usize)?;
     Some(match tap {

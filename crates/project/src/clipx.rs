@@ -305,47 +305,14 @@ pub struct ClipScale {
     pub scale: u8,
 }
 
-/// Live 12's scale list (name, semitone steps from the root).
-pub const SCALES: &[(&str, &[u8])] = &[
-    ("Major", &[0, 2, 4, 5, 7, 9, 11]),
-    ("Minor", &[0, 2, 3, 5, 7, 8, 10]),
-    ("Dorian", &[0, 2, 3, 5, 7, 9, 10]),
-    ("Mixolydian", &[0, 2, 4, 5, 7, 9, 10]),
-    ("Lydian", &[0, 2, 4, 6, 7, 9, 11]),
-    ("Phrygian", &[0, 1, 3, 5, 7, 8, 10]),
-    ("Locrian", &[0, 1, 3, 5, 6, 8, 10]),
-    ("Whole Tone", &[0, 2, 4, 6, 8, 10]),
-    ("Half-whole Dim.", &[0, 1, 3, 4, 6, 7, 9, 10]),
-    ("Whole-half Dim.", &[0, 2, 3, 5, 6, 8, 9, 11]),
-    ("Minor Blues", &[0, 3, 5, 6, 7, 10]),
-    ("Minor Pentatonic", &[0, 3, 5, 7, 10]),
-    ("Major Pentatonic", &[0, 2, 4, 7, 9]),
-    ("Harmonic Minor", &[0, 2, 3, 5, 7, 8, 11]),
-    ("Harmonic Major", &[0, 2, 4, 5, 7, 8, 11]),
-    ("Dorian #4", &[0, 2, 3, 6, 7, 9, 10]),
-    ("Phrygian Dominant", &[0, 1, 4, 5, 7, 8, 10]),
-    ("Melodic Minor", &[0, 2, 3, 5, 7, 9, 11]),
-    ("Lydian Augmented", &[0, 2, 4, 6, 8, 9, 11]),
-    ("Lydian Dominant", &[0, 2, 4, 6, 7, 9, 10]),
-    ("Super Locrian", &[0, 1, 3, 4, 6, 8, 10]),
-    ("8-Tone Spanish", &[0, 1, 3, 4, 5, 6, 8, 10]),
-    ("Bhairav", &[0, 1, 4, 5, 7, 8, 11]),
-    ("Hungarian Minor", &[0, 2, 3, 6, 7, 8, 11]),
-    ("Hirajoshi", &[0, 2, 3, 7, 8]),
-    ("In-Sen", &[0, 1, 5, 7, 10]),
-    ("Iwato", &[0, 1, 5, 6, 10]),
-    ("Kumoi", &[0, 2, 3, 7, 9]),
-    ("Pelog Selisir", &[0, 1, 3, 7, 8]),
-    ("Pelog Tembung", &[0, 1, 5, 7, 8]),
-    ("Messiaen 3", &[0, 2, 3, 4, 6, 7, 8, 10, 11]),
-    ("Messiaen 4", &[0, 1, 2, 5, 6, 7, 8, 11]),
-    ("Messiaen 5", &[0, 1, 5, 6, 7, 11]),
-    ("Messiaen 6", &[0, 2, 4, 5, 6, 8, 10, 11]),
-    ("Messiaen 7", &[0, 1, 2, 3, 5, 6, 7, 8, 9, 11]),
-    ("Chromatic", &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
-];
+/// Live 12's scale list (shared with Auto Shift in the engine).
+pub use daw_engine::SCALES;
 
 impl ClipScale {
+    /// Pitch-class mask (C = bit 0) of the included notes.
+    pub fn mask(&self) -> u16 {
+        daw_engine::autoshift::scale_mask(self.root, self.steps())
+    }
     pub fn steps(&self) -> &'static [u8] {
         SCALES.get(self.scale as usize).map_or(SCALES[0].1, |s| s.1)
     }

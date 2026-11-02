@@ -40,6 +40,8 @@ pub(crate) struct NoteEvent {
     pub expr: u8,
 }
 
+pub(crate) const MAX_LIVE: usize = 32;
+
 /// Note expressions per segment (clip notes with MPE data).
 pub(crate) const MAX_EXPR: usize = 16;
 
@@ -101,6 +103,9 @@ pub(crate) struct TrackRt {
     pub pads: Vec<PadBuf>,
     pub events: [NoteEvent; MAX_EVENTS],
     pub n_events: usize,
+    /// Live notes played this block (pitch, velocity; 0 = off) for Auto Shift's MIDI In.
+    pub live: [(u8, u8); MAX_LIVE],
+    pub n_live: usize,
     fwd: [FwdEvent; MAX_FWD],
     n_fwd: usize,
     /// Hardware MIDI out: (pitch, samples left) of sounding clip notes.
@@ -159,6 +164,8 @@ impl TrackRt {
             pads: (0..crate::DRUM_PADS).map(|_| PadBuf { l: vec![0.0; max_block], r: vec![0.0; max_block] }).collect(),
             events: [NoteEvent::default(); MAX_EVENTS],
             n_events: 0,
+            live: [(0, 0); MAX_LIVE],
+            n_live: 0,
             fwd: [FwdEvent::default(); MAX_FWD],
             n_fwd: 0,
             out_notes: [(0, 0); MAX_OUT_NOTES],

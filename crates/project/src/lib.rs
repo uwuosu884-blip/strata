@@ -68,6 +68,10 @@ pub struct Project {
     pub format_version: u32,
     pub name: String,
     pub tempo_bpm: f64,
+    /// Current scale (Live 12 scale awareness): follows the scale of the
+    /// selected clip; used by Auto Shift's Use Current Scale.
+    #[serde(default)]
+    pub scale: clipx::ClipScale,
     pub beats_per_bar: u32,
     pub metronome: bool,
     /// Metronome menu: count-in, sound, rhythm, record-only.
@@ -133,6 +137,7 @@ impl Default for Project {
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),
             tempo_bpm: 120.0,
+            scale: clipx::ClipScale::default(),
             beats_per_bar: 4,
             metronome: false,
             metronome_opts: MetronomeSettings::default(),

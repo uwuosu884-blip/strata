@@ -90,6 +90,7 @@ impl eframe::App for DawApp {
         }
         let ctx = ui.ctx().clone();
         self.animating = false;
+        self.sync_current_scale();
         {
             // Analyzers of deleted EQ Eights.
             let p = &self.project;

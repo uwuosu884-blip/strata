@@ -316,6 +316,7 @@ pub(super) fn multimap_list(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32
 /// three cycles, or `still(phase)` (−1..1, before depth / offset) while
 /// the engine is not running the device.
 /// `secs`: time window shown.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn scope(cx: &mut Ctx, p: &Painter, d: Rect, cy: f32, amp: f32, secs: f32, l0: &LfoParams, still: impl Fn(f64) -> f32) {
     let tap = dev_tap(cx.dev.id);
     let w = d.width();

@@ -665,6 +665,16 @@ impl DawApp {
         }
     }
 
+    /// Current scale follows the selected clip's scale (Live 12); published for
+    /// Auto Shift's Use Current Scale.
+    pub fn sync_current_scale(&mut self) {
+        if let Some(s) = self.selected_clip.and_then(|c| self.clip(c)).map(|c| c.scale) {
+            self.project.scale = s;
+        }
+        let s = self.project.scale;
+        daw_engine::autoshift::set_current_scale(s.on.then(|| (s.root, s.mask())));
+    }
+
     /// Double-click on a clip: show it in the Clip View / piano roll.
     pub fn open_clip_view(&mut self) {
         self.master_selected = false;
