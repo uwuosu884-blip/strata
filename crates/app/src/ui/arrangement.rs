@@ -202,7 +202,7 @@ pub fn arrangement_view(app: &mut DawApp, ui: &mut egui::Ui) {
     // hidden, window resize) the same time span stays visible: squeezed, not cut.
     let lw = lanes.width();
     if app.arr_w_prev > 40.0 && lw > 40.0 && (lw - app.arr_w_prev).abs() > 0.5 {
-        app.arr_zoom = (app.arr_zoom * lw / app.arr_w_prev).clamp(1.5, 600.0);
+        app.arr_zoom = (app.arr_zoom * lw / app.arr_w_prev).clamp(1.5, crate::arr_ops::MAX_PPB);
     }
     app.arr_w_prev = lw;
     let zoom = app.arr_zoom as f64;
@@ -416,7 +416,7 @@ fn wheel(app: &mut DawApp, ui: &mut egui::Ui, full: Rect, x0: f32) {
     if zoom_d != 1.0 {
         let px = (pointer.x - x0) as f64;
         let beat = app.arr_scroll as f64 + px / app.arr_zoom as f64;
-        app.arr_zoom = (app.arr_zoom * zoom_d).clamp(1.5, 600.0);
+        app.arr_zoom = (app.arr_zoom * zoom_d).clamp(1.5, crate::arr_ops::MAX_PPB);
         app.arr_scroll = (beat - px / app.arr_zoom as f64).max(0.0) as f32;
     }
     if delta == egui::Vec2::ZERO {
@@ -562,7 +562,7 @@ fn ruler(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, ruler: Rect, bpb: f64) ->
         if resp.dragged() {
             let (dy, px) = ui.input(|i| (i.pointer.delta().y, i.pointer.latest_pos().map_or(0.0, |p| p.x)));
             let x0 = g.to_x(app.arr_scroll as f64);
-            app.arr_zoom = (app.arr_zoom * (dy * 0.01).exp()).clamp(1.5, 600.0);
+            app.arr_zoom = (app.arr_zoom * (dy * 0.01).exp()).clamp(1.5, crate::arr_ops::MAX_PPB);
             app.arr_scroll = (anchor - ((px - x0) / app.arr_zoom) as f64).max(0.0) as f32;
             app.follow_paused |= app.status.playing;
         } else {
@@ -1243,8 +1243,10 @@ fn header(app: &mut DawApp, ui: &mut egui::Ui, g: &Geo, k: usize, t: usize) {
     if hr.dragged() && name_drag {
         super::cursors::set(ui.ctx(), Cur::Drag);
     }
+    super::devices::header_drag_hover(app, ui, &hr, t);
     if let Some(item) = hr.dnd_release_payload::<DragItem>() {
-        if let DragItem::AudioEffect(fx) = &*item {
+        if super::devices::device_dropped_on_track(app, ui, &item, t) {
+        } else if let DragItem::AudioEffect(fx) = &*item {
             super::devices::effect_on_track(app, t, *fx);
         } else if let Some(def) = super::instrument_for(&item) {
             app.set_instrument(t, def);
@@ -2543,15 +2545,11 @@ pub fn draw_wave(
 }
 
 pub fn grid_label(g: f64) -> String {
+    const STRAIGHT: [f64; 9] = [0.0078125, 0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0];
     match g {
-        0.0625 => "1/64".into(),
-        0.125 => "1/32".into(),
-        0.25 => "1/16".into(),
-        0.5 => "1/8".into(),
-        1.0 => "1/4".into(),
-        2.0 => "1/2".into(),
+        v if STRAIGHT.contains(&v) => format!("1/{}", (4.0 / v).round() as i64),
         // Triplet grid (Ctrl+3): 2/3 of a straight step.
-        v if [0.0625, 0.125, 0.25, 0.5, 1.0, 2.0].iter().any(|s| (s * 2.0 / 3.0 - v).abs() < 1e-9) => format!("{}T", grid_label(v * 1.5)),
+        v if STRAIGHT.iter().any(|s| (s * 2.0 / 3.0 - v).abs() < 1e-9) => format!("{}T", grid_label(v * 1.5)),
         v => format!("{} bar", v / 4.0),
     }
 }

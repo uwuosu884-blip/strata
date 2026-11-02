@@ -140,7 +140,7 @@ impl DawApp {
             self.zoom_back = Some((self.arr_zoom, self.arr_scroll));
         }
         let w = self.arr_lanes_w.max(100.0);
-        self.arr_zoom = (w / ts.len() as f32).clamp(1.5, 600.0);
+        self.arr_zoom = (w / ts.len() as f32).clamp(1.5, crate::arr_ops::MAX_PPB);
         self.arr_scroll = ts.start as f32;
         self.follow_paused |= self.status.playing;
     }

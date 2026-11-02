@@ -31,6 +31,9 @@ pub struct Device {
     /// Audio Effect Rack contents (`FxParams::Rack`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rack: Option<Box<Rack>>,
+    /// Folded to its title strip (double-click the title bar).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folded: bool,
 }
 
 /// Audio Effect Rack: chains, macro mappings and variations.
@@ -89,7 +92,7 @@ pub struct Variation {
 impl Device {
     pub fn new(id: u64, params: FxParams) -> Self {
         let rack = matches!(params, FxParams::Rack(_)).then(Box::default);
-        Self { id, on: true, params, rack }
+        Self { id, on: true, params, rack, folded: false }
     }
 
     /// This device's id and every nested device / chain id.

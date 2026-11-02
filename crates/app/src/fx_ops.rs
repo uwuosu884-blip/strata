@@ -545,6 +545,25 @@ impl DawApp {
         }
     }
 
+    /// Fold / unfold device `id` of chain `c` (one undo step).
+    pub fn toggle_device_fold(&mut self, c: ChainRef, id: u64) {
+        self.edit(|p| {
+            if let Some(d) = chain_mut(p, c).and_then(|v| v.iter_mut().find(|d| d.id == id)) {
+                d.folded = !d.folded;
+            }
+        });
+    }
+
+    /// Move a device to the end of track `t`'s chain (`copy`: a copy);
+    /// the track gets selected so its chain shows.
+    pub fn device_to_track(&mut self, from: ChainRef, id: u64, t: usize, copy: bool) {
+        let Some(tid) = self.project.tracks.get(t).map(|x| x.id) else { return };
+        let to = ChainRef::Track(tid);
+        let at = chain(&self.project, to).len();
+        self.move_device(from, id, to, at, copy);
+        self.select_track_header(t, crate::arr_ops::SelMode::Single);
+    }
+
     /// Move (or copy) a device to position `at` of chain `to`. A rack can't
     /// go into its own chains.
     pub fn move_device(&mut self, from: ChainRef, id: u64, to: ChainRef, at: usize, copy: bool) {

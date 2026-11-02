@@ -199,6 +199,10 @@ pub fn rack(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usiz
     let tr = ui.interact(title, egui::Id::unique(("rack_title", dev.id)), Sense::click_and_drag());
     super::latency_hover(app, &tr, &dev);
     super::select_clicks(app, ui, c, dev.id, &body, &tr);
+    if tr.double_clicked() {
+        app.toggle_device_fold(c, dev.id);
+        return;
+    }
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {
         super::super::cursors::set(ui.ctx(), super::super::cursors::Cur::Drag);

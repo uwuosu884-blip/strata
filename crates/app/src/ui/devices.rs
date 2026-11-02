@@ -35,7 +35,13 @@ const BOX_TEAL: Color32 = VOL_TEAL;
 /// Knob drag: pixels for the full range.
 const DRAG_PX: f32 = 200.0;
 
+/// Width of a folded device (title strip only).
+pub const FOLD_W: f32 = 21.0;
+
 pub fn width(d: &Device) -> f32 {
+    if d.folded {
+        return FOLD_W;
+    }
     match d.params {
         FxParams::Utility(_) => 139.0,
         FxParams::AlignDelay(_) => 112.0,
@@ -674,6 +680,9 @@ pub(super) fn select_clicks(app: &mut DawApp, ui: &egui::Ui, c: ChainRef, id: u6
 pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: usize) {
     take_lfo_request(app, ui.ctx());
     let Some(dev) = chain(&app.project, c).get(idx).cloned() else { return };
+    if dev.folded {
+        return folded_device(app, ui, r, c, &dev);
+    }
     if matches!(dev.params, FxParams::Rack(_)) {
         return rack::rack(app, ui, r, c, idx);
     }
@@ -696,6 +705,8 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let tr = ui.interact(title, egui::Id::unique(("dev_title", dev.id)), Sense::click_and_drag());
     select_clicks(cx.app, ui, c, dev.id, &body, &tr);
     latency_hover(cx.app, &tr, &dev);
+    // Double-click on the title bar folds the device (Live).
+    let fold_now = tr.double_clicked();
     tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
     if tr.dragged() {
         super::cursors::set(ui.ctx(), super::cursors::Cur::Drag);
@@ -705,6 +716,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
     let mut oversample = false;
     let mut group = false;
     let mut sc_mono = false;
+    let mut fold_menu = false;
     let af_mono = match dev.params {
         FxParams::AutoFilter(a) => Some(a.sc_mono),
         _ => None,
@@ -726,7 +738,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         group = menu::item(ui, "Group", "Ctrl+G", true);
         group |= menu::item(ui, "Group to Audio Effect Rack", "", true);
         menu::sep(ui);
-        menu::item(ui, "Fold", "", false);
+        fold_menu |= menu::item(ui, "Fold", "", true);
         menu::item(ui, "Show Preset Name", "", false);
         menu::sep(ui);
         menu::item(ui, "Save as Default Preset", "", false);
@@ -838,6 +850,92 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
             Some((sc, ids)) if in_sel && ids.len() > 1 => app.delete_devices(sc, &ids),
             _ => app.delete_device(c, dev.id),
         }
+    }
+    if fold_now || fold_menu {
+        app.toggle_device_fold(c, dev.id);
+    }
+}
+
+/// A track header under a dragged device: outline it and, after a short
+/// hover, select the track so its chain shows in the device view (drop
+/// there to place the device precisely).
+pub fn header_drag_hover(app: &mut DawApp, ui: &egui::Ui, resp: &Response, t: usize) {
+    let key = egui::Id::unique("dev_drag_hover");
+    let dragging = resp.dnd_hover_payload::<DragItem>().is_some_and(|d| matches!(*d, DragItem::ChainDevice { .. } | DragItem::AudioEffect(_)));
+    if !dragging {
+        if ui.data(|d| d.get_temp::<(usize, f64)>(key)).is_some_and(|(k, _)| k == t) {
+            ui.data_mut(|d| d.remove::<(usize, f64)>(key));
+        }
+        return;
+    }
+    ui.painter().rect_stroke(resp.rect.shrink(1.0), CornerRadius::ZERO, Stroke::new(1.0, focus()), egui::StrokeKind::Inside);
+    let now = ui.input(|i| i.time);
+    let since = match ui.data(|d| d.get_temp::<(usize, f64)>(key)) {
+        Some((k, t0)) if k == t => t0,
+        _ => {
+            ui.data_mut(|d| d.insert_temp(key, (t, now)));
+            now
+        }
+    };
+    if now - since > 0.6 && app.selected_track != t {
+        app.select_track_header(t, crate::arr_ops::SelMode::Single);
+    }
+    ui.ctx().request_repaint();
+}
+
+/// A device dropped on track header `t`: moved to the end of its chain
+/// (Ctrl: copied).
+pub fn device_dropped_on_track(app: &mut DawApp, ui: &egui::Ui, item: &DragItem, t: usize) -> bool {
+    let DragItem::ChainDevice { chain: from, id } = item else { return false };
+    let copy = ui.input(|i| i.modifiers.command);
+    app.device_to_track(*from, *id, t, copy);
+    true
+}
+
+/// A folded device: a full-height title strip with the activator on top and
+/// the name reading bottom to top. Double-click (or Fold in the context
+/// menu) unfolds it; it still selects, drags and shows its latency.
+fn folded_device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, dev: &Device) {
+    let p = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
+    let (l, t) = (r.left(), r.top());
+    let nested = matches!(c, ChainRef::Sub(_));
+    let selected = app.dev_selected(dev.id) || rack::ancestor_selected(app, c);
+    p.rect_filled(r, CornerRadius::same(if nested { 0 } else { 3 }), if selected { SEL_TITLE } else { gray(0x46) });
+    let tr = ui.interact(r, egui::Id::unique(("dev_title", dev.id)), Sense::click_and_drag());
+    select_clicks(app, ui, c, dev.id, &tr, &tr);
+    latency_hover(app, &tr, dev);
+    tr.dnd_set_drag_payload(DragItem::ChainDevice { chain: c, id: dev.id });
+    if tr.dragged() {
+        super::cursors::set(ui.ctx(), super::cursors::Cur::Drag);
+    }
+    let mut unfold = tr.double_clicked();
+    let mut delete = false;
+    menu::context(&tr, 223.0, |ui| {
+        menu::item(ui, "Cut", "Ctrl+X", false);
+        menu::item(ui, "Copy", "Ctrl+C", false);
+        menu::item(ui, "Duplicate", "Ctrl+D", false);
+        delete = menu::item(ui, "Delete", "Del", true);
+        menu::sep(ui);
+        unfold |= menu::check_item(ui, "Fold", "", true, true);
+    });
+    // Activator.
+    let ac = pos2(l + 10.5, t + 8.5);
+    p.circle_filled(ac, 6.5, gray(0x11));
+    p.circle_filled(ac, 5.5, if dev.on { ORANGE } else { gray(0x1e) });
+    let ar = ui.interact(Rect::from_center_size(ac, vec2(13.0, 13.0)), egui::Id::unique(("dev_on", dev.id)), Sense::click());
+    if ar.clicked() {
+        app.begin_gesture();
+        app.set_device(c, dev.id, !dev.on, dev.params);
+    }
+    let f = bold(FS);
+    let name = fit(&p, dev.params.name(), &f, (r.height() - 26.0).max(10.0));
+    let g = p.layout_no_wrap(name, f, if selected { SEL_TEXT } else { text() });
+    let base = t + 20.0 + g.size().x;
+    p.add(egui::epaint::TextShape::new(pos2(l + 4.5, base), g, text()).with_angle(-PI / 2.0));
+    if delete {
+        app.delete_device(c, dev.id);
+    } else if unfold {
+        app.toggle_device_fold(c, dev.id);
     }
 }
 

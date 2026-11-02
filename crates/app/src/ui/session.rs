@@ -755,8 +755,10 @@ fn track_header(app: &mut DawApp, ui: &mut egui::Ui, t: usize, rect: Rect) {
             false,
         );
     }
+    super::devices::header_drag_hover(app, ui, &resp, t);
     if let Some(item) = resp.dnd_release_payload::<DragItem>() {
-        if let DragItem::AudioEffect(fx) = &*item {
+        if super::devices::device_dropped_on_track(app, ui, &item, t) {
+        } else if let DragItem::AudioEffect(fx) = &*item {
             super::devices::effect_on_track(app, t, *fx);
         } else if let Some(def) = super::instrument_for(&item) {
             app.set_instrument(t, def);

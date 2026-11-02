@@ -300,6 +300,11 @@ pub struct DawApp {
     /// Insert marker after the last device (shown after a click on empty chain
     /// space; any other press hides it).
     pub dev_insert: Option<crate::fx_ops::ChainRef>,
+    /// Device view horizontal scroll (px), the chain it belongs to and the
+    /// chain's content width last frame.
+    pub dev_scroll: f32,
+    pub dev_scroll_chain: Option<crate::fx_ops::ChainRef>,
+    pub dev_content_w: f32,
     /// A rack drop zone handled the current drag (the chain's zone skips it).
     pub dev_drop_claimed: bool,
     pub dev_focus: Option<(u64, u8)>,
@@ -532,6 +537,9 @@ impl DawApp {
             dev_multi_owner: None,
             dev_anchor: None,
             dev_insert: None,
+            dev_scroll: 0.0,
+            dev_scroll_chain: None,
+            dev_content_w: 0.0,
             dev_drop_claimed: false,
             dev_focus: None,
             dev_meters: DevMeters::default(),

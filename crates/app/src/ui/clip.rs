@@ -1163,7 +1163,7 @@ pub fn sample_editor(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, clip: &
         {
             let b = app.pr_scroll + (h.x - rect.min.x) as f64 / ppb;
             // max(): a short sample can fit at > 2000 px/beat (clamp panics if min > max).
-            ppb = (ppb * zoom as f64).clamp(fit, 2000.0f64.max(fit));
+            ppb = (ppb * zoom as f64).clamp(fit, (crate::arr_ops::MAX_PPB as f64).max(fit));
             app.pr_zoom = if ppb <= fit * 1.0001 { 0.0 } else { ppb as f32 };
             app.pr_scroll = b - (h.x - rect.min.x) as f64 / ppb;
         } else if scroll.x != 0.0 || scroll.y != 0.0 {

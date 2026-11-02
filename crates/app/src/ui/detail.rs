@@ -252,7 +252,7 @@ fn piano_roll(app: &mut DawApp, ui: &mut egui::Ui, cref: ClipRef, track: usize, 
             if zoom > 1.0 {
                 app.pr_hold = None; // zooming in forgets where moved notes were
             }
-            ppb = (ppb * zoom as f64).clamp(fit, 600.0f64.max(fit));
+            ppb = (ppb * zoom as f64).clamp(fit, (crate::arr_ops::MAX_PPB as f64).max(fit));
             app.pr_zoom = if ppb <= fit * 1.0001 { 0.0 } else { ppb as f32 };
             app.pr_scroll = beat - off as f64 / ppb;
         } else if alt && scroll.y != 0.0 {
@@ -1045,6 +1045,21 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         !app.master_selected && app.selected_return.is_none() && app.project.tracks.get(t).is_some_and(|tr| tr.kind == TrackKind::Midi);
     let zone = ui.interact(rect, ui.make_persistent_id(("dev_zone", t, app.master_selected, app.selected_return)), Sense::click());
     let chain = app.current_chain();
+    // Horizontal scroll: Shift + wheel (or a horizontal wheel / trackpad)
+    // over the device view; a long chain scrolls, a short one stays put.
+    if app.dev_scroll_chain != Some(chain) {
+        app.dev_scroll_chain = Some(chain);
+        app.dev_scroll = 0.0;
+    }
+    if ui.rect_contains_pointer(rect) {
+        let (d, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
+        let dx = if d.x != 0.0 { d.x } else if shift { d.y } else { 0.0 };
+        app.dev_scroll -= dx;
+    }
+    app.dev_scroll = app.dev_scroll.clamp(0.0, (app.dev_content_w - rect.width() + 60.0).max(0.0));
+    let scroll = app.dev_scroll;
+    // Devices scrolled past the left edge must not catch clicks outside.
+    ui.set_clip_rect(rect.intersect(ui.clip_rect()));
     if zone.clicked() || zone.secondary_clicked() {
         // Click on empty chain space: nothing selected, insert marker at the end.
         app.dev_sel = None;
@@ -1062,7 +1077,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     } else {
         super::devices::meter(&gp, rect.left() - 7.0, rect.top(), rect.bottom(), mp(0));
     }
-    let mut x = rect.left();
+    let mut x = rect.left() - scroll;
     let mut inst_drop_ok = false;
     let mut empty_msg = "Drop Audio Effects Here";
     let n = crate::fx_ops::chain(&app.project, chain).len();
@@ -1071,7 +1086,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         match app.project.tracks[t].instrument {
             // Effects but no instrument: a 100 px instrument drop box first.
             InstrumentDef::None if n > 0 => {
-                let b = Rect::from_min_size(rect.min, vec2(100.0, rect.height()));
+                let b = Rect::from_min_size(pos2(x, rect.top()), vec2(100.0, rect.height()));
                 ui.painter().rect_filled(b, CornerRadius::same(3), panel());
                 let bp = ui.painter().with_clip_rect(b);
                 for (dy, line) in [(-6.5, "Drop Instrument"), (6.5, "Here")] {
@@ -1082,7 +1097,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
             }
             InstrumentDef::None => empty_msg = "Drop an Instrument or Sample Here",
             _ => {
-                let used = instrument_device(app, ui, rect);
+                let used = instrument_device(app, ui, rect.translate(vec2(-scroll, 0.0)));
                 super::devices::meter(ui.painter(), used.right() + 3.0, rect.top(), rect.bottom(), mp(0));
                 x = used.right() + 1.0 + super::devices::GAP;
             }
@@ -1099,6 +1114,7 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         slots.push((r.left(), r.right()));
         x = r.right() + super::devices::GAP;
     }
+    app.dev_content_w = x + scroll - rect.left();
     // The rest of the view: a rounded #36 drop panel (past the right edge so
     // only its left corners show).
     let fx = Rect::from_min_max(pos2(x, rect.top()), pos2(rect.right() + 4.0, rect.bottom()));

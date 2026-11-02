@@ -70,9 +70,14 @@ impl GridMode {
     }
 }
 
+/// Deepest horizontal zoom (pixels per beat): 1/512-note grid lines stay
+/// at least 12 px apart.
+pub const MAX_PPB: f32 = 1536.0;
+
 /// Smallest musical step that is at least `min_px` wide.
 pub fn adaptive_step(ppb: f64, bpb: f64, min_px: f64) -> f64 {
-    for g in [0.0625, 0.125, 0.25, 0.5, 1.0] {
+    // Finest: 1/512 note (= 1/128 beat).
+    for g in [0.0078125, 0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 1.0] {
         if g * ppb >= min_px {
             return g;
         }
@@ -1207,6 +1212,9 @@ mod tests {
         assert_eq!(GridMode::Adaptive(-2).step(100.0, 4.0), 0.5);
         assert_eq!(GridMode::Fixed(0.25).step(1.0, 4.0), 0.25);
         assert!(!GridMode::Off.snaps());
+        // Narrowest: 1/512 note at full zoom.
+        assert_eq!(adaptive_step(super::MAX_PPB as f64, 4.0, 12.0), 0.0078125);
+        assert_eq!(GridMode::Adaptive(2).step(400.0, 4.0), 0.0078125);
     }
 }
 
