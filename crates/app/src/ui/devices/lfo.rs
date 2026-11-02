@@ -8,13 +8,13 @@ use daw_project::devices::{LfoMap, LfoParams, LfoWave, dev_tap};
 
 pub const WIDTH: f32 = 257.0;
 
-const LABEL: Color32 = Color32::from_rgb(0x6c, 0x6c, 0x6c);
+pub(super) const LABEL: Color32 = Color32::from_rgb(0x6c, 0x6c, 0x6c);
 
-fn pct(x: f32) -> String {
+pub(super) fn pct(x: f32) -> String {
     format!("{:.0} %", x * 100.0)
 }
 
-fn lfo_of(p: &mut FxParams) -> Option<&mut LfoParams> {
+pub(super) fn lfo_of(p: &mut FxParams) -> Option<&mut LfoParams> {
     if let FxParams::Lfo(l) = p { Some(l) } else { None }
 }
 
@@ -25,7 +25,7 @@ fn target_name(app: &DawApp, m: &LfoMap) -> Option<String> {
 }
 
 /// One map row: Map / unmap, Mod|Remote, ± and amount (or Min / Max).
-fn map_row(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, y: f32, i: usize) {
+pub(super) fn map_row(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, y: f32, i: usize) {
     let FxParams::Lfo(l0) = cx.params else { return };
     let m = l0.maps[i];
     let armed = cx.app.lfo_arm == Some((cx.dev.id, i as u8));
@@ -105,8 +105,9 @@ fn map_row(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, y: f32, i: usiz
 }
 
 /// Multimap toggle (☰ in an orange box) or the "−" that closes it.
-fn multimap_button(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32, open: bool) {
-    let r = Rect::from_min_max(pos2(l + 236.0, t + 25.0), pos2(l + 250.0, t + 39.0));
+/// `x`: the button's left edge.
+pub(super) fn multimap_button(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, t: f32, open: bool) {
+    let r = Rect::from_min_max(pos2(x, t + 25.0), pos2(x + 14.0, t + 39.0));
     if open {
         p.rect_filled(r, CornerRadius::ZERO, ORANGE);
         quad(p, Rect::from_min_max(pos2(r.left() + 3.0, t + 31.0), pos2(r.right() - 3.0, t + 32.0)), gray(0x20));
@@ -126,25 +127,14 @@ fn multimap_button(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32,
 pub(super) fn lfo(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
     let FxParams::Lfo(l0) = cx.params else { return };
     if l0.multimap {
-        let d = Rect::from_min_max(pos2(l + 4.0, t + 21.0), pos2(l + 253.0, t + 183.0));
-        p.rect_filled(d, CornerRadius::same(2), gray(0x18));
-        for i in 0..LFO_MAPS {
-            map_row(cx, ui, p, l, t + 25.0 + 16.0 * i as f32, i);
-        }
-        multimap_button(cx, ui, p, l, t, true);
-        text_at(p, l + 42.0, t + 177.0, Align2::CENTER_BOTTOM, "Parameter", font(FS), LABEL);
-        text_at(p, l + 116.0, t + 177.0, Align2::CENTER_BOTTOM, "Mode", font(FS), LABEL);
-        text_at(p, l + 193.0, t + 177.0, Align2::CENTER_BOTTOM, "Range", font(FS), LABEL);
-        for (a, b) in [(161.0, 173.0), (213.0, 225.0)] {
-            quad(p, Rect::from_min_max(pos2(l + a, t + 174.0), pos2(l + b, t + 175.0)), gray(0x3e));
-        }
+        multimap_list(cx, ui, p, l, t, l + 253.0, l + 236.0, 177.0);
         return;
     }
     // Display: header row, scope, parameter row.
     let d = Rect::from_min_max(pos2(l + 4.0, t + 21.0), pos2(l + 253.0, t + 132.0));
     p.rect_filled(d, CornerRadius::same(2), gray(0x18));
     map_row(cx, ui, p, l, t + 25.0, 0);
-    multimap_button(cx, ui, p, l, t, false);
+    multimap_button(cx, ui, p, l + 236.0, t, false);
     let cy = t + 70.5;
     let amp = 26.5;
     let line_y = (cy - l0.offset * amp).round() + 0.5;
@@ -304,8 +294,64 @@ pub(super) fn lfo(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) 
     }
 }
 
+/// Multimap view: 8 map rows in a display ending at `right`, the close
+/// button at `btn`, column labels on baseline `t + lb`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn multimap_list(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32, right: f32, btn: f32, lb: f32) {
+    let d = Rect::from_min_max(pos2(l + 4.0, t + 21.0), pos2(right, t + 183.0));
+    p.rect_filled(d, CornerRadius::same(2), gray(0x18));
+    for i in 0..LFO_MAPS {
+        map_row(cx, ui, p, l, t + 25.0 + 16.0 * i as f32, i);
+    }
+    multimap_button(cx, ui, p, btn, t, true);
+    text_at(p, l + 42.0, t + lb, Align2::CENTER_BOTTOM, "Parameter", font(FS), LABEL);
+    text_at(p, l + 116.0, t + lb, Align2::CENTER_BOTTOM, "Mode", font(FS), LABEL);
+    text_at(p, l + 193.0, t + lb, Align2::CENTER_BOTTOM, "Range", font(FS), LABEL);
+    for (a, b) in [(161.0, 173.0), (213.0, 225.0)] {
+        quad(p, Rect::from_min_max(pos2(l + a, t + lb - 3.0), pos2(l + b, t + lb - 2.0)), gray(0x3e));
+    }
+}
+
+/// Output scope in `d` around `cy` (±`amp`): the engine's history over
+/// three cycles, or `still(phase)` (−1..1, before depth / offset) while
+/// the engine is not running the device.
+/// `secs`: time window shown.
+pub(super) fn scope(cx: &mut Ctx, p: &Painter, d: Rect, cy: f32, amp: f32, secs: f32, l0: &LfoParams, still: impl Fn(f64) -> f32) {
+    let tap = dev_tap(cx.dev.id);
+    let w = d.width();
+    let mut pts = Vec::with_capacity(w as usize * 2 + 1);
+    let hz = (l0.hz(cx.app.project.tempo_bpm) as f32).max(1e-3);
+    let frames = ((tap.rate() * secs) as usize).clamp(2, daw_engine::devtap::RING / 2);
+    let h = if tap.written() > 0 && tap.rate() > 0.0 { tap.history(frames) } else { Vec::new() };
+    if h.len() >= 2 {
+        let miss = (frames - h.len()) as f32;
+        let n = (w * 2.0) as usize;
+        for x in 0..=n {
+            let fi = x as f32 / n as f32 * (frames - 1) as f32 - miss;
+            if fi < 0.0 {
+                continue;
+            }
+            let i0 = (fi.floor() as usize).min(h.len() - 1);
+            let i1 = (i0 + 1).min(h.len() - 1);
+            let v = h[i0][0] + (h[i1][0] - h[i0][0]) * (fi - i0 as f32);
+            pts.push(pos2(d.left() + x as f32 * 0.5, cy - v * amp));
+        }
+        cx.app.animating = true;
+    } else {
+        let n = (w * 2.0) as usize;
+        for x in 0..=n {
+            let ph = l0.phase as f64 + (secs * hz) as f64 * x as f64 / n as f64;
+            let out = (still(ph) * l0.depth + l0.offset).clamp(-1.0, 1.0);
+            pts.push(pos2(d.left() + x as f32 * 0.5, cy - out * amp));
+        }
+    }
+    if pts.len() > 1 {
+        p.with_clip_rect(d.shrink(1.0)).add(Shape::line(pts, Stroke::new(1.5, if cx.on { ORANGE } else { gray(0x75) })));
+    }
+}
+
 /// Metronome glyph of the synced time mode button.
-fn metronome(p: &Painter, c: Pos2, col: Color32) {
+pub(super) fn metronome(p: &Painter, c: Pos2, col: Color32) {
     let s = Stroke::new(1.0, col);
     let (b, top) = (c.y + 4.5, c.y - 4.5);
     p.add(Shape::closed_line(vec![pos2(c.x - 4.0, b), pos2(c.x - 1.5, top), pos2(c.x + 1.5, top), pos2(c.x + 4.0, b)], s));
@@ -339,6 +385,11 @@ pub(super) fn name(k: u8) -> &'static str {
         fp::PHASE => "Phase",
         fp::HOLD => "Hold",
         fp::RETRIG => "Retrigger",
+        fp::GRID => "Grid",
+        fp::SNAP => "Snap",
+        fp::TRIG => "Mode",
+        fp::POINTS => "Shape",
+        fp::PRESET => "Preset",
         _ => "Multimap",
     }
 }
@@ -368,6 +419,7 @@ pub(super) fn reset(p: &mut FxParams, k: u8) {
         fp::DEPTH => l.depth = d.depth,
         fp::OFFSET => l.offset = d.offset,
         fp::PHASE => l.phase = d.phase,
+        fp::GRID => l.grid = d.grid,
         _ => {}
     }
 }
@@ -381,6 +433,7 @@ pub(super) fn step(p: &mut FxParams, k: u8, dir: f32) {
         }
         fp::STEPS => l.steps = (l.steps as i32 + dir as i32).clamp(0, LFO_STEPS_MAX as i32) as u8,
         fp::SYNC_RATE => l.sync_rate = (l.sync_rate as i32 + dir as i32).clamp(0, LFO_SYNC.len() as i32 - 1) as u8,
+        fp::GRID => l.grid = (l.grid as i32 + dir as i32).clamp(1, daw_engine::lfo::SH_GRID_MAX as i32) as u8,
         _ => {
             if let Some(v) = norm(p, k) {
                 set_norm(p, k, v + dir / 100.0);

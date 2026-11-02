@@ -222,8 +222,16 @@ pub(super) fn compressor(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) 
     }
     for (i, (m, label)) in [(CompMode::Peak, "Peak"), (CompMode::Rms, "RMS"), (CompMode::Expand, "Expand")].into_iter().enumerate() {
         cx.salt = i as u32;
-        if tbutton(cx, ui, p, Rect::from_min_size(pos2(rx, t + 62.0 + 16.0 * i as f32), vec2(51.0, 13.0)), cmp::MODE, label, c0.mode == m, true)
-            && let FxParams::Compressor(c) = &mut cx.params
+        if tbutton(
+            cx,
+            ui,
+            p,
+            Rect::from_min_size(pos2(rx, t + 62.0 + 16.0 * i as f32), vec2(51.0, 13.0)),
+            cmp::MODE,
+            label,
+            c0.mode == m,
+            true,
+        ) && let FxParams::Compressor(c) = &mut cx.params
         {
             c.mode = m;
         }
@@ -282,7 +290,8 @@ pub(super) fn compressor(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) 
         text_at(p, l + 278.0, t + 180.0, Align2::LEFT_BOTTOM, "Look.", font(FS), LABEL);
         let la = ["0 ms", "1 ms", "10 ms"];
         let lr = Rect::from_min_max(pos2(l + 305.0, t + 169.0), pos2(l + 343.0, t + 184.0));
-        if let Some(i) = text_menu(cx, ui, p, lr, cmp::LOOKAHEAD, l + 307.0, t + 180.0, Some(l + 334.0), (c0.lookahead as usize).min(2), &la, true, TEAL)
+        if let Some(i) =
+            text_menu(cx, ui, p, lr, cmp::LOOKAHEAD, l + 307.0, t + 180.0, Some(l + 334.0), (c0.lookahead as usize).min(2), &la, true, TEAL)
             && let FxParams::Compressor(c) = &mut cx.params
         {
             c.lookahead = i as u8;
@@ -406,7 +415,16 @@ fn curve(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32, c0: &Comp
 /// Activity view: header (Thresh, GR / Output, Out), the level history and
 /// the threshold line (draggable).
 #[allow(clippy::too_many_arguments)]
-fn activity(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, dp: &Painter, l: f32, t: f32, c0: &CompressorParams, tap: &daw_engine::devtap::DevTap) {
+fn activity(
+    cx: &mut Ctx,
+    ui: &mut egui::Ui,
+    p: &Painter,
+    dp: &Painter,
+    l: f32,
+    t: f32,
+    c0: &CompressorParams,
+    tap: &daw_engine::devtap::DevTap,
+) {
     quad(p, Rect::from_min_max(pos2(l + 144.0, t + 36.0), pos2(l + 406.0, t + 37.0)), gray(0x3e));
     text_at(p, l + 150.0, t + 30.0, Align2::LEFT_BOTTOM, "Thresh", font(FS), LABEL);
     drag_text(cx, ui, p, l + 187.0, t + 30.0, cmp::THRESHOLD, &db2(c0.threshold), true, TEAL);

@@ -624,6 +624,12 @@ pub mod fp {
     pub const HOLD: u8 = 12;
     pub const RETRIG: u8 = 13;
     pub const MULTIMAP: u8 = 14;
+    /// Shaper.
+    pub const GRID: u8 = 15;
+    pub const SNAP: u8 = 16;
+    pub const TRIG: u8 = 17;
+    pub const POINTS: u8 = 18;
+    pub const PRESET: u8 = 19;
     pub const MAP: u8 = 20;
     pub const M_AMOUNT: u8 = 0;
     pub const M_MIN: u8 = 1;
@@ -663,6 +669,7 @@ fn lfo_norm(l: &LfoParams, k: u8) -> Option<f32> {
         fp::DEPTH => l.depth,
         fp::OFFSET => (l.offset + 1.0) / 2.0,
         fp::PHASE => l.phase,
+        fp::GRID if l.shaper => (l.grid.clamp(1, SH_GRID_MAX) - 1) as f32 / (SH_GRID_MAX - 1) as f32,
         _ => return None,
     })
 }
@@ -692,6 +699,7 @@ fn lfo_set(l: &mut LfoParams, k: u8, v: f32) {
         fp::DEPTH => l.depth = v,
         fp::OFFSET => l.offset = v * 2.0 - 1.0,
         fp::PHASE => l.phase = v,
+        fp::GRID if l.shaper => l.grid = 1 + (v * (SH_GRID_MAX - 1) as f32).round() as u8,
         _ => {}
     }
 }
@@ -975,6 +983,7 @@ mod tests {
             FxParams::Glue(GlueParams::default()),
             FxParams::Limiter(LimiterParams::default()),
             FxParams::Lfo(LfoParams::default()),
+            FxParams::Lfo(LfoParams::shaper()),
             FxParams::EqThree(EqThreeParams::default()),
             FxParams::Chorus(ChorusParams::default()),
             FxParams::AutoFilter(AutoFilterParams::default()),

@@ -91,9 +91,8 @@ pub(super) fn spectrum(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) {
 
     // Channel.
     lab("Channel", 63.0);
-    for (i, (c, name, x, w)) in [(SpecChannel::L, "L", 46.0, 13.0), (SpecChannel::R, "R", 62.0, 13.0), (SpecChannel::LR, "L+R", 78.0, 22.0)]
-        .into_iter()
-        .enumerate()
+    for (i, (c, name, x, w)) in
+        [(SpecChannel::L, "L", 46.0, 13.0), (SpecChannel::R, "R", 62.0, 13.0), (SpecChannel::LR, "L+R", 78.0, 22.0)].into_iter().enumerate()
     {
         cx.salt = i as u32;
         if super::dynamics::tbutton(cx, ui, p, rr(x, 54.0, w), spp::CHANNEL, name, s0.channel == c, true) {
@@ -120,7 +119,9 @@ pub(super) fn spectrum(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) {
 
     // Scale X.
     lab("Scale X", 161.0);
-    for (i, (sc, name, x)) in [(SpecScale::Lin, "Lin", 46.0), (SpecScale::Log, "Log", 71.0), (SpecScale::St, "ST", 96.0)].into_iter().enumerate() {
+    for (i, (sc, name, x)) in
+        [(SpecScale::Lin, "Lin", 46.0), (SpecScale::Log, "Log", 71.0), (SpecScale::St, "ST", 96.0)].into_iter().enumerate()
+    {
         cx.salt = i as u32;
         if super::dynamics::tbutton(cx, ui, p, rr(x, 151.0, 22.0), spp::SCALE, name, s0.scale == sc, true) {
             with(cx, |s| s.scale = sc);

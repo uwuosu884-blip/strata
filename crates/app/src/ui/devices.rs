@@ -17,6 +17,7 @@ mod eq8;
 mod lfo;
 mod modfx;
 mod rack;
+mod shaper;
 mod spec;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
 
@@ -52,6 +53,7 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Gate(g) => dynamics::gate_width(&g),
         FxParams::Glue(g) => dynamics::glue_width(&g),
         FxParams::Limiter(_) => dynamics::LIMITER_W,
+        FxParams::Lfo(l) if l.shaper => shaper::WIDTH,
         FxParams::Lfo(_) => lfo::WIDTH,
         FxParams::EqThree(_) => modfx::EQ3_W,
         FxParams::Chorus(_) => modfx::CHO_W,
@@ -819,6 +821,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Gate(_) => dynamics::gate(&mut cx, ui, &p, l, t),
         FxParams::Glue(_) => dynamics::glue(&mut cx, ui, &p, l, t),
         FxParams::Limiter(_) => dynamics::limiter(&mut cx, ui, &p, l, t),
+        FxParams::Lfo(lp) if lp.shaper => shaper::shaper(&mut cx, ui, &p, l, t),
         FxParams::Lfo(_) => lfo::lfo(&mut cx, ui, &p, l, t),
         FxParams::EqThree(_) => modfx::eq_three(&mut cx, ui, &p, r),
         FxParams::Chorus(_) => modfx::chorus(&mut cx, ui, &p, r),
@@ -873,7 +876,8 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
 /// there to place the device precisely).
 pub fn header_drag_hover(app: &mut DawApp, ui: &egui::Ui, resp: &Response, t: usize) {
     let key = egui::Id::unique("dev_drag_hover");
-    let dragging = resp.dnd_hover_payload::<DragItem>().is_some_and(|d| matches!(*d, DragItem::ChainDevice { .. } | DragItem::AudioEffect(_)));
+    let dragging =
+        resp.dnd_hover_payload::<DragItem>().is_some_and(|d| matches!(*d, DragItem::ChainDevice { .. } | DragItem::AudioEffect(_)));
     if !dragging {
         if ui.data(|d| d.get_temp::<(usize, f64)>(key)).is_some_and(|(k, _)| k == t) {
             ui.data_mut(|d| d.remove::<(usize, f64)>(key));

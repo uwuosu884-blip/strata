@@ -433,7 +433,15 @@ pub(super) fn sc_columns(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, t: f32, e
             );
         }
         text_at(p, cx0, t + 122.0, Align2::CENTER_BOTTOM, "Mix", font(FS), if ext_on { text() } else { dim() });
-        value_box(cx, ui, p, Rect::from_min_size(pos2(e, t + 125.0), vec2(69.0, 13.0)), sc::MIX, &format!("{:.1} %", s.mix * 100.0), ext_on);
+        value_box(
+            cx,
+            ui,
+            p,
+            Rect::from_min_size(pos2(e, t + 125.0), vec2(69.0, 13.0)),
+            sc::MIX,
+            &format!("{:.1} %", s.mix * 100.0),
+            ext_on,
+        );
         text_at(p, cx0, t + 166.0, Align2::CENTER_BOTTOM, "SC Gain", font(FS), if ext_on { text() } else { dim() });
         let gain = if s.gain <= SC_GAIN_MIN { "-inf dB".to_string() } else { format!("{} dB", sig3(s.gain)) };
         value_box(cx, ui, p, Rect::from_min_size(pos2(e, t + 169.0), vec2(69.0, 13.0)), sc::GAIN, &gain, ext_on);

@@ -957,11 +957,7 @@ impl CompressorParams {
     /// Auto makeup (dB): undoes the reduction of a 0 dBFS signal. Not with
     /// an external sidechain or in Expand mode.
     pub fn makeup_db(&self) -> f32 {
-        if !self.makeup || self.mode == CompMode::Expand || (self.sc.on && self.sc.source != 0) {
-            0.0
-        } else {
-            self.curve(0.0)
-        }
+        if !self.makeup || self.mode == CompMode::Expand || (self.sc.on && self.sc.source != 0) { 0.0 } else { self.curve(0.0) }
     }
 
     pub fn latency(&self, sr: f32) -> usize {
@@ -1177,7 +1173,8 @@ mod tests {
     fn compressor_reduces_loud_signal_and_lookahead_delays() {
         let mut st = CompressorState::new(None);
         // DC test signal: the sidechain filter (on by default) would remove it.
-        let mut p = CompressorParams { threshold: -20.0, ratio: 100.0, knee: 0.0, mode: CompMode::Peak, attack: 0.01, ..Default::default() };
+        let mut p =
+            CompressorParams { threshold: -20.0, ratio: 100.0, knee: 0.0, mode: CompMode::Peak, attack: 0.01, ..Default::default() };
         p.sc.eq_on = false;
         let (mut l, mut r) = (vec![0.5f32; 4800], vec![0.5f32; 4800]);
         st.process(&p, &mut l, &mut r, 48_000.0);

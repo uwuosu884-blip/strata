@@ -1053,7 +1053,13 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
     }
     if ui.rect_contains_pointer(rect) {
         let (d, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
-        let dx = if d.x != 0.0 { d.x } else if shift { d.y } else { 0.0 };
+        let dx = if d.x != 0.0 {
+            d.x
+        } else if shift {
+            d.y
+        } else {
+            0.0
+        };
         app.dev_scroll -= dx;
     }
     app.dev_scroll = app.dev_scroll.clamp(0.0, (app.dev_content_w - rect.width() + 60.0).max(0.0));

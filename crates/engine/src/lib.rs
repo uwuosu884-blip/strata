@@ -23,10 +23,10 @@ pub mod params;
 pub mod pdc;
 pub mod pv;
 pub mod rack;
-pub mod spectrum;
 mod sample;
 mod smoother;
 mod song;
+pub mod spectrum;
 mod status;
 mod track;
 mod transport;
@@ -42,8 +42,7 @@ pub use instruments::Instrument;
 pub use instruments::adsr::AdsrParams;
 pub use instruments::sampler::{DRUM_BASE_NOTE, DRUM_PADS, DrumPad, SamplerParams};
 pub use instruments::synth::{SynthParams, Wave};
-pub use lfo::{LfoMap, LfoParams, LfoWave};
-pub use spectrum::{SpecChannel, SpecScale, SpectrumParams};
+pub use lfo::{LfoMap, LfoParams, LfoWave, SH_GRID_MAX, SH_PTS, ShPt, ShTrig};
 pub use modfx::{AutoFilterParams, AutoPanParams, ChorusParams, EqThreeParams};
 pub use rack::{ChainMix, RackParams, Zone};
 pub use sample::{PEAK_BLOCK, Peak, SampleBuffer, peaks_of};
@@ -52,6 +51,7 @@ pub use song::{
     MAX_TRACKS, MIDI_ALL_INS, MIDI_KEYBOARD, MIDI_NO_PORT, Monitor, Note, NoteMpe, Song, SongTrack, Tap, TrackInput, TrackOutput,
     WarpSetup, fade_gain,
 };
+pub use spectrum::{SpecChannel, SpecScale, SpectrumParams};
 pub use status::{FX_METERS, PendingLaunch, RecordState, StatusSnapshot, TrackSnapshot};
 pub use transport::{MusicalPosition, Transport};
 pub use warp::{LoopMode, StretchMode, StretchParams, WarpMap};

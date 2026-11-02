@@ -60,6 +60,93 @@ impl LfoWave {
     }
 }
 
+/// Shaper breakpoints (max).
+pub const SH_PTS: usize = 32;
+pub const SH_GRID_MAX: u8 = 32;
+
+/// A Shaper breakpoint: `x` 0..1 of the cycle, `y` 0..1 (top = 1), `c`
+/// curvature −1..1 of the segment to the next point.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShPt {
+    pub x: f32,
+    pub y: f32,
+    pub c: f32,
+}
+
+/// Shaper playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ShTrig {
+    #[default]
+    Loop,
+    /// One cycle per trigger (R), then holds the end value.
+    OneShot,
+    /// Phase sets the position.
+    Manual,
+}
+
+/// Segment warp: `c` > 0 starts slow, < 0 starts fast.
+pub fn sh_warp(t: f32, c: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    // Exponential bend like Live's Shaper (c < 0: fast start); k = -6c.
+    let k = -6.0 * c.clamp(-1.0, 1.0);
+    if k.abs() < 1e-3 { t } else { (1.0 - (-k * t).exp()) / (1.0 - (-k).exp()) }
+}
+
+/// Shaper presets (Clear is index 0: no points).
+pub fn sh_preset(i: usize) -> ([ShPt; SH_PTS], u8) {
+    let mut pts = [ShPt::default(); SH_PTS];
+    let list: &[(f32, f32, f32)] = match i {
+        // Decay.
+        1 => &[(0.0, 0.0, 0.0), (0.0, 1.0, -0.475), (1.0, 0.0, 0.0)],
+        // Rise.
+        2 => &[(0.0, 0.0, -0.475), (1.0, 1.0, 0.0)],
+        // Wave.
+        3 => &[(0.0, 0.5, -0.45), (0.25, 1.0, 0.45), (0.5, 0.5, -0.45), (0.75, 0.0, 0.45), (1.0, 0.5, 0.0)],
+        // Saw ramps.
+        4 => &[
+            (0.0, 0.0, 0.3),
+            (0.25, 1.0, 0.0),
+            (0.25, 0.0, 0.3),
+            (0.5, 1.0, 0.0),
+            (0.5, 0.0, 0.3),
+            (0.75, 1.0, 0.0),
+            (0.75, 0.0, 0.3),
+            (1.0, 1.0, 0.0),
+        ],
+        // Bounce.
+        5 => &[
+            (0.0, 1.0, 0.5),
+            (0.25, 0.3, -0.5),
+            (0.5, 1.0, 0.5),
+            (0.625, 0.5, -0.5),
+            (0.75, 1.0, 0.5),
+            (0.8125, 0.7, -0.5),
+            (0.875, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+        ],
+        // Spikes.
+        6 => &[
+            (0.0, 0.5, 0.0),
+            (0.1, 0.55, 0.0),
+            (0.18, 0.35, 0.0),
+            (0.3, 0.6, 0.0),
+            (0.42, 0.45, 0.0),
+            (0.5, 1.0, 0.0),
+            (0.56, 0.05, 0.0),
+            (0.66, 0.65, 0.0),
+            (0.78, 0.4, 0.0),
+            (0.9, 0.55, 0.0),
+            (1.0, 0.5, 0.0),
+        ],
+        _ => &[],
+    };
+    for (d, &(x, y, c)) in pts.iter_mut().zip(list) {
+        *d = ShPt { x, y, c };
+    }
+    (pts, list.len() as u8)
+}
+
 /// Tempo-synced rates (beats per cycle) and their labels.
 pub const LFO_SYNC: [(f64, &str); 18] = [
     (1.0 / 16.0, "1/64"),
@@ -153,6 +240,14 @@ pub struct LfoParams {
     /// Map button armed (UI only): the next clicked parameter is mapped.
     #[serde(skip)]
     pub arm: Option<u8>,
+    /// Shaper (breakpoint envelope) instead of the LFO waveforms.
+    pub shaper: bool,
+    pub pts: [ShPt; SH_PTS],
+    pub npts: u8,
+    /// Grid divisions (1..[`SH_GRID_MAX`]) and Snap.
+    pub grid: u8,
+    pub snap: bool,
+    pub trig: ShTrig,
 }
 
 impl Default for LfoParams {
@@ -175,11 +270,47 @@ impl Default for LfoParams {
             maps: [LfoMap::default(); LFO_MAPS],
             multimap: false,
             arm: None,
+            shaper: false,
+            pts: [ShPt::default(); SH_PTS],
+            npts: 0,
+            grid: 4,
+            snap: true,
+            trig: ShTrig::Loop,
         }
     }
 }
 
 impl LfoParams {
+    /// A new Shaper (Live's default: decay, 1/4 synced).
+    pub fn shaper() -> Self {
+        let (pts, npts) = sh_preset(1);
+        Self { shaper: true, pts, npts, sync: true, sync_rate: 8, ..Default::default() }
+    }
+
+    /// Shaper value 0..1 at cycle phase `ph` (0..1).
+    pub fn shaper_at(&self, ph: f64) -> f32 {
+        let n = (self.npts as usize).min(SH_PTS);
+        if n == 0 {
+            return 0.5;
+        }
+        let pts = &self.pts[..n];
+        let x = ph.clamp(0.0, 1.0) as f32;
+        if x < pts[0].x {
+            return pts[0].y;
+        }
+        // Last segment starting at or before x (vertical jumps take the later point).
+        let i = pts.iter().rposition(|p| p.x <= x).unwrap_or(0);
+        if i + 1 >= n {
+            return pts[n - 1].y;
+        }
+        let (a, b) = (pts[i], pts[i + 1]);
+        let w = b.x - a.x;
+        if w <= 1e-6 {
+            return b.y;
+        }
+        a.y + (b.y - a.y) * sh_warp((x - a.x) / w, a.c)
+    }
+
     /// Cycles per second at `tempo` BPM.
     pub fn hz(&self, tempo: f64) -> f64 {
         if self.sync {
@@ -248,6 +379,8 @@ pub struct LfoState {
     pub out: f32,
     hop: usize,
     tap: Option<Arc<DevTap>>,
+    /// Shaper 1-Shot position (cycles since the trigger).
+    shot: f64,
 }
 
 impl LfoState {
@@ -266,6 +399,7 @@ impl LfoState {
             out: 0.0,
             hop: 0,
             tap: id.map(dev_tap),
+            shot: 0.0,
         }
     }
 
@@ -284,6 +418,7 @@ impl LfoState {
         if self.retrig != Some(p.retrig) {
             if self.retrig.is_some() {
                 self.pos = 0.0;
+                self.shot = 0.0;
             }
             self.retrig = Some(p.retrig);
         }
@@ -307,7 +442,23 @@ impl LfoState {
             self.publish(h, n, sr);
             return h;
         }
-        let ph = self.pos + p.phase.clamp(0.0, 1.0) as f64;
+        let ph = if p.shaper {
+            match p.trig {
+                ShTrig::Loop => self.pos + p.phase.clamp(0.0, 1.0) as f64,
+                // One cycle from the last trigger (synced rates still run free).
+                ShTrig::OneShot => {
+                    if p.sync && beat.is_some() {
+                        self.shot += hz * dt;
+                    } else {
+                        self.shot = self.pos;
+                    }
+                    (self.shot + p.phase.clamp(0.0, 1.0) as f64).min(0.999_999)
+                }
+                ShTrig::Manual => (p.phase.clamp(0.0, 1.0) as f64).min(0.999_999),
+            }
+        } else {
+            self.pos + p.phase.clamp(0.0, 1.0) as f64
+        };
         let cyc = ph.floor() as i64;
         let frac = ph - ph.floor();
         if cyc != self.cycle {
@@ -320,9 +471,10 @@ impl LfoState {
             self.next = self.rand();
             self.cycle = cyc;
         }
-        let steps = if p.wave.steppable() && p.steps >= 2 { p.steps.min(LFO_STEPS_MAX) as f64 } else { 0.0 };
+        let steps = if !p.shaper && p.wave.steppable() && p.steps >= 2 { p.steps.min(LFO_STEPS_MAX) as f64 } else { 0.0 };
         let q = if steps > 0.0 { (frac * steps).floor() / steps } else { frac };
         let mut v = match p.wave {
+            _ if p.shaper => p.shaper_at(frac) * 2.0 - 1.0,
             LfoWave::Random => self.cur,
             LfoWave::Bin => self.cur.signum(),
             LfoWave::Glider => {
@@ -438,6 +590,45 @@ mod tests {
                 assert!((-1.0..=1.0).contains(&v));
             }
         }
+    }
+
+    #[test]
+    fn shaper_breakpoints_modes() {
+        let p = LfoParams::shaper();
+        assert!(p.shaper && p.sync && p.npts == 3);
+        assert_eq!(p.shaper_at(0.0), 1.0);
+        assert!(p.shaper_at(1.0).abs() < 1e-6);
+        // Decay: fast start (below the straight line at mid-cycle).
+        assert!(p.shaper_at(0.5) < 0.5);
+        // Default decay measured from Live 12: 0.727 / 0.455 / 0.194 / 0.062.
+        for (x, v) in [(0.1, 0.727), (0.25, 0.455), (0.5, 0.194), (0.75, 0.062)] {
+            assert!((p.shaper_at(x) - v).abs() < 0.012, "{x}: {}", p.shaper_at(x));
+        }
+        let (pts, n) = sh_preset(4);
+        let saw = LfoParams { pts, npts: n, ..p };
+        // Vertical jump at 0.25 takes the later point.
+        assert!(saw.shaper_at(0.25) < 1e-6 && saw.shaper_at(0.2499) > 0.9);
+        let clear = LfoParams { npts: 0, ..p };
+        assert_eq!(clear.shaper_at(0.3), 0.5);
+        // Manual: the phase sets the position (1 → bottom → −1 at 0.999).
+        let m = LfoParams { trig: ShTrig::Manual, phase: 0.0, sync: false, ..p };
+        let mut st = LfoState::new(None);
+        assert!((st.tick(&m, 4800, 48_000.0, 120.0, None) - 1.0).abs() < 1e-5);
+        assert!((st.tick(&m, 4800, 48_000.0, 120.0, None) - 1.0).abs() < 1e-5, "does not move");
+        // 1-Shot: one cycle, then holds the end value.
+        let o = LfoParams { trig: ShTrig::OneShot, sync: false, rate: 1.0, ..p };
+        let mut st = LfoState::new(None);
+        let a = st.tick(&o, 2400, 48_000.0, 120.0, None);
+        assert!(a > 0.5);
+        let b = st.tick(&o, 96_000, 48_000.0, 120.0, None);
+        assert!(b < -0.99, "{b}");
+        let c = st.tick(&o, 24_000, 48_000.0, 120.0, None);
+        assert!(c < -0.99, "held: {c}");
+        // Loop keeps cycling.
+        let lp = LfoParams { sync: false, rate: 1.0, ..p };
+        let mut st = LfoState::new(None);
+        st.tick(&lp, 48_000, 48_000.0, 120.0, None);
+        assert!(st.tick(&lp, 240, 48_000.0, 120.0, None) > 0.9);
     }
 
     #[test]

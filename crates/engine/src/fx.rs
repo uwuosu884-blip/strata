@@ -244,6 +244,7 @@ impl FxParams {
             FxParams::Gate(_) => "Gate",
             FxParams::Glue(_) => "Glue Compressor",
             FxParams::Limiter(_) => "Limiter",
+            FxParams::Lfo(l) if l.shaper => "Shaper",
             FxParams::Lfo(_) => "LFO",
             FxParams::EqThree(_) => "EQ Three",
             FxParams::Chorus(_) => "Chorus-Ensemble",
