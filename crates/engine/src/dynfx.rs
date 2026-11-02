@@ -842,6 +842,264 @@ impl LimiterState {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Compressor (Live 12): Peak / RMS / Expand, knee, lookahead, Lin / Log
+// envelope, auto release, makeup, output, dry/wet, full sidechain.
+// ----------------------------------------------------------------------------
+
+pub const COMP_THRESH: (f32, f32) = (-70.0, 6.0);
+pub const COMP_ATTACK: (f32, f32) = (0.01, 1000.0);
+pub const COMP_RELEASE: (f32, f32) = (1.0, 3000.0);
+pub const COMP_KNEE_MAX: f32 = 18.0;
+pub const COMP_OUT_MAX: f32 = 36.0;
+/// Lookahead choices (ms).
+pub const COMP_LOOKAHEAD: [f32; 3] = [0.0, 1.0, 10.0];
+/// Ratios at or above this are ∞ : 1.
+pub const COMP_RATIO_INF: f32 = 100.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CompMode {
+    Peak,
+    #[default]
+    Rms,
+    Expand,
+}
+
+/// Display: collapsed (meters only), transfer curve, activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CompView {
+    Collapsed,
+    Curve,
+    #[default]
+    Activity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompressorParams {
+    pub threshold: f32,
+    /// Compression ratio (1 ..= [`COMP_RATIO_INF`]); Expand derives its
+    /// own ratio from it ([`CompressorParams::expand_ratio`]).
+    pub ratio: f32,
+    pub attack: f32,
+    pub release: f32,
+    pub auto_release: bool,
+    pub knee: f32,
+    /// Index into [`COMP_LOOKAHEAD`].
+    pub lookahead: u8,
+    /// Envelope: logarithmic (true) or linear.
+    pub log_env: bool,
+    pub mode: CompMode,
+    pub makeup: bool,
+    pub output: f32,
+    pub dry_wet: f32,
+    pub view: CompView,
+    /// Activity view shows the output level instead of the gain reduction.
+    pub show_output: bool,
+    pub sc: Sidechain,
+}
+
+impl Default for CompressorParams {
+    fn default() -> Self {
+        Self {
+            threshold: 0.0,
+            ratio: 4.0,
+            attack: 1.0,
+            release: 30.0,
+            auto_release: false,
+            knee: 6.0,
+            lookahead: 0,
+            log_env: true,
+            mode: CompMode::Rms,
+            makeup: false,
+            output: 0.0,
+            dry_wet: 1.0,
+            view: CompView::Activity,
+            show_output: false,
+            sc: Sidechain { freq: 80.0, eq_on: true, ..Sidechain::default() },
+        }
+    }
+}
+
+impl CompressorParams {
+    /// Expansion ratio 1 : x shown in Expand mode (Live: 3.38 → 1.15).
+    pub fn expand_ratio(&self) -> f32 {
+        1.0 + 0.2136 * (1.0 - 1.0 / self.ratio.clamp(1.0, COMP_RATIO_INF))
+    }
+
+    fn slope(&self) -> f32 {
+        if self.ratio >= COMP_RATIO_INF { 1.0 } else { 1.0 - 1.0 / self.ratio.max(1.0) }
+    }
+
+    /// Static curve: gain change (dB, positive = reduction) at detector
+    /// level `x` dB. Soft knee from threshold − knee to threshold + knee
+    /// (Live: 10 dB knee at −20 dB starts at −30, full at −10).
+    pub fn curve(&self, x: f32) -> f32 {
+        let w = 2.0 * self.knee.clamp(0.0, COMP_KNEE_MAX);
+        let (s, d) = match self.mode {
+            CompMode::Expand => (self.expand_ratio() - 1.0, self.threshold - x),
+            _ => (self.slope(), x - self.threshold),
+        };
+        if 2.0 * d <= -w {
+            0.0
+        } else if 2.0 * d >= w {
+            s * d
+        } else {
+            s * (d + w / 2.0).powi(2) / (2.0 * w)
+        }
+    }
+
+    /// Output level (dB) of the static curve for input `x` dB (no makeup).
+    pub fn transfer(&self, x: f32) -> f32 {
+        x - self.curve(x)
+    }
+
+    /// Auto makeup (dB): undoes the reduction of a 0 dBFS signal. Not with
+    /// an external sidechain or in Expand mode.
+    pub fn makeup_db(&self) -> f32 {
+        if !self.makeup || self.mode == CompMode::Expand || (self.sc.on && self.sc.source != 0) {
+            0.0
+        } else {
+            self.curve(0.0)
+        }
+    }
+
+    pub fn latency(&self, sr: f32) -> usize {
+        (COMP_LOOKAHEAD[(self.lookahead as usize).min(2)] * 0.001 * sr).round() as usize
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressorState {
+    pub(crate) sc: ScState,
+    delay: Delay,
+    /// RMS mean square, smoothed reduction (dB) and its slow auto part,
+    /// linear-envelope gain.
+    ms: f32,
+    gr: f32,
+    gr_slow: f32,
+    g_lin: f32,
+    hist: Hist,
+    tap: Option<Arc<DevTap>>,
+}
+
+/// Tap slots: 0 GR now (dB), 1/2 input / output peak (held), 3 detector
+/// level now (dB), 4 GR peak (held), 5/6 input / output RMS.
+impl CompressorState {
+    pub fn new(id: Option<u64>) -> Self {
+        Self {
+            sc: ScState::default(),
+            delay: Delay::new(),
+            ms: 0.0,
+            gr: 0.0,
+            gr_slow: 0.0,
+            g_lin: 1.0,
+            hist: Hist::default(),
+            tap: id.map(dev_tap),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.sc.reset();
+        self.delay.reset();
+        self.ms = 0.0;
+        self.gr = 0.0;
+        self.gr_slow = 0.0;
+        self.g_lin = 1.0;
+    }
+
+    pub fn process(&mut self, p: &CompressorParams, l: &mut [f32], r: &mut [f32], sr: f32) {
+        let la = p.latency(sr);
+        let g_ext = self.sc.prepare(&p.sc, sr);
+        let atk = coef(p.attack.clamp(COMP_ATTACK.0, COMP_ATTACK.1), sr);
+        let rel_ms = p.release.clamp(COMP_RELEASE.0, COMP_RELEASE.1);
+        // Auto release: a fast stage for transients over a slow one for
+        // sustained reduction (program dependent).
+        let (rel, rel_slow) = if p.auto_release { (coef(40.0, sr), coef(1500.0, sr)) } else { (coef(rel_ms, sr), 0.0) };
+        let slow_atk = coef(400.0, sr);
+        let rms_c = coef(10.0, sr);
+        let post = db_lin(p.makeup_db() + p.output.clamp(-COMP_OUT_MAX, COMP_OUT_MAX));
+        let wet = p.dry_wet.clamp(0.0, 1.0);
+        let (mut in_pk, mut out_pk, mut gr_pk, mut in_ms, mut out_ms) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let mut det_db = -120.0;
+        for i in 0..l.len() {
+            let (dl, dr) = self.sc.detect(&p.sc, i, l[i], r[i], g_ext);
+            let x = match p.mode {
+                CompMode::Peak => dl.abs().max(dr.abs()),
+                _ => {
+                    let sq = 0.5 * (dl * dl + dr * dr);
+                    self.ms = sq + (self.ms - sq) * rms_c;
+                    // √2: a full-scale sine reads 0 dB like the peak detector.
+                    (2.0 * self.ms).sqrt()
+                }
+            };
+            det_db = lin_db(x);
+            let target = p.curve(det_db);
+            let g = if p.log_env {
+                // Logarithmic: smoothing in dB (deep reduction recovers fast).
+                if target > self.gr {
+                    self.gr = target + (self.gr - target) * atk;
+                } else if p.auto_release {
+                    self.gr_slow = if target > self.gr_slow {
+                        target + (self.gr_slow - target) * slow_atk
+                    } else {
+                        target + (self.gr_slow - target) * rel_slow
+                    };
+                    let fast = target + (self.gr - target) * rel;
+                    self.gr = fast.max(self.gr_slow.min(self.gr));
+                } else {
+                    self.gr = target + (self.gr - target) * rel;
+                }
+                db_lin(-self.gr)
+            } else {
+                // Linear: smoothing of the gain factor itself.
+                let gt = db_lin(-target);
+                let c = if gt < self.g_lin {
+                    atk
+                } else if p.auto_release {
+                    if self.g_lin < 0.7 { rel_slow.min(coef(400.0, sr)) } else { rel }
+                } else {
+                    rel
+                };
+                self.g_lin = gt + (self.g_lin - gt) * c;
+                self.gr = -lin_db(self.g_lin);
+                self.g_lin
+            };
+            let [a0, b0] = self.delay.tick([l[i], r[i]], la);
+            let (a, b) = (a0 * g * post, b0 * g * post);
+            let (a, b) = (a0 * (1.0 - wet) + a * wet, b0 * (1.0 - wet) + b * wet);
+            let ip = a0.abs().max(b0.abs());
+            in_pk = in_pk.max(ip);
+            in_ms += 0.5 * (a0 * a0 + b0 * b0);
+            gr_pk = gr_pk.max(self.gr);
+            if p.sc.listen {
+                l[i] = dl;
+                r[i] = dr;
+            } else {
+                l[i] = a;
+                r[i] = b;
+            }
+            let op = a.abs().max(b.abs());
+            out_pk = out_pk.max(op);
+            out_ms += 0.5 * (a * a + b * b);
+            if let Some(t) = &self.tap {
+                // History: input, output, GR (dB / 100), detector.
+                self.hist.add(t, sr, [ip, op, self.gr.max(0.0) / 100.0, x]);
+            }
+        }
+        if let Some(t) = &self.tap {
+            let n = l.len().max(1) as f32;
+            t.set(0, self.gr);
+            t.raise(1, in_pk);
+            t.raise(2, out_pk);
+            t.set(3, det_db);
+            t.raise(4, gr_pk);
+            t.raise(5, (in_ms / n).sqrt());
+            t.raise(6, (out_ms / n).sqrt());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +1153,42 @@ mod tests {
         let (mut l, mut r) = (sine(4096, 440.0, 0.01), sine(4096, 440.0, 0.01));
         st.process(&p, &mut l, &mut r, 48_000.0);
         assert!(l[2400..].iter().fold(0.0f32, |m, x| m.max(x.abs())) > 0.0099);
+    }
+
+    #[test]
+    fn compressor_curve_ratio_knee_expand() {
+        let p = CompressorParams { threshold: -20.0, ratio: 4.0, knee: 0.0, ..Default::default() };
+        assert_eq!(p.curve(-30.0), 0.0);
+        assert!((p.curve(0.0) - 15.0).abs() < 1e-4, "20 dB over at 4:1 → 15 dB GR");
+        let k = CompressorParams { knee: 10.0, ..p };
+        assert_eq!(k.curve(-30.0), 0.0);
+        assert!(k.curve(-25.0) > 0.0);
+        assert!(k.curve(-20.0) > 0.0 && k.curve(-20.0) < 2.0);
+        assert!((k.curve(-10.0) - 7.5).abs() < 1e-4);
+        let e = CompressorParams { mode: CompMode::Expand, ratio: 3.38, ..p };
+        assert!((e.expand_ratio() - 1.15).abs() < 0.005);
+        assert_eq!(e.curve(-10.0), 0.0);
+        assert!((e.curve(-40.0) - 20.0 * (e.expand_ratio() - 1.0)).abs() < 1e-3);
+        let m = CompressorParams { makeup: true, ..p };
+        assert!((m.makeup_db() - 15.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compressor_reduces_loud_signal_and_lookahead_delays() {
+        let mut st = CompressorState::new(None);
+        let p = CompressorParams { threshold: -20.0, ratio: 100.0, knee: 0.0, mode: CompMode::Peak, attack: 0.01, ..Default::default() };
+        let (mut l, mut r) = (vec![0.5f32; 4800], vec![0.5f32; 4800]);
+        st.process(&p, &mut l, &mut r, 48_000.0);
+        let out = lin_db(l[4000]);
+        assert!((out + 20.0).abs() < 0.5, "limited near the threshold: {out}");
+        let q = CompressorParams { lookahead: 2, threshold: 6.0, ..p };
+        assert_eq!(q.latency(48_000.0), 480);
+        let mut st = CompressorState::new(None);
+        let mut l = vec![0.0f32; 1000];
+        l[0] = 1.0;
+        let mut r = l.clone();
+        st.process(&q, &mut l, &mut r, 48_000.0);
+        assert_eq!(l.iter().position(|x| *x > 0.5), Some(480));
     }
 
     #[test]

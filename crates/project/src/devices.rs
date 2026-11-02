@@ -17,7 +17,7 @@ pub use daw_engine::rack::{CHAIN_VOL_MAX, CHAIN_VOL_MIN, MACROS, ZONE_MAX};
 pub use daw_engine::{AlignDelayParams, ChannelMode, DelayMode, EqBand, EqEightParams, EqFilter, EqMode, FxParams, UtilityParams};
 pub use daw_engine::{ChainMix, RackParams, Zone};
 pub use daw_engine::{DevTap, dev_tap};
-pub use daw_engine::{GateParams, GlueParams, LfoMap, LfoParams, LfoWave, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
+pub use daw_engine::{CompMode, CompView, CompressorParams, GateParams, GlueParams, LfoMap, LfoParams, LfoWave, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
 use serde::{Deserialize, Serialize};
 
 /// One device in a chain.
@@ -239,13 +239,14 @@ fn yes() -> bool {
 }
 
 /// Audio effects offered by the browser (name, default parameters).
-pub fn audio_effects() -> [(&'static str, FxParams); 12] {
+pub fn audio_effects() -> [(&'static str, FxParams); 13] {
     [
         ("Audio Effect Rack", FxParams::Rack(RackParams::default())),
         ("Align Delay", FxParams::AlignDelay(AlignDelayParams::default())),
         ("Auto Filter", FxParams::AutoFilter(AutoFilterParams::default())),
         ("Auto Pan-Tremolo", FxParams::AutoPan(AutoPanParams::default())),
         ("Chorus-Ensemble", FxParams::Chorus(ChorusParams::default())),
+        ("Compressor", FxParams::Compressor(CompressorParams::default())),
         ("EQ Eight", FxParams::EqEight(EqEightParams::default())),
         ("EQ Three", FxParams::EqThree(EqThreeParams::default())),
         ("Gate", FxParams::Gate(GateParams::default())),

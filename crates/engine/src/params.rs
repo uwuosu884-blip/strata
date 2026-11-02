@@ -90,6 +90,7 @@ pub fn norm(p: &FxParams, k: u8) -> Option<f32> {
         FxParams::Chorus(c) => cho_norm(c, k),
         FxParams::AutoFilter(a) => af_norm(a, k),
         FxParams::AutoPan(a) => pan_norm(a, k),
+        FxParams::Compressor(c) => comp_norm(c, k),
         FxParams::Rack(r) => match k {
             0..16 => Some(r.macros[k as usize] / 127.0),
             RACK_SELECTOR => Some(r.selector / 127.0),
@@ -126,6 +127,7 @@ pub fn set_norm(p: &mut FxParams, k: u8, v: f32) {
         FxParams::Chorus(c) => cho_set(c, k, v),
         FxParams::AutoFilter(a) => af_set(a, k, v),
         FxParams::AutoPan(a) => pan_set(a, k, v),
+        FxParams::Compressor(c) => comp_set(c, k, v),
         FxParams::Rack(r) => match k {
             0..16 => r.macros[k as usize] = (v * 127.0).round(),
             RACK_SELECTOR => r.selector = (v * 127.0).round(),
@@ -455,6 +457,59 @@ fn glue_set(g: &mut GlueParams, k: u8, v: f32) {
         cp::RANGE => g.range = lin_val(v, 0.0, GLUE_RANGE_MAX),
         cp::DRY_WET => g.dry_wet = v,
         _ => sc_set(&mut g.sc, k, v),
+    }
+}
+
+/// Compressor ids (the sidechain uses [`sc`]).
+pub mod cmp {
+    pub const THRESHOLD: u8 = 0;
+    pub const RATIO: u8 = 1;
+    pub const ATTACK: u8 = 2;
+    pub const RELEASE: u8 = 3;
+    pub const AUTO: u8 = 4;
+    pub const KNEE: u8 = 5;
+    pub const LOOKAHEAD: u8 = 6;
+    pub const ENV: u8 = 7;
+    pub const MODE: u8 = 8;
+    pub const MAKEUP: u8 = 9;
+    pub const OUTPUT: u8 = 10;
+    pub const DRY_WET: u8 = 11;
+    pub const VIEW: u8 = 12;
+    pub const SHOW_OUT: u8 = 13;
+}
+
+/// Ratio knob: 1 − 1/ratio (4 : 1 at 3/4 of the turn, ∞ at the end).
+pub fn ratio_norm(r: f32) -> f32 {
+    if r >= COMP_RATIO_INF { 1.0 } else { 1.0 - 1.0 / r.max(1.0) }
+}
+
+pub fn ratio_val(v: f32) -> f32 {
+    if v >= 0.995 { COMP_RATIO_INF } else { (1.0 / (1.0 - v.clamp(0.0, 1.0))).min(COMP_RATIO_INF) }
+}
+
+fn comp_norm(c: &CompressorParams, k: u8) -> Option<f32> {
+    Some(match k {
+        cmp::THRESHOLD => lin_norm(c.threshold, COMP_THRESH.0, COMP_THRESH.1),
+        cmp::RATIO => ratio_norm(c.ratio),
+        cmp::ATTACK => log_norm(c.attack, COMP_ATTACK.0, COMP_ATTACK.1),
+        cmp::RELEASE => log_norm(c.release, COMP_RELEASE.0, COMP_RELEASE.1),
+        cmp::KNEE => lin_norm(c.knee, 0.0, COMP_KNEE_MAX),
+        cmp::OUTPUT => lin_norm(c.output, -COMP_OUT_MAX, COMP_OUT_MAX),
+        cmp::DRY_WET => c.dry_wet,
+        _ => return sc_norm(&c.sc, k),
+    })
+}
+
+fn comp_set(c: &mut CompressorParams, k: u8, v: f32) {
+    match k {
+        cmp::THRESHOLD => c.threshold = lin_val(v, COMP_THRESH.0, COMP_THRESH.1),
+        cmp::RATIO => c.ratio = ratio_val(v),
+        cmp::ATTACK => c.attack = log_val(v, COMP_ATTACK.0, COMP_ATTACK.1),
+        cmp::RELEASE => c.release = log_val(v, COMP_RELEASE.0, COMP_RELEASE.1),
+        cmp::KNEE => c.knee = lin_val(v, 0.0, COMP_KNEE_MAX),
+        cmp::OUTPUT => c.output = lin_val(v, -COMP_OUT_MAX, COMP_OUT_MAX),
+        cmp::DRY_WET => c.dry_wet = v,
+        _ => sc_set(&mut c.sc, k, v),
     }
 }
 
@@ -873,6 +928,7 @@ mod tests {
             FxParams::Chorus(ChorusParams::default()),
             FxParams::AutoFilter(AutoFilterParams::default()),
             FxParams::AutoPan(AutoPanParams::default()),
+            FxParams::Compressor(CompressorParams::default()),
             FxParams::AutoPan(AutoPanParams { tremolo: true, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Dj, ..Default::default() }),
             FxParams::AutoFilter(AutoFilterParams { kind: FilterType::Vowel, ..Default::default() }),

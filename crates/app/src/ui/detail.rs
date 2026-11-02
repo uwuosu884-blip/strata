@@ -1123,7 +1123,9 @@ fn device_view(app: &mut DawApp, ui: &mut egui::Ui) {
         cp.rect_filled(fx, CornerRadius::same(3), panel());
         let msg = if slots.is_empty() { empty_msg } else { "Drop Audio Effects Here" };
         let vis = Rect::from_min_max(fx.min, pos2(rect.right(), fx.max.y));
-        if vis.width() > 20.0 {
+        // Only when the whole message fits (a scrolled chain leaves a sliver).
+        let tw = cp.layout_no_wrap(msg.to_string(), font(FS), text()).size().x;
+        if vis.width() > tw + 12.0 {
             cp.text(vis.center(), Align2::CENTER_CENTER, msg, font(FS), text());
         }
     }

@@ -34,7 +34,7 @@ pub mod warp;
 pub use buffer::StereoBuffer;
 pub use command::{Command, MASTER_FX, MAX_REC_LANES, MidiEvent, MidiInput, MidiOutput, RecordEvent};
 pub use devtap::{DevTap, dev_tap};
-pub use dynfx::{GateParams, GlueParams, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
+pub use dynfx::{CompMode, CompView, CompressorParams, GateParams, GlueParams, LimMode, LimiterParams, ScEq, ScTap, Sidechain};
 pub use eq8::{EqBand, EqEightParams, EqFilter, EqMode, SpecTap, spectrum_tap};
 pub use fx::{AlignDelayParams, ChannelMode, DelayMode, FxParams, FxSlot, UtilityParams};
 pub use instruments::Instrument;

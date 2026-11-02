@@ -5,7 +5,7 @@
 //! thread allocates; when a new song arrives, the audio thread moves the state
 //! of slots with the same id over, so edits never reset delay lines/filters.
 
-use crate::dynfx::{GateState, GlueState, LimiterState, ScState};
+use crate::dynfx::{CompressorState, GateState, GlueState, LimiterState, ScState};
 pub use crate::eq8::EqEightParams;
 use crate::eq8::EqState;
 use crate::lfo::{LfoMap, LfoState};
@@ -230,6 +230,7 @@ pub enum FxParams {
     Chorus(crate::modfx::ChorusParams),
     AutoFilter(crate::modfx::AutoFilterParams),
     AutoPan(crate::modfx::AutoPanParams),
+    Compressor(crate::dynfx::CompressorParams),
 }
 
 impl FxParams {
@@ -247,6 +248,7 @@ impl FxParams {
             FxParams::Chorus(_) => "Chorus-Ensemble",
             FxParams::AutoFilter(_) => "Auto Filter",
             FxParams::AutoPan(_) => "Auto Pan-Tremolo",
+            FxParams::Compressor(_) => "Compressor",
         }
     }
 
@@ -257,6 +259,7 @@ impl FxParams {
         match self {
             FxParams::Gate(p) => (crate::dynfx::GATE_LOOKAHEAD[(p.lookahead as usize).min(2)] * 0.001 * sr).round() as usize,
             FxParams::Limiter(p) => crate::dynfx::LimiterState::latency(p, sr),
+            FxParams::Compressor(p) => p.latency(sr),
             _ => 0,
         }
     }
@@ -266,6 +269,7 @@ impl FxParams {
             FxParams::Gate(g) => Some(&g.sc),
             FxParams::Glue(g) => Some(&g.sc),
             FxParams::AutoFilter(a) => Some(&a.sc),
+            FxParams::Compressor(c) => Some(&c.sc),
             _ => None,
         }
     }
@@ -302,6 +306,7 @@ impl FxSlot {
             StateKind::Chorus(c) => **c = ChorusState::new(Some(id)),
             StateKind::AutoFilter(a) => **a = AutoFilterState::new(Some(id)),
             StateKind::AutoPan(a) => **a = AutoPanState::new(Some(id)),
+            StateKind::Compressor(c) => **c = CompressorState::new(Some(id)),
             _ => {}
         }
         Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
@@ -341,6 +346,7 @@ impl FxSlot {
             StateKind::Gate(g) => Some(&mut g.sc),
             StateKind::Glue(g) => Some(&mut g.sc),
             StateKind::AutoFilter(a) => Some(&mut a.sc),
+            StateKind::Compressor(c) => Some(&mut c.sc),
             _ => None,
         }
     }
@@ -488,6 +494,7 @@ enum StateKind {
     Chorus(Box<ChorusState>),
     AutoFilter(Box<AutoFilterState>),
     AutoPan(Box<AutoPanState>),
+    Compressor(Box<CompressorState>),
 }
 
 impl PartialEq for StateKind {
@@ -511,6 +518,7 @@ impl FxState {
             FxParams::Chorus(_) => StateKind::Chorus(Box::new(ChorusState::new(None))),
             FxParams::AutoFilter(_) => StateKind::AutoFilter(Box::new(AutoFilterState::new(None))),
             FxParams::AutoPan(_) => StateKind::AutoPan(Box::new(AutoPanState::new(None))),
+            FxParams::Compressor(_) => StateKind::Compressor(Box::new(CompressorState::new(None))),
         };
         Self { kind, was_on: false }
     }
@@ -528,6 +536,7 @@ impl FxState {
             StateKind::Chorus(c) => c.reset(),
             StateKind::AutoFilter(a) => a.reset(),
             StateKind::AutoPan(a) => a.reset(),
+            StateKind::Compressor(c) => c.reset(),
         }
     }
 }
@@ -576,6 +585,7 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Chorus(p), StateKind::Chorus(st)) => st.process(p, l, r, sr),
             (FxParams::AutoFilter(p), StateKind::AutoFilter(st)) => st.process(p, l, r, sr),
             (FxParams::AutoPan(p), StateKind::AutoPan(st)) => st.process(p, l, r, sr),
+            (FxParams::Compressor(p), StateKind::Compressor(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

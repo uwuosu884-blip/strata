@@ -11,6 +11,7 @@ use daw_project::devices::*;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, pos2, vec2};
 use std::f32::consts::PI;
 
+mod comp;
 mod dynamics;
 mod eq8;
 mod lfo;
@@ -55,6 +56,7 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Chorus(_) => modfx::CHO_W,
         FxParams::AutoPan(_) => modfx::PAN_W,
         FxParams::AutoFilter(a) => modfx::af_width(&a),
+        FxParams::Compressor(c) => comp::width(&c),
     }
 }
 
@@ -116,6 +118,7 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::reset(p, k),
         FxParams::Lfo(_) => lfo::reset(p, k),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::reset(p, k),
+        FxParams::Compressor(_) => comp::reset(p, k),
     }
 }
 
@@ -169,6 +172,7 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::step(p, k, dir),
         FxParams::Lfo(_) => lfo::step(p, k, dir),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::step(p, k, dir),
+        FxParams::Compressor(_) => comp::step(p, k, dir),
     }
 }
 
@@ -209,6 +213,7 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) => dynamics::name(p, k),
         FxParams::Lfo(_) => lfo::name(k),
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => modfx::name(p, k),
+        FxParams::Compressor(_) => comp::name(k),
     }
 }
 
@@ -814,6 +819,7 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Chorus(_) => modfx::chorus(&mut cx, ui, &p, r),
         FxParams::AutoPan(_) => modfx::auto_pan(&mut cx, ui, &p, r),
         FxParams::AutoFilter(_) => modfx::auto_filter(&mut cx, ui, &p, r),
+        FxParams::Compressor(_) => comp::compressor(&mut cx, ui, &p, r),
         FxParams::Rack(_) => {}
     }
     if sc_mono && let FxParams::AutoFilter(a) = &mut cx.params {
@@ -1320,6 +1326,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Rack(_) => false,
         FxParams::Gate(_) | FxParams::Glue(_) | FxParams::Limiter(_) | FxParams::Lfo(_) => false,
         FxParams::EqThree(_) | FxParams::Chorus(_) | FxParams::AutoPan(_) | FxParams::AutoFilter(_) => false,
+        FxParams::Compressor(_) => false,
     }
 }
 

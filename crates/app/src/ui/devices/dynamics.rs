@@ -152,7 +152,7 @@ fn pct(x: f32) -> String {
 
 /// Clickable toggle button (`toggle_look`), returns true when clicked.
 #[allow(clippy::too_many_arguments)]
-fn tbutton(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, label: &str, on: bool, enabled: bool) -> bool {
+pub(super) fn tbutton(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, label: &str, on: bool, enabled: bool) -> bool {
     toggle_look(p, r, label, on, enabled, cx.on);
     cx.toggle(ui, r, k, enabled)
 }
@@ -166,11 +166,12 @@ fn sc_of(p: &mut FxParams) -> Option<&mut Sidechain> {
         FxParams::Gate(g) => Some(&mut g.sc),
         FxParams::Glue(g) => Some(&mut g.sc),
         FxParams::AutoFilter(a) => Some(&mut a.sc),
+        FxParams::Compressor(c) => Some(&mut c.sc),
         _ => None,
     }
 }
 
-fn sc_get(p: &FxParams) -> Sidechain {
+pub(super) fn sc_get(p: &FxParams) -> Sidechain {
     p.sidechain().copied().unwrap_or_default()
 }
 
@@ -382,69 +383,71 @@ fn sc_section(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
 /// layout): External, Source / tap, Mix, SC Gain | SC Filter, type, Freq,
 /// Res (Gain for shelves / peak).
 pub(super) fn af_sc_section(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, t: f32) {
+    sc_columns(cx, ui, p, t, Some(l + 24.0), l + 102.0);
+}
+
+/// Sidechain columns: External (button left at `ext`, omitted when None)
+/// and SC Filter (button left at `f`).
+pub(super) fn sc_columns(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, t: f32, ext: Option<f32>, f: f32) {
     let s = sc_get(&cx.params);
-    let own = match crate::fx_ops::top_of(&cx.app.project, cx.chain) {
-        ChainRef::Track(id) => Some(id),
-        _ => None,
-    };
-    if tbutton(cx, ui, p, Rect::from_min_size(pos2(l + 24.0, t + 21.0), vec2(69.0, 13.0)), sc::ON, "External", s.on, true)
-        && let Some(sc) = sc_of(&mut cx.params)
-    {
-        sc.on = !sc.on;
+    if let Some(e) = ext {
+        let own = match crate::fx_ops::top_of(&cx.app.project, cx.chain) {
+            ChainRef::Track(id) => Some(id),
+            _ => None,
+        };
+        if tbutton(cx, ui, p, Rect::from_min_size(pos2(e, t + 21.0), vec2(69.0, 13.0)), sc::ON, "External", s.on, true)
+            && let Some(sc) = sc_of(&mut cx.params)
+        {
+            sc.on = !sc.on;
+        }
+        quad(p, Rect::from_min_max(pos2(f - 5.0, t + 21.0), pos2(f - 4.0, t + 184.0)), gray(0x24));
+        let ext_on = s.on && s.source != 0;
+        let cx0 = e + 34.5;
+        text_at(p, cx0, t + 57.0, Align2::CENTER_BOTTOM, "Source", font(FS), if s.on { text() } else { dim() });
+        let prj = &cx.app.project;
+        let tracks: Vec<(u64, String)> =
+            prj.tracks.iter().enumerate().filter(|(_, x)| Some(x.id) != own).map(|(i, x)| (x.id, prj.track_label(i))).collect();
+        let cur = tracks.iter().find(|x| x.0 == s.source).map_or("No Input".to_string(), |x| x.1.clone());
+        let mut items: Vec<&str> = vec!["No Input"];
+        items.extend(tracks.iter().map(|x| x.1.as_str()));
+        let cr = Rect::from_min_size(pos2(e, t + 60.0), vec2(69.0, 13.0));
+        let shown = fit(p, &cur, &font(FS), cr.width() - 14.0);
+        if let Some(i) = chooser(cx, ui, p, cr, sc::SOURCE, &shown, &items, s.on)
+            && let Some(sc) = sc_of(&mut cx.params)
+        {
+            sc.source = if i == 0 { 0 } else { tracks[i - 1].0 };
+        }
+        let tr = Rect::from_min_size(pos2(e, t + 76.0), vec2(69.0, 13.0));
+        let taps: Vec<&str> = ScTap::ALL.iter().map(|x| x.label()).collect();
+        if let Some(i) = chooser(cx, ui, p, tr, sc::TAP, &format!("    {}", s.tap.label()), &taps, ext_on)
+            && let Some(sc) = sc_of(&mut cx.params)
+        {
+            sc.tap = ScTap::ALL[i];
+        }
+        for (i, c) in [Color32::from_rgb(0x00, 0xd4, 0x4a), Color32::from_rgb(0xff, 0xa0, 0x30)].into_iter().enumerate() {
+            let bx = tr.left() + 4.0 + i as f32 * 3.0;
+            quad(
+                p,
+                Rect::from_min_max(pos2(bx, tr.top() + 3.0), pos2(bx + 2.0, tr.bottom() - 3.0)),
+                if ext_on { c } else { mix(c, gray(0x24), 0.6) },
+            );
+        }
+        text_at(p, cx0, t + 122.0, Align2::CENTER_BOTTOM, "Mix", font(FS), if ext_on { text() } else { dim() });
+        value_box(cx, ui, p, Rect::from_min_size(pos2(e, t + 125.0), vec2(69.0, 13.0)), sc::MIX, &format!("{:.1} %", s.mix * 100.0), ext_on);
+        text_at(p, cx0, t + 166.0, Align2::CENTER_BOTTOM, "SC Gain", font(FS), if ext_on { text() } else { dim() });
+        let gain = if s.gain <= SC_GAIN_MIN { "-inf dB".to_string() } else { format!("{} dB", sig3(s.gain)) };
+        value_box(cx, ui, p, Rect::from_min_size(pos2(e, t + 169.0), vec2(69.0, 13.0)), sc::GAIN, &gain, ext_on);
     }
-    if tbutton(cx, ui, p, Rect::from_min_size(pos2(l + 102.0, t + 21.0), vec2(51.0, 13.0)), sc::EQ_ON, "SC Filter", s.eq_on, true)
+    if tbutton(cx, ui, p, Rect::from_min_size(pos2(f, t + 21.0), vec2(51.0, 13.0)), sc::EQ_ON, "SC Filter", s.eq_on, true)
         && let Some(sc) = sc_of(&mut cx.params)
     {
         sc.eq_on = !sc.eq_on;
     }
-    quad(p, Rect::from_min_max(pos2(l + 97.0, t + 21.0), pos2(l + 98.0, t + 184.0)), gray(0x24));
-    let ext = s.on && s.source != 0;
-    text_at(p, l + 58.5, t + 57.0, Align2::CENTER_BOTTOM, "Source", font(FS), if s.on { text() } else { dim() });
-    let prj = &cx.app.project;
-    let tracks: Vec<(u64, String)> =
-        prj.tracks.iter().enumerate().filter(|(_, x)| Some(x.id) != own).map(|(i, x)| (x.id, prj.track_label(i))).collect();
-    let cur = tracks.iter().find(|x| x.0 == s.source).map_or("No Input".to_string(), |x| x.1.clone());
-    let mut items: Vec<&str> = vec!["No Input"];
-    items.extend(tracks.iter().map(|x| x.1.as_str()));
-    let cr = Rect::from_min_size(pos2(l + 24.0, t + 60.0), vec2(69.0, 13.0));
-    let shown = fit(p, &cur, &font(FS), cr.width() - 14.0);
-    if let Some(i) = chooser(cx, ui, p, cr, sc::SOURCE, &shown, &items, s.on)
-        && let Some(sc) = sc_of(&mut cx.params)
-    {
-        sc.source = if i == 0 { 0 } else { tracks[i - 1].0 };
-    }
-    let tr = Rect::from_min_size(pos2(l + 24.0, t + 76.0), vec2(69.0, 13.0));
-    let taps: Vec<&str> = ScTap::ALL.iter().map(|x| x.label()).collect();
-    if let Some(i) = chooser(cx, ui, p, tr, sc::TAP, &format!("    {}", s.tap.label()), &taps, ext)
-        && let Some(sc) = sc_of(&mut cx.params)
-    {
-        sc.tap = ScTap::ALL[i];
-    }
-    for (i, c) in [Color32::from_rgb(0x00, 0xd4, 0x4a), Color32::from_rgb(0xff, 0xa0, 0x30)].into_iter().enumerate() {
-        let bx = tr.left() + 4.0 + i as f32 * 3.0;
-        quad(
-            p,
-            Rect::from_min_max(pos2(bx, tr.top() + 3.0), pos2(bx + 2.0, tr.bottom() - 3.0)),
-            if ext { c } else { mix(c, gray(0x24), 0.6) },
-        );
-    }
-    text_at(p, l + 58.5, t + 122.0, Align2::CENTER_BOTTOM, "Mix", font(FS), if ext { text() } else { dim() });
-    value_box(
-        cx,
-        ui,
-        p,
-        Rect::from_min_size(pos2(l + 24.0, t + 125.0), vec2(69.0, 13.0)),
-        sc::MIX,
-        &format!("{:.1} %", s.mix * 100.0),
-        ext,
-    );
-    text_at(p, l + 58.5, t + 166.0, Align2::CENTER_BOTTOM, "SC Gain", font(FS), if ext { text() } else { dim() });
-    let gain = if s.gain <= SC_GAIN_MIN { "-inf dB".to_string() } else { format!("{} dB", sig3(s.gain)) };
-    value_box(cx, ui, p, Rect::from_min_size(pos2(l + 24.0, t + 169.0), vec2(69.0, 13.0)), sc::GAIN, &gain, ext);
     // Filter column.
     let eq = s.eq_on;
-    text_at(p, l + 127.5, t + 57.0, Align2::CENTER_BOTTOM, "Type", font(FS), if eq { text() } else { dim() });
-    let ty = Rect::from_min_size(pos2(l + 102.0, t + 60.0), vec2(51.0, 13.0));
+    let fc = f + 25.5;
+    text_at(p, fc, t + 57.0, Align2::CENTER_BOTTOM, "Type", font(FS), if eq { text() } else { dim() });
+    let ty = Rect::from_min_size(pos2(f, t + 60.0), vec2(51.0, 13.0));
     let names: Vec<&str> = ScEq::ALL.iter().map(|k| k.label()).collect();
     if let Some(i) = chooser(cx, ui, p, ty, sc::EQ, "", &names, eq)
         && let Some(sc) = sc_of(&mut cx.params)
@@ -452,14 +455,20 @@ pub(super) fn af_sc_section(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32
         sc.eq = ScEq::ALL[i];
     }
     sc_icon(p, Rect::from_min_max(ty.min, pos2(ty.left() + 24.0, ty.bottom())), s.eq, if eq && cx.on { text() } else { dim() });
-    let fq = if s.freq >= 1000.0 { format!("{} kHz", sig3(s.freq / 1000.0)) } else { format!("{:.0} Hz", s.freq) };
-    knob_lv(cx, ui, p, l + 127.5, t + 98.0, sc::FREQ, "Freq", &fq, 0.0, KN, 15.5, 36.0, eq);
-    let br = Rect::from_min_size(pos2(l + 102.0, t + 169.0), vec2(51.0, 13.0));
+    let fq = if s.freq >= 1000.0 {
+        format!("{} kHz", sig3(s.freq / 1000.0))
+    } else if s.freq >= 100.0 {
+        format!("{:.0} Hz", s.freq)
+    } else {
+        format!("{:.1} Hz", s.freq)
+    };
+    knob_lv(cx, ui, p, fc, t + 98.0, sc::FREQ, "Freq", &fq, 0.0, KN, 15.5, 36.0, eq);
+    let br = Rect::from_min_size(pos2(f, t + 169.0), vec2(51.0, 13.0));
     if s.eq.has_gain() {
-        text_at(p, l + 127.5, t + 166.0, Align2::CENTER_BOTTOM, "Gain", font(FS), if eq { text() } else { dim() });
+        text_at(p, fc, t + 166.0, Align2::CENTER_BOTTOM, "Gain", font(FS), if eq { text() } else { dim() });
         value_box(cx, ui, p, br, sc::EQ_GAIN, &format!("{} dB", sig3(s.eq_gain)), eq);
     } else {
-        text_at(p, l + 127.5, t + 166.0, Align2::CENTER_BOTTOM, "Res", font(FS), if eq { text() } else { dim() });
+        text_at(p, fc, t + 166.0, Align2::CENTER_BOTTOM, "Res", font(FS), if eq { text() } else { dim() });
         value_box(cx, ui, p, br, sc::Q, &format!("{:.2}", s.q), eq);
     }
 }
@@ -1006,7 +1015,7 @@ pub(super) fn sc_reset_pub(s: &mut Sidechain, k: u8) {
     sc_reset(s, k)
 }
 
-fn sc_reset(s: &mut Sidechain, k: u8) {
+pub(super) fn sc_reset(s: &mut Sidechain, k: u8) {
     let d = Sidechain::default();
     match k {
         sc::ON => s.on = d.on,

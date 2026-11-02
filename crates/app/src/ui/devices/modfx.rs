@@ -90,13 +90,13 @@ fn obutton(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, label: 
 }
 
 /// Small ▾ after a display menu.
-fn small_tri(p: &Painter, x: f32, y: f32, col: Color32) {
+pub(super) fn small_tri(p: &Painter, x: f32, y: f32, col: Color32) {
     p.add(Shape::convex_polygon(vec![pos2(x, y), pos2(x + 5.0, y), pos2(x + 2.5, y + 2.5)], col, Stroke::NONE));
 }
 
 /// Orange text menu in a display ("Rate ▾"): returns the picked index.
 #[allow(clippy::too_many_arguments)]
-fn text_menu(
+pub(super) fn text_menu(
     cx: &mut Ctx,
     ui: &mut egui::Ui,
     p: &Painter,
@@ -108,8 +108,9 @@ fn text_menu(
     cur: usize,
     items: &[&str],
     en: bool,
+    accent: Color32,
 ) -> Option<usize> {
-    let col = if en && cx.on { ORANGE } else { gray(0x5a) };
+    let col = if en && cx.on { accent } else { gray(0x5a) };
     let tr = text_at(p, x, base, Align2::LEFT_BOTTOM, items.get(cur).copied().unwrap_or(""), font(FS), col);
     small_tri(p, tri_x.unwrap_or(tr.right() + 4.0), base - 4.0, col);
     let resp = cx.sense(ui, r, k, Sense::click());
@@ -135,7 +136,7 @@ fn text_menu(
 
 /// Draggable number text in a display.
 #[allow(clippy::too_many_arguments)]
-fn drag_text(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k: u8, s: &str, en: bool, col: Color32) {
+pub(super) fn drag_text(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k: u8, s: &str, en: bool, col: Color32) {
     let col = if en && cx.on { col } else { gray(0x5a) };
     let r = text_at(p, x, base, Align2::LEFT_BOTTOM, s, font(FS), col);
     let hit = Rect::from_min_max(pos2(r.left() - 2.0, base - 10.0), pos2(r.right().max(r.left() + 24.0) + 2.0, base + 3.0));
@@ -325,7 +326,7 @@ pub(super) fn chorus(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) {
         let labels: Vec<String> = (0..CHO_TIMES.len()).map(cho_time_label).collect();
         let items: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
         let mr = Rect::from_min_max(pos2(l + 104.0, t + 112.0), pos2(l + 146.0, t + 125.0));
-        if let Some(i) = text_menu(cx, ui, p, mr, chp::TIME, l + 106.0, t + 122.0, None, c0.time as usize, &items, chorus)
+        if let Some(i) = text_menu(cx, ui, p, mr, chp::TIME, l + 106.0, t + 122.0, None, c0.time as usize, &items, chorus, ORANGE)
             && let FxParams::Chorus(c) = &mut cx.params
         {
             c.time = i as u8;
@@ -512,7 +513,7 @@ pub(super) fn auto_pan(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect) {
     let modes: Vec<&str> = TimeMode::ALL.iter().map(|m| m.label()).collect();
     let cur = TimeMode::ALL.iter().position(|&m| m == a0.rate.mode).unwrap_or(0);
     let mr = Rect::from_min_max(pos2(l + 70.0, t + 113.0), pos2(l + 119.0, t + 126.0));
-    if let Some(i) = text_menu(cx, ui, p, mr, pnp::TIME_MODE, l + 74.0, t + 123.0, Some(l + 112.0), cur, &modes, true)
+    if let Some(i) = text_menu(cx, ui, p, mr, pnp::TIME_MODE, l + 74.0, t + 123.0, Some(l + 112.0), cur, &modes, true, ORANGE)
         && let FxParams::AutoPan(a) = &mut cx.params
     {
         a.rate.mode = TimeMode::ALL[i];
@@ -915,7 +916,7 @@ fn af_lfo_row(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, l: f32, base: f32) {
     let items: Vec<&str> = Quantize::ALL.iter().map(|q| q.label()).collect();
     let cur = Quantize::ALL.iter().position(|&q| q == a0.quantize).unwrap_or(0);
     let mr = Rect::from_min_max(pos2(l + 300.0, base - 10.0), pos2(l + 340.0, base + 3.0));
-    if let Some(i) = text_menu(cx, ui, p, mr, afp::QUANT, l + 302.0, base, Some(l + 332.0), cur, &items, true)
+    if let Some(i) = text_menu(cx, ui, p, mr, afp::QUANT, l + 302.0, base, Some(l + 332.0), cur, &items, true, ORANGE)
         && let FxParams::AutoFilter(a) = &mut cx.params
     {
         a.quantize = Quantize::ALL[i];
