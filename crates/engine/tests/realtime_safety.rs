@@ -292,6 +292,54 @@ fn big_song(variant: usize) -> Song {
                 ..Default::default()
             }),
         ),
+        FxSlot::new(29, true, {
+            let mut p = daw_engine::roar::RoarParams {
+                routing: (variant % 7) as u8,
+                fb_amt: 0.6,
+                fb_mode: (variant % 5) as u8,
+                drive: 6.0,
+                tone_amt: 0.4,
+                ..Default::default()
+            };
+            for (i, st) in p.stages.iter_mut().enumerate() {
+                st.on = true;
+                st.amount = 0.5;
+                st.shaper = ((variant + i) % 12) as u8;
+                st.filter = ((variant + 2 * i) % 9) as u8;
+            }
+            p.matrix[0][6] = 0.5;
+            p.matrix[2][27] = 0.3;
+            p.matrix[3][2] = -0.4;
+            FxParams::Roar(p)
+        }),
+        FxSlot::new(30, true, FxParams::Tuner(daw_engine::tuner::TunerParams::default())),
+        FxSlot::new(
+            31,
+            true,
+            FxParams::PhaserFlanger(daw_engine::phaserflanger::PhaserFlangerParams {
+                mode: (variant % 3) as u8,
+                lfo_sync: variant.is_multiple_of(2),
+                wave: (variant % 10) as u8,
+                spin_mode: variant % 3 == 1,
+                env_on: true,
+                env_amt: 0.5,
+                feedback: 0.7,
+                ..Default::default()
+            }),
+        ),
+        FxSlot::new(
+            32,
+            true,
+            FxParams::Corpus(daw_engine::corpus::CorpusParams {
+                kind: (variant % 7) as u8,
+                quality: (variant % 4) as u8,
+                lfo_on: true,
+                lfo_amt: 0.5,
+                lfo_wave: (variant % 7) as u8,
+                filter_on: true,
+                ..Default::default()
+            }),
+        ),
     ]);
     song.tempo_map = vec![(0.5, 140.0), (1.5, 90.0), (3.0, 128.0)];
     song.base_tempo = 120.0;

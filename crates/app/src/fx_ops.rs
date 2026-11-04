@@ -119,7 +119,7 @@ impl DawApp {
         v[i].on = on;
         self.dirty = true;
         // A new sidechain source / tap / switch changes the routing graph.
-        let route = |p: &FxParams| p.sc_active().map(|s| (s.source, s.tap));
+        let route = |p: &FxParams| (p.sc_active().map(|s| (s.source, s.tap)), p.midi_active().map(|s| s.source));
         if route(&old) != route(&params) {
             self.needs_compile = true;
         }

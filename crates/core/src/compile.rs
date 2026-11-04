@@ -414,6 +414,9 @@ fn fx(devices: &[p::Device], slots: &RtSlots) -> Vec<e::FxSlot> {
                 };
                 s.sc_src = slots.get(sc.source).map(|rt| (rt, tap));
             }
+            if let Some(m) = d.params.midi_active() {
+                s.sc_midi = slots.get(m.source);
+            }
             if let Some(r) = d.rack.as_deref() {
                 let chains = r.chains.iter().map(|c| e::rack::ChainDsp::new(c.id, c.mix, fx(&c.devices, slots))).collect();
                 s.rack = Some(Box::new(e::rack::RackDsp::new(chains)));

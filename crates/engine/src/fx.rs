@@ -249,6 +249,10 @@ pub enum FxParams {
     Vocoder(crate::vocoder::VocoderParams),
     VinylDistortion(crate::vinyl::VinylParams),
     Shifter(crate::shifter::ShifterParams),
+    Roar(crate::roar::RoarParams),
+    Tuner(crate::tuner::TunerParams),
+    PhaserFlanger(crate::phaserflanger::PhaserFlangerParams),
+    Corpus(crate::corpus::CorpusParams),
 }
 
 impl FxParams {
@@ -286,6 +290,10 @@ impl FxParams {
             FxParams::Vocoder(_) => "Vocoder",
             FxParams::VinylDistortion(_) => "Vinyl Distortion",
             FxParams::Shifter(_) => "Shifter",
+            FxParams::Roar(_) => "Roar",
+            FxParams::Tuner(_) => "Tuner",
+            FxParams::PhaserFlanger(_) => "Phaser-Flanger",
+            FxParams::Corpus(_) => "Corpus",
         }
     }
 
@@ -315,6 +323,8 @@ impl FxParams {
             FxParams::SpectralResonator(a) => Some(&a.midi),
             FxParams::Shifter(a) => Some(&a.midi),
             FxParams::Vocoder(a) => Some(&a.ext),
+            FxParams::Roar(a) => Some(&a.sc),
+            FxParams::Corpus(a) => Some(&a.midi),
             _ => None,
         }
     }
@@ -329,6 +339,14 @@ impl FxParams {
             _ => self.sidechain()?.on,
         };
         self.sidechain().filter(|s| on && s.source != 0)
+    }
+
+    /// Second (MIDI) source of a device whose `sidechain()` is audio (Roar).
+    pub fn midi_active(&self) -> Option<&crate::dynfx::Sidechain> {
+        match self {
+            FxParams::Roar(a) => Some(&a.midi).filter(|m| m.on && m.source != 0),
+            _ => None,
+        }
     }
 }
 
@@ -347,6 +365,8 @@ pub struct FxSlot {
     pub modded: bool,
     /// External sidechain source (engine track, tap), resolved by compile.
     pub sc_src: Option<(u16, crate::song::Tap)>,
+    /// MIDI source track of `FxParams::midi_active` (engine track).
+    pub sc_midi: Option<u16>,
 }
 
 impl FxSlot {
@@ -375,9 +395,13 @@ impl FxSlot {
             StateKind::DynTube(d) => **d = crate::dyntube::DynTubeState::new(Some(id)),
             StateKind::Vocoder(d) => d.set_id(id),
             StateKind::Shifter(d) => d.set_id(id),
+            StateKind::Roar(d) => d.set_id(id),
+            StateKind::Tuner(d) => d.set_id(id),
+            StateKind::PhaserFlanger(d) => d.set_id(id),
+            StateKind::Corpus(d) => d.set_id(id),
             _ => {}
         }
-        Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None }
+        Self { id, on, params, state: Box::new(state), rack: None, base: params, modded: false, sc_src: None, sc_midi: None }
     }
 
     /// New stored values (SetFx); an active modulation is re-applied next block.
@@ -416,6 +440,7 @@ impl FxSlot {
             StateKind::AutoFilter(a) => Some(&mut a.sc),
             StateKind::Compressor(c) => Some(&mut c.sc),
             StateKind::Vocoder(v) => Some(&mut v.sc),
+            StateKind::Roar(v) => Some(&mut v.sc),
             _ => None,
         }
     }
@@ -435,11 +460,24 @@ pub(crate) fn fill_sidechains<'a>(
 ) {
     for s in chain.iter_mut() {
         s.visit(&mut |s| {
+            // Second MIDI source (Roar's feedback note).
+            if let (Some(rt), StateKind::Roar(st)) = (s.sc_midi, &mut s.state.kind) {
+                let mut buf = [crate::autoshift::AsNote::default(); 64];
+                let mut k = 0;
+                notes(rt, &mut |e| {
+                    if k < buf.len() {
+                        buf[k] = e;
+                        k += 1;
+                    }
+                });
+                st.set_notes(&mut buf[..k].iter().copied());
+            }
             let Some((rt, tap)) = s.sc_src else { return };
             let midi_on = match &s.params {
                 FxParams::AutoShift(p) => Some(p.midi.on),
                 FxParams::SpectralResonator(p) => Some(p.midi_mode),
                 FxParams::Shifter(p) => Some(p.midi_mode),
+                FxParams::Corpus(p) => Some(p.midi.on),
                 _ => None,
             };
             if let Some(on) = midi_on {
@@ -456,6 +494,7 @@ pub(crate) fn fill_sidechains<'a>(
                         StateKind::AutoShift(st) => st.set_notes(&mut buf[..k].iter().copied()),
                         StateKind::SpecRes(st) => st.set_notes(&mut buf[..k].iter().copied()),
                         StateKind::Shifter(st) => st.set_notes(&mut buf[..k].iter().copied()),
+                        StateKind::Corpus(st) => st.set_notes(&mut buf[..k].iter().copied()),
                         _ => {}
                     }
                 }
@@ -616,6 +655,10 @@ enum StateKind {
     Vocoder(Box<crate::vocoder::VocoderState>),
     Vinyl(Box<crate::vinyl::VinylState>),
     Shifter(Box<crate::shifter::ShifterState>),
+    Roar(Box<crate::roar::RoarState>),
+    Tuner(Box<crate::tuner::TunerState>),
+    PhaserFlanger(Box<crate::phaserflanger::PhaserFlangerState>),
+    Corpus(Box<crate::corpus::CorpusState>),
 }
 
 impl PartialEq for StateKind {
@@ -658,6 +701,10 @@ impl FxState {
             FxParams::Vocoder(_) => StateKind::Vocoder(Box::default()),
             FxParams::VinylDistortion(_) => StateKind::Vinyl(Box::default()),
             FxParams::Shifter(_) => StateKind::Shifter(Box::default()),
+            FxParams::Roar(_) => StateKind::Roar(Box::default()),
+            FxParams::Tuner(_) => StateKind::Tuner(Box::default()),
+            FxParams::PhaserFlanger(_) => StateKind::PhaserFlanger(Box::default()),
+            FxParams::Corpus(_) => StateKind::Corpus(Box::default()),
         };
         Self { kind, was_on: false }
     }
@@ -693,6 +740,10 @@ impl FxState {
             StateKind::Vocoder(v) => v.reset(),
             StateKind::Vinyl(v) => v.reset(),
             StateKind::Shifter(v) => v.reset(),
+            StateKind::Roar(v) => v.reset(),
+            StateKind::Tuner(v) => v.reset(),
+            StateKind::PhaserFlanger(v) => v.reset(),
+            StateKind::Corpus(v) => v.reset(),
         }
     }
 }
@@ -760,6 +811,10 @@ pub(crate) fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], sr: 
             (FxParams::Vocoder(p), StateKind::Vocoder(st)) => st.process(p, l, r, sr),
             (FxParams::VinylDistortion(p), StateKind::Vinyl(st)) => st.process(p, l, r, sr),
             (FxParams::Shifter(p), StateKind::Shifter(st)) => st.process(p, l, r, sr),
+            (FxParams::Roar(p), StateKind::Roar(st)) => st.process(p, l, r, sr),
+            (FxParams::Tuner(p), StateKind::Tuner(st)) => st.process(p, l, r, sr),
+            (FxParams::PhaserFlanger(p), StateKind::PhaserFlanger(st)) => st.process(p, l, r, sr),
+            (FxParams::Corpus(p), StateKind::Corpus(st)) => st.process(p, l, r, sr),
             (FxParams::Rack(p), StateKind::Rack) => {
                 if let Some(rk) = s.rack.as_deref_mut() {
                     rk.process(p, l, r, sr);

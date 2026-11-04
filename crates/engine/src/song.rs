@@ -547,11 +547,17 @@ impl Song {
                     if s.sc_src.is_some_and(|(src, _)| src == me || (src as usize) >= MAX_TRACKS || !seen[src as usize]) {
                         s.sc_src = None;
                     }
+                    if s.sc_midi.is_some_and(|src| src == me || (src as usize) >= MAX_TRACKS || !seen[src as usize]) {
+                        s.sc_midi = None;
+                    }
                 });
             }
         }
         for s in &mut self.master_fx {
-            s.visit(&mut |s| s.sc_src = s.sc_src.filter(|&(src, _)| (src as usize) < MAX_TRACKS && seen[src as usize]));
+            s.visit(&mut |s| {
+                s.sc_src = s.sc_src.filter(|&(src, _)| (src as usize) < MAX_TRACKS && seen[src as usize]);
+                s.sc_midi = s.sc_midi.filter(|&src| (src as usize) < MAX_TRACKS && seen[src as usize]);
+            });
         }
         self.lfo = self.tracks.iter().any(|t| crate::fx::has_lfo(&t.fx)) || crate::fx::has_lfo(&self.master_fx);
         self.sort_topologically();
@@ -588,7 +594,7 @@ impl Song {
         let sc_of = |t: &SongTrack| {
             let mut v: Vec<u16> = Vec::new();
             for s in &t.fx {
-                s.visit_ref(&mut |s| v.extend(s.sc_src.map(|x| x.0)));
+                s.visit_ref(&mut |s| v.extend(s.sc_src.map(|x| x.0).into_iter().chain(s.sc_midi)));
             }
             v
         };
@@ -617,6 +623,9 @@ impl Song {
                     s.visit(&mut |s| {
                         if s.sc_src.is_some_and(|(src, _)| index[src as usize] != usize::MAX && !done[index[src as usize]]) {
                             s.sc_src = None;
+                        }
+                        if s.sc_midi.is_some_and(|src| index[src as usize] != usize::MAX && !done[index[src as usize]]) {
+                            s.sc_midi = None;
                         }
                     });
                 }
