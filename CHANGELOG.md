@@ -10,6 +10,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - More effects (EQ, compressor, reverb, delay) and automation lanes (phase 6).
 - Plugin hosting (CLAP/VST3), multi-core track processing.
 
+## [0.8.11] - 2026-11-07
+
+### Added
+- Roar: Input section (Drive, Tone amount / frequency, Color), routing Single / Serial / Parallel / Multi Band / Mid Side / Feedback / Delay with Blend and Low / High crossovers and routing display; three stages with 12 shaper types (Amount, Bias, transfer graph), 9 filter types (LP, BP, HP, Notch, Peak, Morph, Comb, Resampling, Dispersion; Freq, Res, Peak / Morph, response graph), Level, Pre; feedback section (Time / Synced / Triplet / Dotted / Note, Amount, invert, gate, bandpass Freq / Width); Compress with SC HPF, Output, Dry/Wet. Modulation: LFO 1 / 2 (5 waves, Free / Synced / Triplet / Dotted / 16th, Rate, Morph, Smooth), Envelope follower (Attack, Release, Threshold, Gain, listen), Noise (Simplex / Wander / S&H / Brown, Rate, Smooth), 4×36 Mod Matrix, global Mod Amount. Sidechain column: External SC (Source, tap, Mix, Gain, listen) and MIDI > FB Note; expanded stage view.
+- Tuner: monophonic pitch detection, Classic (Target / Strobe) and Histogram views, Hz / cents display, Reference 410–480 Hz, note spelling Sharps / Flats / Both (context menu).
+- Phaser-Flanger: Phaser (Notches, Center, Spread, Blend), Flanger (Time) and Doubler (Time) modes with notch display; LFO (10 waves incl. Tri Analog / Tri 8 / Tri 16, Duty Cycle, Phase / Spin, Hz / sync), LFO 2 (Mix, Freq); Amount, Feedback with invert, Env Fol (Amount, Attack, Release), Safe Bass, Warmth, Output, Dry/Wet; expanded view.
+- Corpus: Beam / Marimba / String / Membrane / Plate / Pipe / Tube resonators (Decay, Material or Radius, Opening, Ratio, Bright, Inharm, Hit, Width, Pos. L/R, quality), Tune / Fine / Spread, LFO (7 waves, Amount, Rate Hz / sync, Phase / Spin), bandpass Filter (Freq, Bdwidth), Bleed, Gain with limiter LED, Dry/Wet; MIDI sidechain (Last / Low, Transpose, Fine, PB, Off Decay).
+
 ## [0.8.10] - 2026-11-02
 
 ### Added

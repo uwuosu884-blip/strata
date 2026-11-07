@@ -18,6 +18,7 @@ pub use daw_engine::params2;
 pub use daw_engine::params3;
 pub use daw_engine::params4;
 pub use daw_engine::params5;
+pub use daw_engine::params6;
 pub use daw_engine::rack::{CHAIN_VOL_MAX, CHAIN_VOL_MIN, MACROS, ZONE_MAX};
 pub use daw_engine::{AlignDelayParams, ChannelMode, DelayMode, EqBand, EqEightParams, EqFilter, EqMode, FxParams, UtilityParams};
 pub use daw_engine::{AutoShiftParams, SpecChannel, SpecScale, SpectrumParams};
@@ -29,8 +30,8 @@ pub use daw_engine::{
 pub use daw_engine::{DevTap, dev_tap};
 pub use daw_engine::{SH_GRID_MAX, SH_PTS, ShPt, ShTrig};
 pub use daw_engine::{
-    chaneq, delay, drumbuss, dyntube, echo, erosion, graindelay, redux, resonators, reverb, saturator, shifter, specres, spectime, stft,
-    vinyl, vocoder,
+    chaneq, corpus, delay, drumbuss, dyntube, echo, erosion, graindelay, phaserflanger, redux, resonators, reverb, roar, saturator,
+    shifter, specres, spectime, stft, tuner, vinyl, vocoder,
 };
 use serde::{Deserialize, Serialize};
 
@@ -253,7 +254,7 @@ fn yes() -> bool {
 }
 
 /// Audio effects offered by the browser (name, default parameters).
-pub fn audio_effects() -> [(&'static str, FxParams); 32] {
+pub fn audio_effects() -> [(&'static str, FxParams); 36] {
     [
         ("Audio Effect Rack", FxParams::Rack(RackParams::default())),
         ("Align Delay", FxParams::AlignDelay(AlignDelayParams::default())),
@@ -263,6 +264,7 @@ pub fn audio_effects() -> [(&'static str, FxParams); 32] {
         ("Channel EQ", FxParams::ChannelEq(Default::default())),
         ("Chorus-Ensemble", FxParams::Chorus(ChorusParams::default())),
         ("Compressor", FxParams::Compressor(CompressorParams::default())),
+        ("Corpus", FxParams::Corpus(Default::default())),
         ("Delay", FxParams::Delay(Default::default())),
         ("Drum Buss", FxParams::DrumBuss(Default::default())),
         ("Dynamic Tube", FxParams::DynamicTube(Default::default())),
@@ -275,15 +277,18 @@ pub fn audio_effects() -> [(&'static str, FxParams); 32] {
         ("Grain Delay", FxParams::GrainDelay(Default::default())),
         ("LFO", FxParams::Lfo(LfoParams::default())),
         ("Limiter", FxParams::Limiter(LimiterParams::default())),
+        ("Phaser-Flanger", FxParams::PhaserFlanger(Default::default())),
         ("Redux", FxParams::Redux(Default::default())),
         ("Resonators", FxParams::Resonators(Default::default())),
         ("Reverb", FxParams::Reverb(Default::default())),
+        ("Roar", FxParams::Roar(Default::default())),
         ("Saturator", FxParams::Saturator(Default::default())),
         ("Shaper", FxParams::Lfo(LfoParams::shaper())),
         ("Shifter", FxParams::Shifter(Default::default())),
         ("Spectral Resonator", FxParams::SpectralResonator(Default::default())),
         ("Spectral Time", FxParams::SpectralTime(Default::default())),
         ("Spectrum", FxParams::Spectrum(SpectrumParams::default())),
+        ("Tuner", FxParams::Tuner(Default::default())),
         ("Utility", FxParams::Utility(UtilityParams::default())),
         ("Vinyl Distortion", FxParams::VinylDistortion(Default::default())),
         ("Vocoder", FxParams::Vocoder(Default::default())),

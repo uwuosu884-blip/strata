@@ -361,11 +361,7 @@ impl CorpusState {
 
     /// Base frequency (Hz) of the resonance.
     pub fn base_hz(p: &CorpusParams, note: f32) -> f32 {
-        if p.midi_freq {
-            crate::specres::midi_hz(note + p.transpose + p.fine / 100.0)
-        } else {
-            p.tune.clamp(CO_TUNE.0, CO_TUNE.1)
-        }
+        if p.midi_freq { crate::specres::midi_hz(note + p.transpose + p.fine / 100.0) } else { p.tune.clamp(CO_TUNE.0, CO_TUNE.1) }
     }
 
     fn design(&mut self, p: &CorpusParams, ch: usize, f0: f32, sr: f32) {
@@ -417,7 +413,11 @@ impl CorpusState {
         }
         let (tempo, _) = crate::modfx::clock();
         let beat_hz = tempo.max(1.0) as f32 / 60.0;
-        let rate = if p.lfo_sync { beat_hz / SYNC_DIVS[(p.div as usize).min(SYNC_DIVS.len() - 1)].0 as f32 } else { p.rate.clamp(CO_RATE.0, CO_RATE.1) };
+        let rate = if p.lfo_sync {
+            beat_hz / SYNC_DIVS[(p.div as usize).min(SYNC_DIVS.len() - 1)].0 as f32
+        } else {
+            p.rate.clamp(CO_RATE.0, CO_RATE.1)
+        };
         let spin = !p.lfo_sync && p.spin_mode;
         let rates = if spin { [rate, rate * (1.0 + p.spin.clamp(0.0, 1.0))] } else { [rate, rate] };
         let ph_off = if spin { 0.0 } else { p.phase.clamp(0.0, 1.0) };
@@ -573,7 +573,16 @@ mod tests {
         assert!((f - 220.0).abs() < 15.0, "tube {f}");
         for kind in 0..7 {
             for q in 0..4 {
-                let p = CorpusParams { kind, quality: q, lfo_on: true, lfo_amt: 1.0, lfo_wave: kind % 7, filter_on: true, gain: 24.0, ..Default::default() };
+                let p = CorpusParams {
+                    kind,
+                    quality: q,
+                    lfo_on: true,
+                    lfo_amt: 1.0,
+                    lfo_wave: kind % 7,
+                    filter_on: true,
+                    gain: 24.0,
+                    ..Default::default()
+                };
                 let y = impulse(&p);
                 assert!(y.iter().all(|v| v.is_finite() && v.abs() <= 8.0), "{kind}");
             }
@@ -582,7 +591,8 @@ mod tests {
 
     #[test]
     fn midi_frequency() {
-        let p = CorpusParams { kind: 2, midi_freq: true, bright: -1.0, dry_wet: 1.0, hit: 0.0, pos_l: 0.0, pos_r: 0.0, ..Default::default() };
+        let p =
+            CorpusParams { kind: 2, midi_freq: true, bright: -1.0, dry_wet: 1.0, hit: 0.0, pos_l: 0.0, pos_r: 0.0, ..Default::default() };
         let mut s = CorpusState::new(None);
         s.set_notes(&mut [AsNote { offset: 0, pitch: 57, vel: 100, len: 48_000 }].into_iter());
         let mut l = vec![0.0f32; 24_000];

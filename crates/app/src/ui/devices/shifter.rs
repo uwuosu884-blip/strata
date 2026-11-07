@@ -36,20 +36,20 @@ fn div(i: u8) -> &'static str {
 }
 
 /// Centred text.
-fn ct(p: &Painter, x: f32, base: f32, s: &str, col: Color32) {
+pub(super) fn ct(p: &Painter, x: f32, base: f32, s: &str, col: Color32) {
     text_at(p, x, base, Align2::CENTER_BOTTOM, s, font(FS), col);
 }
 
 /// Centred draggable text.
 #[allow(clippy::too_many_arguments)]
-fn drag_c(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k: u8, s: &str, col: Color32) {
+pub(super) fn drag_c(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, x: f32, base: f32, k: u8, s: &str, col: Color32) {
     let w = p.layout_no_wrap(s.to_string(), font(FS), col).size().x;
     drag_text(cx, ui, p, x - w / 2.0, base, k, s, true, col);
 }
 
 /// Box with the metronome glyph (synced time mode).
 #[allow(clippy::too_many_arguments)]
-fn sync_btn(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, sel: bool, en: bool) -> bool {
+pub(super) fn sync_btn(cx: &mut Ctx, ui: &mut egui::Ui, p: &Painter, r: Rect, k: u8, sel: bool, en: bool) -> bool {
     let hit = if en { tbutton(cx, ui, p, r, k, "", sel, true) } else { sel_btn(cx, ui, p, r, k, "", sel, false) };
     let col = match (sel, en && cx.on) {
         (true, true) => gray(0x20),

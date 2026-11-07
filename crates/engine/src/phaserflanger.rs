@@ -165,7 +165,7 @@ fn tri_analog(state: &mut f32, ph: f32, duty: f32, rate: f32, sr: f32) -> f32 {
     let k = 1.0 - (-TAU * 2.5 / sr).exp();
     *state += k * (sq - *state);
     // Normalise roughly to the steady amplitude at this rate.
-    let amp = (2.5 / rate.max(0.01)).min(1.0).max(0.05);
+    let amp = (2.5 / rate.max(0.01)).clamp(0.05, 1.0);
     (*state / amp.max(0.2)).clamp(-1.0, 1.0)
 }
 

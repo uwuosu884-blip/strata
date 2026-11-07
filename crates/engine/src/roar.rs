@@ -33,7 +33,8 @@ pub const RO_SHAPERS: [&str; 12] = [
     "Shards",
 ];
 /// Short chooser labels.
-pub const RO_SHAPERS_SHORT: [&str; 12] = ["Soft", "Digital", "Bitcrush", "Diode", "Tube", "Half Rect", "Full Rect", "Poly", "Fractal", "Tri Fold", "Noise", "Shards"];
+pub const RO_SHAPERS_SHORT: [&str; 12] =
+    ["Soft", "Digital", "Bitcrush", "Diode", "Tube", "Half Rect", "Full Rect", "Poly", "Fractal", "Tri Fold", "Noise", "Shards"];
 pub const RO_FILTERS: [&str; 9] = ["LP", "BP", "HP", "Notch", "Peak", "Morph", "Comb", "Resampling", "Dispersion"];
 pub const RO_FB_MODES: [&str; 5] = ["Time", "Synced", "Triplet", "Dotted", "Note"];
 pub const RO_LFO_WAVES: [&str; 5] = ["Sine", "Triangle", "Square", "Up", "Down"];
@@ -195,9 +196,7 @@ pub struct RoarParams {
 
 impl Default for RoarParams {
     fn default() -> Self {
-        let mut stages = [RoarStage::default(); 3];
-        stages[1].on = false;
-        stages[2].on = false;
+        let stages = [RoarStage::default(); 3];
         Self {
             drive: 0.0,
             tone_amt: 0.0,
@@ -361,6 +360,12 @@ pub fn shape(t: u8, u: f32, amount: f32, noise: f32, shard: f32) -> f32 {
 }
 
 /// A stage's transfer at input `x` (display and DSP share it).
+/// LFO shape of a Roar LFO (−1..1) for display: wave index into [`RO_LFO_WAVES`].
+pub fn lfo_shape(wave: u8, ph: f32, morph: f32) -> f32 {
+    let w = [0u8, 1, 4, 2, 3][(wave as usize).min(4)];
+    crate::dsp::lfo_wave(w, ph, morph, 0.0)
+}
+
 pub fn stage_curve(s: &RoarStage, x: f32) -> f32 {
     let g = 10f32.powf(s.amount.clamp(0.0, 1.0) * RO_AMT_DB / 20.0);
     let b = s.bias.clamp(-1.0, 1.0) * 2.0;
@@ -408,7 +413,7 @@ pub fn filter_mag(s: &RoarStage, f: f32, sr: f32) -> f32 {
 }
 
 fn res_k(res: f32) -> f32 {
-    2.0 - 1.95 * res.clamp(0.0, 1.0)
+    1.414 - 1.37 * res.clamp(0.0, 1.0)
 }
 
 /// RBJ biquad.
@@ -735,7 +740,10 @@ impl RoarState {
             0 => {
                 // Simplex-like: cubic (Catmull-Rom) through the random points.
                 let [p0, p1, p2, p3] = self.noise_v;
-                0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t * t * t)
+                0.5 * ((2.0 * p1)
+                    + (-p0 + p2) * t
+                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t
+                    + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t * t * t)
             }
             1 => {
                 let u = 0.5 - 0.5 * (PI * t).cos();
@@ -856,7 +864,7 @@ impl RoarState {
         let blend = p.blend.clamp(0.0, 1.0);
         let gate_rel = (-1.0 / (0.2 * sr)).exp();
         let env_fall = (-1.0 / (0.05 * sr)).exp();
-        let listen = p.env_listen;
+        let listen = p.env_listen || p.sc.listen;
         let routing = p.routing.min(6);
         for i in 0..n {
             let dry = [l[i], r[i]];
@@ -998,7 +1006,15 @@ mod tests {
             for sh in 0..12u8 {
                 let mut p = RoarParams { routing, fb_amt: 0.9, fb_mode: (sh % 5).min(4), ..Default::default() };
                 for (i, s) in p.stages.iter_mut().enumerate() {
-                    *s = RoarStage { on: true, amount: 0.8, bias: 0.3, shaper: sh, filter: (sh + i as u8) % 9, res: 0.9, ..Default::default() };
+                    *s = RoarStage {
+                        on: true,
+                        amount: 0.8,
+                        bias: 0.3,
+                        shaper: sh,
+                        filter: (sh + i as u8) % 9,
+                        res: 0.9,
+                        ..Default::default()
+                    };
                 }
                 p.matrix[0][6] = 1.0;
                 p.matrix[3][8] = -0.5;

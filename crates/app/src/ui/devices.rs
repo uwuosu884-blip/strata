@@ -14,6 +14,8 @@ use std::f32::consts::PI;
 mod autoshift;
 mod chaneq;
 mod comp;
+mod corpus;
+mod corpus_icons;
 mod delay;
 mod drumbuss;
 mod dynamics;
@@ -26,16 +28,19 @@ mod fx5;
 mod graindelay;
 mod lfo;
 mod modfx;
+mod phaserflanger;
 mod rack;
 mod redux;
 mod resonators;
 mod reverb;
+mod roar;
 mod saturator;
 mod shaper;
 mod shifter;
 mod spec;
 mod specres;
 mod spectime;
+mod tuner;
 mod vinyl;
 mod vocoder;
 pub use eq8::{DOTS as EQ_DOTS, arrow as eq_arrow, maximised as eq_maximised, unfolded as eq_unfolded};
@@ -94,6 +99,10 @@ pub fn width(d: &Device) -> f32 {
         FxParams::Vocoder(v) => vocoder::width(&v),
         FxParams::VinylDistortion(v) => vinyl::width(&v),
         FxParams::Shifter(v) => shifter::width(&v),
+        FxParams::Tuner(_) => tuner::WIDTH,
+        FxParams::PhaserFlanger(v) => phaserflanger::width(&v),
+        FxParams::Corpus(v) => corpus::width(&v),
+        FxParams::Roar(v) => roar::width(&v),
         FxParams::Saturator(s) => {
             if s.expanded {
                 saturator::WIDTH_EXT
@@ -180,6 +189,10 @@ pub fn reset(p: &mut FxParams, k: u8) {
         FxParams::Vocoder(_) => vocoder::reset(p, k),
         FxParams::VinylDistortion(_) => vinyl::reset(p, k),
         FxParams::Shifter(_) => shifter::reset(p, k),
+        FxParams::Tuner(_) => tuner::reset(p, k),
+        FxParams::PhaserFlanger(_) => phaserflanger::reset(p, k),
+        FxParams::Corpus(_) => corpus::reset(p, k),
+        FxParams::Roar(_) => roar::reset(p, k),
         FxParams::Saturator(_) => saturator::reset(p, k),
         FxParams::Delay(_) => delay::reset(p, k),
         FxParams::GrainDelay(_) => graindelay::reset(p, k),
@@ -252,6 +265,10 @@ pub fn step(p: &mut FxParams, k: u8, dir: f32) {
         FxParams::Vocoder(_) => vocoder::step(p, k, dir),
         FxParams::VinylDistortion(_) => vinyl::step(p, k, dir),
         FxParams::Shifter(_) => shifter::step(p, k, dir),
+        FxParams::Tuner(_) => tuner::step(p, k, dir),
+        FxParams::PhaserFlanger(_) => phaserflanger::step(p, k, dir),
+        FxParams::Corpus(_) => corpus::step(p, k, dir),
+        FxParams::Roar(_) => roar::step(p, k, dir),
         FxParams::Saturator(_) => saturator::step(p, k, dir),
         FxParams::Delay(_) => delay::step(p, k, dir),
         FxParams::GrainDelay(_) => graindelay::step(p, k, dir),
@@ -311,6 +328,10 @@ fn param_name(p: &FxParams, k: u8) -> &'static str {
         FxParams::Vocoder(_) => vocoder::name(k),
         FxParams::VinylDistortion(_) => vinyl::name(k),
         FxParams::Shifter(_) => shifter::name(k),
+        FxParams::Tuner(_) => tuner::name(k),
+        FxParams::PhaserFlanger(_) => phaserflanger::name(k),
+        FxParams::Corpus(_) => corpus::name(k),
+        FxParams::Roar(_) => roar::name(k),
         FxParams::Saturator(_) => saturator::name(k),
         FxParams::Delay(_) => delay::name(k),
         FxParams::GrainDelay(_) => graindelay::name(k),
@@ -923,6 +944,18 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         saturator::title_button(&mut cx, ui, &p, l, t);
         name_x = l + 38.0;
     }
+    if matches!(dev.params, FxParams::PhaserFlanger(_)) {
+        phaserflanger::title_button(&mut cx, ui, &p, l, t);
+        name_x = l + 36.0;
+    }
+    if matches!(dev.params, FxParams::Roar(_)) {
+        roar::title_button(&mut cx, ui, &p, l, t);
+        name_x = l + 34.0;
+    }
+    if matches!(dev.params, FxParams::Corpus(_)) {
+        corpus::title_logo(&p, r);
+        name_right = name_right.min(r.right() - 79.0);
+    }
     let nf = bold(FS);
     let name = fit(&p, dev.params.name(), &nf, name_right - name_x);
     text_at(&p, name_x, t + 12.0, Align2::LEFT_BOTTOM, &name, nf, if selected { SEL_TEXT } else { text() });
@@ -956,6 +989,10 @@ pub fn device(app: &mut DawApp, ui: &mut egui::Ui, r: Rect, c: ChainRef, idx: us
         FxParams::Vocoder(_) => vocoder::draw(&mut cx, ui, &p, r),
         FxParams::VinylDistortion(_) => vinyl::draw(&mut cx, ui, &p, r),
         FxParams::Shifter(_) => shifter::draw(&mut cx, ui, &p, r),
+        FxParams::Tuner(_) => tuner::draw(&mut cx, ui, &p, r),
+        FxParams::PhaserFlanger(_) => phaserflanger::draw(&mut cx, ui, &p, r),
+        FxParams::Corpus(_) => corpus::draw(&mut cx, ui, &p, r),
+        FxParams::Roar(_) => roar::draw(&mut cx, ui, &p, r),
         FxParams::Saturator(_) => saturator::draw(&mut cx, ui, &p, r),
         FxParams::Delay(_) => delay::draw(&mut cx, ui, &p, r),
         FxParams::GrainDelay(_) => graindelay::draw(&mut cx, ui, &p, r),
@@ -1482,6 +1519,7 @@ pub fn typable(p: &FxParams, k: u8) -> bool {
         FxParams::Redux(_) | FxParams::Saturator(_) | FxParams::Delay(_) | FxParams::GrainDelay(_) => false,
         FxParams::Resonators(_) | FxParams::DrumBuss(_) | FxParams::SpectralResonator(_) | FxParams::SpectralTime(_) => false,
         FxParams::DynamicTube(_) | FxParams::Vocoder(_) | FxParams::VinylDistortion(_) | FxParams::Shifter(_) => false,
+        FxParams::Tuner(_) | FxParams::PhaserFlanger(_) | FxParams::Corpus(_) | FxParams::Roar(_) => false,
     }
 }
 

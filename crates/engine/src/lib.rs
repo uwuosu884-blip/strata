@@ -12,8 +12,8 @@
 pub mod autoshift;
 mod buffer;
 pub mod chaneq;
-pub mod corpus;
 mod command;
+pub mod corpus;
 pub mod delay;
 pub mod devtap;
 pub mod drumbuss;

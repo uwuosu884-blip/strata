@@ -180,7 +180,8 @@ mod tests {
         let sr = 48_000.0;
         for f in [82.4f32, 196.0, 440.0, 1046.5] {
             let mut s = TunerState::new(None);
-            let src: Vec<f32> = (0..48_000).map(|i| (i as f32 * TAU * f / sr).sin() * 0.5 + (i as f32 * TAU * 2.0 * f / sr).sin() * 0.2).collect();
+            let src: Vec<f32> =
+                (0..48_000).map(|i| (i as f32 * TAU * f / sr).sin() * 0.5 + (i as f32 * TAU * 2.0 * f / sr).sin() * 0.2).collect();
             let mut l = src.clone();
             let mut r = src.clone();
             for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
